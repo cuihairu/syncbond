@@ -2,6 +2,9 @@
 
 <p align="center"><img src="assets/icon.svg" width="64" height="64" alt="SyncBond logo"></p>
 
+[![CI](https://github.com/cuihairu/syncbond/actions/workflows/ci.yml/badge.svg)](https://github.com/cuihairu/syncbond/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 > **syncbond 是临时开发名，最终品牌待定。**
 
 # syncbond
