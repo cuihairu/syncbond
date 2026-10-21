@@ -103,9 +103,12 @@ fn old_device_reconnect_cannot_resurrect_a_delete() {
 #[test]
 fn large_clock_skew_does_not_silently_overwrite() {
     let mut normal = Replicator::new("node-normal");
-    normal.put("k", b"seed".to_vec()); // counter 0
-    let local = normal.put("k", b"local-value".to_vec()); // counter 1
-    assert_eq!(local.stamp.ct, 1);
+    let seed = normal.put("k", b"seed".to_vec());
+    let local = normal.put("k", b"local-value".to_vec());
+    assert!(
+        local.stamp.pt > seed.stamp.pt || local.stamp.ct == seed.stamp.ct + 1,
+        "the HLC must advance monotonically, seed={seed:?}, local={local:?}"
+    );
 
     // A device with a run-ahead clock (+1h) writes concurrently.
     let op = Operation {
