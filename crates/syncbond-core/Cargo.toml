@@ -1,0 +1,21 @@
+[package]
+name = "syncbond-core"
+description = "Accountless, embeddable, end-to-end encrypted device pairing and data synchronization core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+p256.workspace = true
+elliptic-curve.workspace = true
+sha2.workspace = true
+hmac.workspace = true
+hkdf.workspace = true
+scrypt.workspace = true
+chacha20poly1305.workspace = true
+ed25519-dalek.workspace = true
+rand_core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

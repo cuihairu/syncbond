@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = ["crates/syncbond-core"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["cuihairu"]
+
+[workspace.dependencies]
+p256 = { version = "0.13", features = ["ecdsa", "arithmetic"] }
+elliptic-curve = "0.13"
+sha2 = "0.10"
+sha1 = "0.10"
+hmac = "0.12"
+hkdf = "0.12"
+scrypt = "0.11"
+chacha20poly1305 = "0.10"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[profile.test]
+opt-level = 2

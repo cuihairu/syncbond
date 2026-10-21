@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/cuihairu/syncbond/main/schemas/envelope.schema.json",
+  "title": "syncbond encrypted sync envelope",
+  "description": "Wire format (JSON) of an encrypted sync payload, version 1. AEAD: XChaCha20-Poly1305. nonce and ciphertext are base64url without padding. Every field except ciphertext is authenticated as AEAD associated data; the ciphertext bytes are opaque to the SDK.",
+  "type": "object",
+  "required": ["protocolVersion", "groupId", "senderDeviceId", "keyEpoch", "messageId", "nonce", "ciphertext"],
+  "additionalProperties": false,
+  "properties": {
+    "protocolVersion": {
+      "type": "integer",
+      "const": 1,
+      "description": "wire protocol version; receivers must reject mismatches (version negotiation)"
+    },
+    "groupId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "sync group identifier; envelopes from other groups are rejected (cross-group protection)"
+    },
+    "senderDeviceId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "sending device id, bound into the AEAD"
+    },
+    "keyEpoch": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "group key epoch; rotation locks out devices holding only older epochs (revocation)"
+    },
+    "messageId": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 64,
+      "description": "unique per message; receivers reject duplicates (replay protection)"
+    },
+    "nonce": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{32}$",
+      "description": "base64url of the 24-byte XChaCha20 nonce"
+    },
+    "ciphertext": {
+      "type": "string",
+      "minLength": 17,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "description": "base64url of ciphertext || 16-byte Poly1305 tag; minimum covers a 1-byte plaintext"
+    }
+  }
+}

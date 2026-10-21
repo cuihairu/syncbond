@@ -1,0 +1,15 @@
+{
+  "name": "syncbond",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Accountless, embeddable, end-to-end encrypted device pairing and data synchronization infrastructure (temporary dev name; final brand TBD)",
+  "license": "MIT",
+  "author": "cuihairu",
+  "packageManager": "pnpm@12.10.1",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "typecheck": "pnpm -r typecheck"
+  }
+}
