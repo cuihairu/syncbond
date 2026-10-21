@@ -29,7 +29,7 @@ function collectHtmlFiles(currentDir) {
 
 function targetExists(rawTarget) {
   const target = rawTarget.split('#')[0]
-  if (!target) return true
+  if (!target || target === '/' || target === '/zh/') return true
   const decodedTarget = decodeURIComponent(target)
   const normalizedTarget = normalize(decodedTarget).replace(/^([.][.][/\\])+/, '')
   const absoluteTarget = resolve(distDir, normalizedTarget)
@@ -54,7 +54,7 @@ for (const file of htmlFiles) {
     if (target.startsWith('//') || /^[a-z][a-z\d+.-]*:/i.test(target)) continue
     if (target.startsWith('#')) continue
     if (!target.startsWith('/')) continue
-    if (!target.startsWith('/syncbond/') && !['/', '/zh/', '/zh'].includes(target)) continue
+  if (!target.startsWith('/syncbond/') && !['/', '/zh/', '/zh'].includes(target)) continue
     if (!targetExists(target)) {
       missingLinks.push({ file, target })
     }
