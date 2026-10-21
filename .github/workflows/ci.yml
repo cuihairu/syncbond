@@ -33,7 +33,7 @@ jobs:
       - name: Write coverage summary
         shell: bash
         run: |
-          coverage_summary="$(cargo llvm-cov report --json --output-path - | jq -r '.totals.percent.lines')"
+          coverage_summary="$(cargo llvm-cov report --json --output-path - | jq -r '.data[0].totals.lines.percent')"
           printf 'Line coverage: `%s%%`\n' "${coverage_summary}" >> "${GITHUB_STEP_SUMMARY}"
       - uses: codecov/codecov-action@v7
         with:
