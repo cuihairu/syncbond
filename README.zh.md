@@ -1,6 +1,6 @@
 [English](README.md) | [中文](README.zh.md)
 
-<img src="assets/icon.svg" width="96" alt="SyncBond logo">
+<p align="center"><img src="assets/icon.svg" width="64" height="64" alt="SyncBond logo"></p>
 
 > **syncbond 是临时开发名，最终品牌待定。**
 
