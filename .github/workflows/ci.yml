@@ -36,6 +36,7 @@ jobs:
           cargo llvm-cov report --json --output-path coverage.json
           coverage_summary="$(jq -r '.data[0].totals.lines.percent' coverage.json)"
           printf 'Line coverage: `%s%%`\n' "${coverage_summary}" >> "${GITHUB_STEP_SUMMARY}"
+          rm -- coverage.json
       - uses: codecov/codecov-action@v7
         with:
           files: lcov.info
