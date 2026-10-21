@@ -1,4 +1,4 @@
-[English](../requirements.md) | [中文](requirements.md)
+[中文](zh/requirements.md)
 
 # Requirements baseline
 

@@ -1,4 +1,4 @@
-[English](../requirements.md) | [中文](requirements.md)
+[English](../requirements.md)
 
 # 需求基线
 
