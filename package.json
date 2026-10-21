@@ -12,12 +12,8 @@
   "scripts": {
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
-    "build": "vitepress build docs",
-    "docs:dev": "vitepress dev docs",
-    "docs:build": "vitepress build docs",
-    "docs:preview": "vitepress preview docs"
-  },
-  "devDependencies": {
-    "vitepress": "^1.6.4"
+    "docs:dev": "pnpm --filter @syncbond/docs dev",
+    "docs:build": "pnpm --filter @syncbond/docs build",
+    "docs:preview": "pnpm --filter @syncbond/docs preview"
   }
 }

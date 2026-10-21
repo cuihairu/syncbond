@@ -1,0 +1,72 @@
+#!/usr/bin/env node
+
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { dirname, extname, join, normalize, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const distDir = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  '../docs-site/src/.vitepress/dist'
+)
+
+if (!existsSync(distDir)) {
+  console.error(`Docs build output not found: ${distDir}`)
+  process.exit(1)
+}
+
+const htmlFiles = []
+
+function collectHtmlFiles(currentDir) {
+  for (const entry of readdirSync(currentDir)) {
+    const entryPath = join(currentDir, entry)
+    if (statSync(entryPath).isDirectory()) {
+      collectHtmlFiles(entryPath)
+    } else if (extname(entry) === '.html') {
+      htmlFiles.push(entryPath)
+    }
+  }
+}
+
+function targetExists(rawTarget) {
+  const target = rawTarget.split('#')[0]
+  if (!target) return true
+  const decodedTarget = decodeURIComponent(target)
+  const normalizedTarget = normalize(decodedTarget).replace(/^([.][.][/\\])+/, '')
+  const absoluteTarget = resolve(distDir, normalizedTarget)
+  if (!absoluteTarget.startsWith(distDir)) return false
+  if (existsSync(absoluteTarget)) return true
+  if (extname(absoluteTarget)) return false
+  return (
+    existsSync(`${absoluteTarget}.html`) ||
+    existsSync(join(absoluteTarget, 'index.html'))
+  )
+}
+
+collectHtmlFiles(distDir)
+
+const missingLinks = []
+const internalLinkPattern = /(?:href|src)="([^"]+)"/g
+
+for (const file of htmlFiles) {
+  const html = readFileSync(file, 'utf8')
+  for (const match of html.matchAll(internalLinkPattern)) {
+    const target = match[1]
+    if (target.startsWith('//') || /^[a-z][a-z\d+.-]*:/i.test(target)) continue
+    if (target.startsWith('#')) continue
+    if (!target.startsWith('/')) continue
+    if (!target.startsWith('/syncbond/') && !['/', '/zh/', '/zh'].includes(target)) continue
+    if (!targetExists(target)) {
+      missingLinks.push({ file, target })
+    }
+  }
+}
+
+if (missingLinks.length > 0) {
+  console.error('Missing internal links:')
+  for (const { file, target } of missingLinks) {
+    console.error(`  ${target} in ${file}`)
+  }
+  process.exit(1)
+}
+
+console.log(`Verified internal links in ${htmlFiles.length} HTML files.`)

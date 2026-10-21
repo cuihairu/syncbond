@@ -27,6 +27,8 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r typecheck
+      - run: pnpm --filter @syncbond/docs build
+      - run: node scripts/verify-docs-links.mjs
   docs:
     runs-on: ubuntu-latest
     steps:
