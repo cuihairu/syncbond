@@ -71,9 +71,9 @@ export default defineConfig({
           {
             text: '设计',
             items: [
-              { text: '协议（v1，English）', link: 'https://cuihairu.github.io/syncbond/design/PROTOCOL' },
-              { text: '合并策略（English）', link: 'https://cuihairu.github.io/syncbond/design/merge' },
-              { text: '语言决策（English）', link: 'https://cuihairu.github.io/syncbond/design/language' }
+              { text: '协议（v1）', link: '/zh/design/PROTOCOL' },
+              { text: '合并策略', link: '/zh/design/merge' },
+              { text: '语言决策', link: '/zh/design/language' }
             ]
           },
           { text: '调研', link: '/zh/research/survey-2026-10-21', activeMatch: '^/zh/research/' },
@@ -86,9 +86,9 @@ export default defineConfig({
             {
               text: '设计',
               items: [
-                { text: '协议规范 v1（English）', link: 'https://cuihairu.github.io/syncbond/design/PROTOCOL' },
-                { text: '合并策略与墓碑（English）', link: 'https://cuihairu.github.io/syncbond/design/merge' },
-                { text: '语言决策：Rust core（English）', link: 'https://cuihairu.github.io/syncbond/design/language' }
+                { text: '协议规范 v1', link: '/zh/design/PROTOCOL' },
+                { text: '合并策略与墓碑', link: '/zh/design/merge' },
+                { text: '语言决策：Rust core', link: '/zh/design/language' }
               ]
             },
             { text: '调研', items: [{ text: '现状调研（2026-10-21）', link: '/zh/research/survey-2026-10-21' }] }
