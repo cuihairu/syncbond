@@ -11,9 +11,9 @@ const sharedConfig = {
   ignoreDeadLinks: false,
   head: [['link', { rel: 'icon', type: 'image/svg+xml', href: '/syncbond/icon.svg' }]],
   themeConfig: {
-    logo: { src: '/icon.svg', width: 64, height: 64 },
+    // logo/GitHub 图标一律用 vitepress 自带：不设 logo（默认标题字），GitHub 走内置 socialLinks 图标
+    socialLinks: [{ icon: 'github', link: 'https://github.com/cuihairu/syncbond' }],
     externalLinkIcon: true,
-    // GitHub 入口只留导航里的自定义组件(双语 nav 已各有一项),不再叠加 socialLinks 以免双图标
   }
 } satisfies DefaultTheme.Config
 
@@ -36,7 +36,6 @@ export default defineConfig({
             ]
           },
           { text: 'Research', link: '/research/survey-2026-10-21', activeMatch: '^/research/' },
-          { component: 'GitHub' }
         ],
         sidebar: {
           '/': [
@@ -77,7 +76,6 @@ export default defineConfig({
             ]
           },
           { text: '调研', link: '/zh/research/survey-2026-10-21', activeMatch: '^/zh/research/' },
-          { component: 'GitHub' }
         ],
         sidebar: {
           '/zh/': [
