@@ -12,6 +12,7 @@ pub mod hlc;
 pub mod identity;
 pub mod pairing;
 pub mod pairing_spake2;
+pub mod relay;
 pub mod replication;
 pub mod storage;
 pub mod transport;

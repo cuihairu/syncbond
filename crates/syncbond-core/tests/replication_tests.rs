@@ -8,6 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use syncbond_core::conflict::{OrSetDoc, OrSetStrategy, PnCounterDoc, PnCounterStrategy};
 use syncbond_core::hlc::HlcStamp;
 use syncbond_core::identity::DeviceIdentity;
+use syncbond_core::relay::{apply_pull_response, MemoryRelayStore, PullRequest, RelayStore};
 use syncbond_core::replication::{decode_state, encode_state, Operation, Replicator};
 use syncbond_core::storage::{MemoryStorage, SyncStorage};
 
@@ -240,4 +241,57 @@ fn crash_restart_restores_identity_cursor_and_oplog() {
 
     let op = restored.put("k3", b"v3".to_vec());
     assert_eq!(op.op_id, format!("device-x:{}", cursor_before + 1));
+}
+
+#[test]
+fn reconnecting_relay_client_resumes_after_cursor_without_duplicates() {
+    let relay = MemoryRelayStore::new();
+    let mut writer = Replicator::new("writer");
+    let mut reconnecting = Replicator::new("reconnecting");
+
+    let online_op = writer.put("online", b"one".to_vec());
+    relay.append("channel", &online_op).unwrap();
+
+    let response = relay.pull_after("channel", 0).unwrap();
+    assert_eq!(
+        apply_pull_response(&mut reconnecting, &response).unwrap(),
+        1
+    );
+    assert_eq!(reconnecting.get("online").unwrap().payload, b"one");
+    assert_eq!(reconnecting.cursor(), 0);
+
+    // The endpoint goes offline, persists the relay cursor separately, and
+    // returns after more writes.
+    let relay_cursor = response.after;
+    let state = reconnecting.snapshot_state(&DeviceIdentity::generate(), "group", 1);
+    let mut restored = Replicator::from_state(
+        &decode_state(&encode_state(&state).unwrap()).unwrap(),
+        Arc::new(syncbond_core::conflict::LwwHlc),
+    );
+
+    let offline_ops = [
+        writer.put("offline-1", b"two".to_vec()),
+        writer.delete("online"),
+        writer.put("offline-2", b"three".to_vec()),
+    ];
+    for operation in &offline_ops {
+        relay.append("channel", operation).unwrap();
+    }
+
+    let request = PullRequest {
+        channel: "channel".to_string(),
+        after: relay_cursor,
+    };
+    let response = relay.pull_after(&request.channel, request.after).unwrap();
+    assert_eq!(response.ops.len(), 3);
+    assert_eq!(apply_pull_response(&mut restored, &response).unwrap(), 3);
+
+    assert!(restored.get("online").unwrap().deleted);
+    assert_eq!(restored.get("offline-1").unwrap().payload, b"two");
+    assert_eq!(restored.get("offline-2").unwrap().payload, b"three");
+
+    // Relay redelivery must remain idempotent.
+    let replay = relay.pull_after(&request.channel, response.after).unwrap();
+    assert_eq!(apply_pull_response(&mut restored, &replay).unwrap(), 0);
+    assert_eq!(restored.record_count(), 3);
 }
