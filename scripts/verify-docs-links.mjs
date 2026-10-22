@@ -28,7 +28,8 @@ function collectHtmlFiles(currentDir) {
 }
 
 function targetExists(rawTarget) {
-  const target = rawTarget.split('#')[0]
+  // base=/syncbond/: 站内链接带前缀,解析 dist 路径时先剥掉
+  const target = (rawTarget.replace(/^\/syncbond(?=\/|$)/, '') || '/').split('#')[0]
   if (!target || target === '/' || target === '/zh/') return true
   const decodedTarget = decodeURIComponent(target)
   const normalizedTarget = normalize(decodedTarget).replace(/^([.][.][/\\])+/, '')
