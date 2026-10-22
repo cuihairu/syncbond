@@ -16,7 +16,13 @@ const sharedConfig = {
   themeConfig: {
     logo: { src: '/icon.svg', width: 64, height: 64 },
     externalLinkIcon: true,
-    socialLinks: [{ icon: { svg: githubIcon }, link: 'https://github.com/cuihairu/syncbond', ariaLabel: 'GitHub' }]
+    socialLinks: [
+      {
+        icon: { svg: `<svg viewBox="0 0 16 16" width="18" height="18" xmlns="http://www.w3.org/2000/svg"><path fill="currentColor" d="${githubIcon}"/></svg>` },
+        link: 'https://github.com/cuihairu/syncbond',
+        ariaLabel: 'GitHub',
+      },
+    ],
   }
 } satisfies DefaultTheme.Config
 
