@@ -176,6 +176,18 @@ impl Replicator {
         self.records.len()
     }
 
+    /// Keys of live (non-tombstoned) records, sorted.
+    pub fn live_keys(&self) -> Vec<String> {
+        let mut keys: Vec<String> = self
+            .records
+            .iter()
+            .filter(|(_, record)| !record.deleted)
+            .map(|(key, _)| key.clone())
+            .collect();
+        keys.sort();
+        keys
+    }
+
     pub fn cursor(&self) -> u64 {
         self.cursor
     }

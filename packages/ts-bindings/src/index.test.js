@@ -1,0 +1,87 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  NativeIdentity,
+  NativeReplicator,
+  pairMemory,
+  protocolVersion,
+} from "./native/binding.js";
+
+test("protocol version is exposed", () => {
+  assert.equal(typeof protocolVersion(), "number");
+  assert.ok(protocolVersion() > 0);
+});
+
+test("identity generates distinct device ids and keys", () => {
+  const a = NativeIdentity.generate();
+  const b = NativeIdentity.generate();
+  assert.notEqual(a.deviceId, b.deviceId);
+  assert.equal(a.publicKey.length, 32);
+});
+
+test("pair/sync e2e: two devices converge bidirectionally", async () => {
+  const pairing = pairMemory("SYNC77");
+  const initiator = pairing.initiatorSession();
+  const responder = pairing.responderSession();
+  assert.equal(initiator.invalidated, false);
+  assert.equal(initiator.groupId, responder.groupId);
+  assert.ok(initiator.peerDeviceId.length > 0);
+  assert.notEqual(initiator.peerDeviceId, responder.peerDeviceId);
+
+  const deviceA = new NativeReplicator("ts-device-a");
+  const deviceB = new NativeReplicator("ts-device-b");
+
+  deviceA.put("greeting", Buffer.from("hello from A"));
+  deviceA.put("doc:1", Buffer.from("A writes first"));
+  deviceB.put("reply", Buffer.from("hi from B"));
+
+  // Both halves of the exchange run concurrently: A sends then receives,
+  // B receives then sends.
+  const [statsA, statsB] = await Promise.all([
+    deviceA.sync(initiator, true),
+    deviceB.sync(responder, false),
+  ]);
+
+  assert.equal(statsA.sentOps, 2);
+  assert.equal(statsA.receivedOps, 1);
+  assert.equal(statsA.appliedOps, 1);
+  assert.equal(statsB.receivedOps, 2);
+  assert.equal(statsB.appliedOps, 2);
+  assert.equal(statsB.sentOps, 1);
+
+  // Both directions carried data across the encrypted channel.
+  assert.equal(Buffer.from(deviceB.get("greeting")).toString(), "hello from A");
+  assert.equal(Buffer.from(deviceA.get("reply")).toString(), "hi from B");
+  assert.equal(deviceA.recordCount, 3);
+  assert.equal(deviceB.recordCount, 3);
+
+  // Second round: more writes and a delete propagate incrementally, with
+  // the full-oplog resend deduplicated by op id.
+  deviceB.put("reply", Buffer.from("edited by B"));
+  deviceB.delete("doc:1");
+  deviceA.put("doc:2", Buffer.from("second doc"));
+
+  await Promise.all([
+    deviceA.sync(initiator, true),
+    deviceB.sync(responder, false),
+  ]);
+
+  assert.deepEqual(deviceA.keys(), ["doc:2", "greeting", "reply"]);
+  assert.deepEqual(deviceB.keys(), ["doc:2", "greeting", "reply"]);
+  assert.equal(Buffer.from(deviceA.get("reply")).toString(), "edited by B");
+  assert.equal(Buffer.from(deviceB.get("doc:2")).toString(), "second doc");
+  assert.equal(deviceA.get("doc:1"), null);
+  assert.equal(deviceB.get("doc:1"), null);
+  assert.equal(deviceA.recordCount, 4);
+  assert.equal(deviceB.recordCount, 4);
+});
+
+test("invalidated session refuses to sync", async () => {
+  const pairing = pairMemory("SYNC99");
+  const initiator = pairing.initiatorSession();
+  initiator.invalidate();
+  assert.equal(initiator.invalidated, true);
+  const device = new NativeReplicator("ts-late");
+  device.put("k", Buffer.from("v"));
+  await assert.rejects(() => device.sync(initiator, true));
+});

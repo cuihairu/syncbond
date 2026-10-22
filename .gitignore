@@ -7,3 +7,6 @@ coverage/
 .env.*
 target/
 docs/.vitepress/cache/
+
+# napi-rs generated artifacts
+packages/ts-bindings/src/native/
