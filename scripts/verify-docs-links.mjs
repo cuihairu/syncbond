@@ -32,8 +32,8 @@ function targetExists(rawTarget) {
   const target = (rawTarget.replace(/^\/syncbond(?=\/|$)/, '') || '/').split('#')[0]
   if (!target || target === '/' || target === '/zh/') return true
   const decodedTarget = decodeURIComponent(target)
-  const normalizedTarget = normalize(decodedTarget).replace(/^([.][.][/\\])+/, '')
-  const absoluteTarget = resolve(distDir, normalizedTarget)
+  const normalizedTarget = normalize(decodedTarget).replace(/^([.][.][/\\])+/, '').replace(/^[/\\]+/, '')
+  const absoluteTarget = join(distDir, normalizedTarget)
   if (!absoluteTarget.startsWith(distDir)) return false
   if (existsSync(absoluteTarget)) return true
   if (extname(absoluteTarget)) return false
