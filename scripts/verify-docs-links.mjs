@@ -49,7 +49,11 @@ const missingLinks = []
 const internalLinkPattern = /(?:href|src)="([^"]+)"/g
 
 for (const file of htmlFiles) {
+  // 剥掉站点导航壳(vitepress 会把各语言菜单都预渲染进页面,属生成物非内容链接,
+  // 由 vitepress 自带 dead-links 检查兜底);正文与侧栏链接照常校验
   const html = readFileSync(file, 'utf8')
+    .replace(/<header[\s\S]*?<\/header>/g, '')
+    .replace(/<nav[\s\S]*?<\/nav>/g, '')
   for (const match of html.matchAll(internalLinkPattern)) {
     const target = match[1]
     if (target.startsWith('//') || /^[a-z][a-z\d+.-]*:/i.test(target)) continue
