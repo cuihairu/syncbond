@@ -1,4 +1,3 @@
-[中文](zh/requirements.md)
 
 # Requirements baseline
 
