@@ -45,3 +45,20 @@
 3. **跨版本协商**：协议 v2 出现后是否兼容旧对端（当前 v1 仅拒绝不协商）。
 4. **墓碑降级 GC**：是否给应用开放「仅时间阈值」的不安全裁剪模式。
 5. **自动轮换触发**：成员移除是否由核心自动 rotate（当前 rotate 是应用手动调用）。
+
+## 七、多语言 SDK(R10.3，来源：用户 2026-10-24 令)
+
+**定位**：Rust core 不重复实现，所有语言走同一条 C ABI。这是 libsql / iroh / tantivy 的通行做法——为每种语言单独重写一遍协议逻辑，会导致合并语义在各语言间悄悄分叉，而 syncbond 的正确性恰恰建立在因果支配判定的一致性上。
+
+**架构定死**：`crates/syncbond-core`(纯逻辑) → `crates/syncbond-ffi`(cdylib，导出稳定 C ABI，句柄式 API，不跨边界传 Rust 结构体) → 各语言 binding。
+
+- [ ] R10.3.1 C ABI 层落位(cdylib + 头文件)。验收口径：纯 C 程序能完成 pair/sync 全流程；ABI 版本号随语义变更递增；头文件能被 `gcc -Wall -Werror` 编译通过。
+- [ ] R10.3.2 C++ SDK(直接消费 C ABI，附 RAII 包装)。验收：C++ 样例编译运行，pair/sync 通过。
+- [ ] R10.3.3 Python SDK(PyO3)。验收：pip 可安装，pytest 跑通 pair/sync；wheel 覆盖 Linux/macOS/Windows 三平台。
+- [ ] R10.3.4 Go SDK(cgo 薄封装)。验收：`go test` 通过；CGO_ENABLED=0 场景明确报错而不是静默失败。
+- [ ] R10.3.5 Java SDK(JNI over C ABI)。验收：Maven/Gradle 可拉取，JUnit 跑通；注意句柄生命周期要和 GC 协调(显式 close + Cleaner 兜底)。
+- [ ] R10.3.6 C# SDK(P/Invoke over C ABI)。验收：NuGet 可拉取，xUnit 跑通；`IDisposable` 正确释放句柄。
+- [ ] R10.3.7 TS/JS：现有 napi-rs 绑定改为消费同一套 C ABI 语义，补 Node ESM 与浏览器 WASM 两条路。验收：Node 侧跑通；WASM 侧在无 IndexedDB 环境降级路径明确。
+- [ ] R10.3.8 跨语言一致性测试：同一组 fixture 在 7 种语言里跑同一断言。验收：merge/keyEpoch/tombstone GC 三个核心行为在 7 语言下输出完全一致(含被移除设备解不开轮换后信封这一条)。**这是本节最重要的一项——没有它，多语言绑定就是 7 个各自漂移的实现。**
+
+**硬约束**：任何 binding 都不得包含协议逻辑；只允许序列化/反序列化和资源管理。review 时发现 binding 里出现因果支配判定之类的逻辑，一律退回。
