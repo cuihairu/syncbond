@@ -37,14 +37,41 @@ Causally ordered merges are unambiguous and monotone; only concurrent writes rea
 2. Concurrent writes: both kept. The higher stamp becomes primary; the loser is appended to `conflicts` (deduplicated by stamp) for the application to resolve (test: `example_2_note_documents_with_offline_conflict`).
 3. Run-ahead clock: if the incoming stamp claims a wall time more than `max_skew_ms` (default 5 min) ahead, it is treated as concurrent regardless of causality — a broken device clock cannot silently overwrite local state; the skewed write is retained and flagged (test: `large_clock_skew_does_not_silently_overwrite`). The local HLC additionally refuses to adopt run-ahead remote stamps (`HybridClock::receive`).
 
-## Tombstone garbage collection (design, not yet implemented)
+## Tombstone garbage collection (implemented)
 
-A tombstone may be dropped only when **both** conditions hold:
+`Replicator::gc_tombstones(now_ms, older_than_ms)` collects a tombstone only
+when **both** conditions hold:
 
-1. **Time**: `now - tombstone.stamp.pt > retention` (default proposal: 30 days), and
-2. **Causal dominance**: every known replica's witness for the key dominates the tombstone's stamp — i.e. no live peer can still deliver a write that the tombstone is supposed to kill. Operationally this needs a replica-vector heartbeat, which arrives with the relay (P2); until then GC is exposed as `snapshot` compaction with time-based pruning only, and full dominance-based GC is a pending decision (todo.md).
+1. **Time**: `now_ms - tombstone.stamp.pt >= older_than_ms`, and
+2. **Causal dominance**: every known replica's witness dominates the
+   tombstone's stamp. The witness map the replicator accumulates from op
+   witnesses *is* the replica vector — no separate heartbeat protocol, it
+   travels with relay sync. A replica we have no evidence about simply blocks
+   collection until it is heard from again.
 
-Dropping a tombstone without condition 2 is exactly the resurrection bug this model exists to prevent.
+A collected tombstone is **not deleted**. It is compacted into a barrier
+entry (`gc_barriers`, payload and retained conflicts stripped, stamp and
+witness kept) and the key's oplog history collapses to its single tombstone
+op. The barrier is what keeps the guarantee: a pre-delete write redelivered
+after GC is rejected by the barrier instead of resurrecting the delete
+(`stale_put_cannot_resurrect_a_collected_delete`). The retained tombstone op
+means a fresh replica still learns about the delete, so the compacted form
+costs O(1) per deleted key and never downgrades a peer's view.
+
+Two consequences worth noting:
+
+- Garbage-collected state is safe to restart from: barriers are part of
+  `SyncState` (`#[serde(default)]`, so pre-GC snapshots load unchanged) and
+  replay reproduces the compacted form (`gc_compacts_the_oplog_and_survives_a_restart`).
+- A compacted peer converges with an uncompacted peer; the tombstone travels,
+  the payload does not (`compacted_peer_converges_with_an_uncompacted_peer`).
+
+The time-threshold-only degraded mode is deliberately **not** part of the
+public API or the FFI surface: it waives the evidence requirement and can
+re-materialize a collected key from a peer still carrying the pre-delete
+history. It exists as a crate-internal test switch only
+(`GcMode::TimeOnly`, exercised by `degraded_time_only_mode_skips_the_evidence_check`),
+off by default and not documented as an application option.
 
 ## Convergence argument
 

@@ -22,6 +22,6 @@ pub use crypto::{CryptoError, EncryptedEnvelope, EnvelopeContext, KeyRing, PROTO
 pub use hlc::{compare_stamps, HlcStamp, HybridClock};
 pub use identity::{DeviceIdentity, IdentityError};
 pub use pairing::{PairingError, PairingSession};
-pub use replication::{ReplicationError, Replicator};
+pub use replication::{GcReport, ReplicationError, Replicator};
 pub use storage::{MemoryStorage, SyncState, SyncStorage};
 pub use transport::{MemoryTransport, Transport, TransportError};

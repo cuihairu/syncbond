@@ -43,7 +43,7 @@ impl SyncStorage for MemoryStorage {
 }
 
 /// Everything a device must persist: its long-term identity, replication
-/// cursor, oplog, group membership and key epoch.
+/// cursor, oplog, group membership, key epoch, and compaction barriers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncState {
     pub node_id: String,
@@ -52,4 +52,8 @@ pub struct SyncState {
     pub key_epoch: u64,
     pub cursor: u64,
     pub oplog: Vec<crate::replication::Operation>,
+    /// Compacted tombstones that must outlive the oplog (default empty for
+    /// snapshots taken before GC existed).
+    #[serde(default)]
+    pub gc_barriers: std::collections::BTreeMap<String, crate::conflict::Record>,
 }
