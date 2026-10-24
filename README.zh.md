@@ -4,13 +4,7 @@
 
 <div align="center">
 
-<a href="https://github.com/cuihairu/syncbond/releases"><img alt="Status" src="https://img.shields.io/badge/status-in%20development-orange"></a>
-<a href="https://github.com/cuihairu/syncbond/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/cuihairu/syncbond/actions/workflows/ci.yml/badge.svg"></a>
-<a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-blue.svg"></a>
-<a href="crates/syncbond-core"><img alt="Rust 内核" src="https://img.shields.io/badge/内核-Rust-000000?logo=rust&logoColor=white"></a>
-<a href="packages/ts-bindings"><img alt="TypeScript 绑定" src="https://img.shields.io/badge/绑定-TypeScript-3178C6?logo=typescript&logoColor=white"></a>
-<a href="docs/zh/design/PROTOCOL.md"><img alt="配对: SPAKE2 RFC9382" src="https://img.shields.io/badge/配对-SPAKE2%20RFC9382-2c6e63"></a>
-
+<a href="https://github.com/cuihairu/syncbond/releases"><img alt="Status" src="https://img.shields.io/badge/status-in%20development-orange"></a> <a href="https://github.com/cuihairu/syncbond/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/cuihairu/syncbond/actions/workflows/ci.yml/badge.svg"></a> <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-blue.svg"></a> <a href="crates/syncbond-core"><img alt="Rust 内核" src="https://img.shields.io/badge/内核-Rust-000000?logo=rust&logoColor=white"></a> <a href="packages/ts-bindings"><img alt="TypeScript 绑定" src="https://img.shields.io/badge/绑定-TypeScript-3178C6?logo=typescript&logoColor=white"></a> <a href="docs/zh/design/PROTOCOL.md"><img alt="配对: SPAKE2 RFC9382" src="https://img.shields.io/badge/配对-SPAKE2%20RFC9382-2c6e63"></a>
 </div>
 
 
