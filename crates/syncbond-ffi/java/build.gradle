@@ -1,0 +1,78 @@
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+}
+
+group = 'io.github.syncbond'
+version = '0.1.0-SNAPSHOT'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+// The JNI shim links against the C ABI shared library at runtime. Gradle
+// copies that library next to the shim and sets an $ORIGIN rpath so the
+// loader finds it without any java.library.path configuration.
+def jniHeaderDir = file('native')
+def ffiSharedLib = file("${projectDir}/../../../target/release/libsyncbond_ffi.so")
+
+tasks.named('compileJava') {
+    // javac -h emits syncbond_Native.h into the native directory; the C
+    // shim includes it, so the native build must run after this task.
+    options.compilerArgs += ['-h', jniHeaderDir.absolutePath]
+}
+
+tasks.register('copyFfiLib', Copy) {
+    from(ffiSharedLib)
+    into layout.buildDirectory.dir('libs')
+}
+
+tasks.register('buildNative', Exec) {
+    dependsOn 'compileJava', 'copyFfiLib'
+    inputs.file('native/syncbond_jni.c')
+    inputs.file('native/syncbond_Native.h')
+    outputs.file(layout.buildDirectory.file('libs/libsyncbond_java.so'))
+    def jh = System.getenv('JAVA_HOME') ?: System.properties['java.home']
+    doFirst {
+        layout.buildDirectory.dir('libs').get().asFile.mkdirs()
+    }
+    commandLine 'cc', '-shared', '-fPIC',
+        "-I${jh}/include", "-I${jh}/include/linux",
+        '-I../include', '-Inative',
+        'native/syncbond_jni.c',
+        '-Lbuild/libs', '-lsyncbond_ffi',
+        '-Wl,-rpath,\$ORIGIN',
+        '-lpthread', '-ldl',
+        '-o', 'build/libs/libsyncbond_java.so'
+}
+
+tasks.named('compileTestJava') {
+    dependsOn 'buildNative'
+}
+
+tasks.named('test') {
+    dependsOn 'buildNative'
+    useJUnitPlatform()
+    systemProperty 'syncbond.lib',
+            "${projectDir}/build/libs/libsyncbond_java.so"
+    testLogging {
+        events 'passed', 'failed', 'skipped'
+        exceptionFormat 'full'
+    }
+}
+
+// Local-only publication proving the artifact is pullable; no remote
+// repository, no version tags, no formal release.
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+        }
+    }
+}

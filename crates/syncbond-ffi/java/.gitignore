@@ -1,0 +1,3 @@
+build/
+.gradle/
+native/syncbond_Native.h
