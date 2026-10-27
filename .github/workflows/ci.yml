@@ -116,3 +116,45 @@ jobs:
         with:
           name: wheel-${{ matrix.os }}
           path: target/wheels/*.whl
+  # The Java SDK compiles the JNI shim against the release C ABI library and
+  # runs the JUnit suite; the artifact publishes to the local Maven repo only.
+  java:
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2.9.3
+      - uses: actions/setup-java@v5.0.0
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.8.0'
+      - run: cargo build --release -p syncbond-ffi
+      - run: gradle test
+        working-directory: crates/syncbond-ffi/java
+      - run: gradle publishToMavenLocal
+        working-directory: crates/syncbond-ffi/java
+  # The C# SDK packs into a local NuGet feed, restores the package from that
+  # feed and runs the xUnit suite; no remote feed is involved.
+  csharp:
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2.9.3
+      - uses: actions/setup-dotnet@v5.0.0
+        with:
+          dotnet-version: '10.0.x'
+      - run: cargo build --release -p syncbond-ffi
+      - run: dotnet pack Syncbond -c Release -o artifacts
+        working-directory: crates/syncbond-ffi/csharp
+      - run: dotnet test Syncbond.Tests -c Release
+        working-directory: crates/syncbond-ffi/csharp
+        env:
+          SYNCBOND_NATIVE: ${{ github.workspace }}/target/release/libsyncbond_ffi.so
+      - run: dotnet run --project Syncbond.Example
+        working-directory: crates/syncbond-ffi/csharp
+        env:
+          SYNCBOND_NATIVE: ${{ github.workspace }}/target/release/libsyncbond_ffi.so

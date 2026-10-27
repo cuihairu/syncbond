@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>Syncbond</AssemblyName>
+    <RootNamespace>Syncbond</RootNamespace>
+    <Version>0.1.0</Version>
+    <Description>Accountless, end-to-end encrypted device pairing and data synchronization over the syncbond C ABI.</Description>
+    <PackageId>Syncbond</PackageId>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+</Project>
