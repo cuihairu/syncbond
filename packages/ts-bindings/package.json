@@ -9,7 +9,7 @@
   "types": "./src/index.ts",
   "scripts": {
     "build": "napi build --cwd . --platform --release --output-dir src/native --target-dir \"$PWD/../../target/napi\" --js binding.js --dts binding.d.ts --esm --manifest-path ../../crates/syncbond-napi/Cargo.toml",
-    "build:wasm": "wasm-pack build ../../crates/syncbond-wasm --target web --release --out-dir src/wasm-gen",
+    "build:wasm": "wasm-pack build ../../crates/syncbond-wasm --target web --release --out-dir \"$PWD/src/wasm-gen\"",
     "test": "node --test src/*.test.js",
     "typecheck": "tsc --noEmit"
   },

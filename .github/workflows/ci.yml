@@ -13,6 +13,9 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2.9.3
+      # tests/ffi_python.rs drives a full maturin wheel build + pytest, so the
+      # python toolchain must be present wherever `cargo test` runs.
+      - run: python -m pip install --upgrade "maturin>=1.5" pytest
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
@@ -28,6 +31,9 @@ jobs:
         with:
           tool: cargo-llvm-cov@0.9.1
       - uses: Swatinem/rust-cache@v2.9.3
+      # tests/ffi_python.rs drives a full maturin wheel build + pytest, so the
+      # python toolchain must be present wherever coverage runs cargo test.
+      - run: python -m pip install --upgrade "maturin>=1.5" pytest
       - name: Generate coverage
         run: cargo llvm-cov --workspace --all-targets --lcov --output-path lcov.info
       - name: Write coverage summary
@@ -109,7 +115,7 @@ jobs:
       - shell: bash
         run: python -m pip install --upgrade "maturin>=1.5" pytest
       - shell: bash
-        run: maturin build -m crates/syncbond-python --release -o target/wheels
+        run: maturin build -m crates/syncbond-python/Cargo.toml --release -o target/wheels
       - name: Install the wheel and run the pytest suite
         shell: bash
         run: |
