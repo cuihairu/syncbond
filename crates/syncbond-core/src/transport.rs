@@ -30,8 +30,12 @@ struct Shared {
 /// In-memory loopback transport for tests and examples.
 pub struct MemoryTransport {
     inbox: Arc<Mutex<Shared>>,
+    // Each inbox owns its condvar: a Condvar must only ever be used with one
+    // mutex, and the two ends of a pair lock different mutexes. Sharing one
+    // condvar across both ends is UB and panics on macOS pthreads.
+    inbox_signal: Arc<Condvar>,
     peer_outbox: Arc<Mutex<Shared>>,
-    signal: Arc<Condvar>,
+    peer_signal: Arc<Condvar>,
 }
 
 impl MemoryTransport {
@@ -45,28 +49,30 @@ impl MemoryTransport {
             queue: VecDeque::new(),
             closed: false,
         }));
-        let signal = Arc::new(Condvar::new());
+        let a_signal = Arc::new(Condvar::new());
+        let b_signal = Arc::new(Condvar::new());
         (
             Arc::new(MemoryTransport {
                 inbox: a_inbox.clone(),
+                inbox_signal: a_signal.clone(),
                 peer_outbox: b_inbox.clone(),
-                signal: signal.clone(),
+                peer_signal: b_signal.clone(),
             }),
             Arc::new(MemoryTransport {
                 inbox: b_inbox,
+                inbox_signal: b_signal,
                 peer_outbox: a_inbox,
-                signal,
+                peer_signal: a_signal,
             }),
         )
     }
 
     pub fn close_pair(a: &MemoryTransport, b: &MemoryTransport) {
         for inbox in [&a.inbox, &b.inbox] {
-            let mut guard = inbox.lock().unwrap();
-            guard.closed = true;
+            inbox.lock().unwrap().closed = true;
         }
-        a.signal.notify_all();
-        b.signal.notify_all();
+        a.inbox_signal.notify_all();
+        b.inbox_signal.notify_all();
     }
 }
 
@@ -78,7 +84,7 @@ impl Transport for MemoryTransport {
         }
         peer.queue.push_back(frame.to_vec());
         drop(peer);
-        self.signal.notify_all();
+        self.peer_signal.notify_all();
         Ok(())
     }
 
@@ -91,7 +97,7 @@ impl Transport for MemoryTransport {
             if inbox.closed {
                 return Err(TransportError::Closed);
             }
-            inbox = self.signal.wait(inbox).unwrap();
+            inbox = self.inbox_signal.wait(inbox).unwrap();
         }
     }
 
