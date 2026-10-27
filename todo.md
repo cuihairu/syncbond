@@ -62,3 +62,17 @@
 - [x] R10.3.8 跨语言一致性测试：同一组 fixture 在 7 种语言里跑同一断言。验收：merge/keyEpoch/tombstone GC 三个核心行为在 7 语言下输出完全一致(含被移除设备解不开轮换后信封这一条)。**这是本节最重要的一项——没有它，多语言绑定就是 7 个各自漂移的实现。** 证据：commit 1601b2c；单一事实源 `crates/syncbond-ffi/fixtures/conformance.json`(merge_lww / tombstone_gc_blocks_resurrection / rotation 三场景，GC 步骤走 `mode:"time_only"` 定值裁剪)，确定性报告 `conformance.expected.json`(serde_json 无 preserve_order → Map=BTreeMap → 键字母序 → 跨运行/跨语言字节一致，由 `#[ignore] regenerate_expected_report` 生成、无尾换行)，7 语言 + WASM 全部读盘上文件并字节比对 `report_raw == expected`(精确字符串相等，任何 mangle fixture 或 report 的语言在语义断言之前即失败)：C(`pair_sync.c` argv[1]/argv[2] + `ffi_c`)、C++(`pair_sync.cpp` 经 `read_file_contents` 防 vexing-parse + `ffi_cpp`)、Python(`test_pair_sync.py` 读 FIXTURE_PATH/EXPECTED_PATH + `ffi_python` pip `--upgrade` 防陈旧轮)、Go(`pair_sync.go`/`syncbond_test.go`)、Java(`SyncbondTest.java` 读 fixture+expected + `ffi_java` 先删陈旧 `build/libs/libsyncbond_java.so`/`libsyncbond_ffi.so` 防 gradle UP-TO-DATE)、C#(`SyncbondTests.cs` 自 BaseDirectory 上溯定位 repo root)、napi(`index.test.js`)、WASM(`wasm.test.js`，`JSON.stringify(runConformance) == canonicalReport`)；被移除设备解不开轮换后信封(`rotated_error == -5`)在每语言断言；核心新增公开 `Replicator::gc_tombstones_time_only`(时间阈值降级路径，dominance 在固定时钟双节点下数学上不可满足，故 fixture 用 time_only 保确定性)；门禁 `cargo test --workspace` 全绿(含 `tests/conformance_fixture.rs`，1 个 `#[ignore]` regenerate 不计)、`cargo clippy --workspace --all-targets -- -D warnings` 0 warning、`cargo fmt --all -- --check` 干净
 
 **硬约束**：任何 binding 都不得包含协议逻辑；只允许序列化/反序列化和资源管理。review 时发现 binding 里出现因果支配判定之类的逻辑，一律退回。
+
+---
+
+## 八、binding 层畸形载荷显式报错（来源：用户 2026-10-28 巡检令）
+
+**问题**：上轮实测发现，畸形 OR-Set/PN-Counter 载荷经 binding 层时 `.expect()` panic，跨语言行为不一致——C ABI 经 `call()` 捕获 panic 映射为通用内部错误，而 Python/Node/WASM 直接调用共享 handle 层，panic 表现为各语言各自的崩溃，无法统一为显式失败。
+
+**修复**：让 `MergeStrategy::merge` 可失败（返回 `Result<MergeOutcome, MergeError>`），并把错误贯穿 `Replicator` 的 `put`/`delete`/`apply_remote`/`from_state`/`sync_over`；`OrSetStrategy::decode`/`PnCounterStrategy::decode` 不再 `.expect()`，改返回 `MergeError`。各绑定把 `MergeError` 映射为自身显式错误类型（FFI `SB_ERR_PROTOCOL`、Python `PyErr`、napi `Error`、WASM `JsValue`），因此畸形载荷在 7 语言下一致地返回错误而非 panic。`apply_local` 改为先 merge 后落状态，失败时不留下半应用写入。
+
+**根因**：`conflict.rs` 的 `decode().expect()`；C ABI 与其余 binding 走不同错误传播路径。
+
+**验收口径**：跨语言 conformance fixture 新增 `reject_put` 步骤（`malformed_strategy_payload_is_rejected` / `malformed_pn_counter_payload_is_rejected` 两场景），所有 binding 读同一 fixture 并字节比对 `/fixtures/conformance.expected.json`（`"reason":"explicit error"`、`"actual":"true"`），另加核心 `malformed_strategy_payloads_error_instead_of_panicking` 与 Python `test_malformed_strategy_payload_rejected_not_panicked` 回归测试。
+
+**门禁证据**：`cargo fmt --all -- --check` 干净（FMT=0）；`cargo clippy --workspace --all-targets -- -D warnings` 0 warning（CLIPPY=0）；`cargo test` 全绿 EXIT=0（跨 C/C++/C#/Go/Java/Python/napi/WASM 全部通过，包含 Java 用 CI 固定 Gradle 9.8.0 实跑、Go 清构建缓存防陈旧 `.a`）；`pnpm --filter @syncbond/bindings-ts test` 9 passed（napi + wasm 双路，含 conformance 5 场景）；`pnpm -r typecheck` 干净；`pnpm docs:build` + `node scripts/verify-docs-links.mjs` 干净。提交 e75cb2e，已推送 `origin/main`（无 force、无 tag）。品牌名与 npm 发布仍为用户拍板项，未开工。
