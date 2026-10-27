@@ -79,5 +79,12 @@ fn pure_cpp_program_completes_pair_and_sync() {
         .arg(format!("-Wl,-rpath,{}", libdir.display()))
         .arg("-lpthread"));
 
-    run(Command::new(&exe).current_dir(&out_dir));
+    // Pin the library search path to the freshly built cdylib: the test
+    // runner's inherited LD_LIBRARY_PATH (target/debug) would otherwise load
+    // a stale shared library over the one just built here.
+    run(Command::new(&exe)
+        .env("LD_LIBRARY_PATH", &libdir)
+        .arg(manifest.join("fixtures/conformance.json"))
+        .arg(manifest.join("fixtures/conformance.expected.json"))
+        .current_dir(&out_dir));
 }

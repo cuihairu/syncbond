@@ -1,11 +1,31 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   NativeIdentity,
   NativeReplicator,
+  conformanceRun,
   pairMemory,
   protocolVersion,
 } from "./native/binding.js";
+
+// The canonical cross-language fixture, shared by every binding
+// (crates/syncbond-ffi/fixtures/conformance.json). The same on-disk file
+// drives the merge / tombstone-GC / key-epoch scenarios byte-identically
+// across languages.
+const canonicalFixture = readFileSync(
+  fileURLToPath(
+    new URL("../../../crates/syncbond-ffi/fixtures/conformance.json", import.meta.url),
+  ),
+  "utf8",
+);
+const canonicalReport = readFileSync(
+  fileURLToPath(
+    new URL("../../../crates/syncbond-ffi/fixtures/conformance.expected.json", import.meta.url),
+  ),
+  "utf8",
+);
 
 test("protocol version is exposed", () => {
   assert.equal(typeof protocolVersion(), "number");
@@ -80,4 +100,26 @@ test("invalidated session refuses to sync", async () => {
   const device = new NativeReplicator("ts-late");
   device.put("k", Buffer.from("v"));
   await assert.rejects(() => device.sync(initiator, true));
+});
+
+test("conformance: canonical fixture passes all named checks", () => {
+  const report = JSON.parse(conformanceRun(canonicalFixture));
+  assert.equal(report.ok, true);
+  assert.deepEqual(
+    report.scenarios.map((scenario) => scenario.name).sort(),
+    ["merge_lww", "rotation", "tombstone_gc_blocks_resurrection"],
+  );
+  for (const scenario of report.scenarios) {
+    assert.equal(scenario.ok, true, `scenario ${scenario.name}`);
+    for (const check of scenario.checks) {
+      assert.equal(check.ok, true, `${scenario.name}:${check.name}`);
+    }
+  }
+  const rotation = report.scenarios.find((scenario) => scenario.name === "rotation");
+  const gone = rotation.rotations.find((row) => row.device === "gone");
+  assert.equal(gone.opened_rotated, false);
+  assert.equal(gone.rotated_error, -5);
+  // The runner output is deterministic: byte-for-byte equality against the
+  // canonical report pins any language drift (mangled fixture or report).
+  assert.equal(conformanceRun(canonicalFixture), canonicalReport);
 });

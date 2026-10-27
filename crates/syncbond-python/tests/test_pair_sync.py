@@ -8,64 +8,26 @@ language runs.
 """
 
 import json
+from pathlib import Path
 
 import pytest
 
 import syncbond
 
-FIXTURE = {
-    "version": 1,
-    "scenarios": [
-        {
-            "type": "replication",
-            "name": "lww",
-            "strategy": "lww",
-            "nodes": {"left": 1000, "right": 2000},
-            "steps": [
-                {"put": {"node": "left", "key": "k", "payload": "bGVmdA"}},
-                {
-                    "put": {
-                        "node": "right",
-                        "key": "k",
-                        "payload": "cmlnaHQ",
-                        "name": "left_sees_newer_write",
-                    }
-                },
-                {"sync": ["left", "right"]},
-                {
-                    "check": {
-                        "node": "left",
-                        "key": "k",
-                        "state": "live",
-                        "payload": "cmlnaHQ",
-                        "name": "left_sees_newer_write",
-                    }
-                },
-                {
-                    "check": {
-                        "node": "right",
-                        "key": "k",
-                        "state": "live",
-                        "payload": "cmlnaHQ",
-                        "name": "right_keeps_newer_write",
-                    }
-                },
-            ],
-        },
-        {
-            "type": "key_epoch",
-            "name": "rotation",
-            "group": "g",
-            "epoch": 1,
-            "next_epoch": 2,
-            "key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            "next_key": "__________________________________________8",
-            "survivors": ["s1"],
-            "removed": ["gone"],
-            "plaintext": "cGF5bG9hZA",
-        },
-    ],
-}
+# The canonical cross-language fixture, shared by every binding
+# (crates/syncbond-ffi/fixtures/conformance.json). Loading the same on-disk
+# file keeps the merge / tombstone-GC / key-epoch scenarios byte-identical
+# across languages.
+FIXTURE_PATH = (
+    Path(__file__).resolve().parent.parent.parent
+    / "syncbond-ffi"
+    / "fixtures"
+    / "conformance.json"
+)
+EXPECTED_PATH = FIXTURE_PATH.with_name("conformance.expected.json")
+# The raw file bytes: the runner must see exactly the canonical fixture, not a
+# re-serialized copy, so the report stays byte-identical across languages.
+FIXTURE = FIXTURE_PATH.read_text(encoding="utf-8")
 
 
 def test_pair_produces_matching_group_ids():
@@ -209,7 +171,7 @@ def test_envelope_replay_is_rejected():
 
 
 def test_conformance_runner_report_is_ok():
-    report = json.loads(syncbond.conformance_run(json.dumps(FIXTURE)))
+    report = json.loads(syncbond.conformance_run(FIXTURE))
     assert report["version"] == 1
     assert report["ok"] is True
     assert {scenario["type"] for scenario in report["scenarios"]} == {
@@ -219,7 +181,7 @@ def test_conformance_runner_report_is_ok():
 
 
 def test_conformance_rotation_check_reports_the_rejected_device():
-    report = json.loads(syncbond.conformance_run(json.dumps(FIXTURE)))
+    report = json.loads(syncbond.conformance_run(FIXTURE))
     rotation = next(
         scenario
         for scenario in report["scenarios"]
@@ -236,6 +198,38 @@ def test_conformance_rotation_check_reports_the_rejected_device():
         row for row in rotation["rotations"] if row["device"] == "gone"
     )
     assert rejected["rotated_error"] == -5
+
+
+def test_conformance_named_checks_all_pass():
+    report = json.loads(syncbond.conformance_run(FIXTURE))
+    assert report["ok"] is True
+    by_name = {scenario["name"]: scenario for scenario in report["scenarios"]}
+    assert set(by_name) == {
+        "merge_lww",
+        "tombstone_gc_blocks_resurrection",
+        "rotation",
+    }
+    assert {c["name"] for c in by_name["merge_lww"]["checks"]} == {
+        "left_sees_newer_write",
+        "right_keeps_newer_write",
+    }
+    assert {c["name"] for c in by_name["tombstone_gc_blocks_resurrection"]["checks"]} == {
+        "old_write_cannot_resurrect_after_gc",
+        "barrier_keeps_tombstone",
+        "peer_stays_tombstoned",
+    }
+    for scenario in report["scenarios"]:
+        assert scenario["ok"] is True
+        for check in scenario["checks"]:
+            assert check["ok"] is True
+
+
+def test_conformance_report_matches_canonical_bytes():
+    # The runner output is deterministic: byte-for-byte equality against the
+    # canonical report pins any language drift (mangled fixture or report).
+    report = syncbond.conformance_run(FIXTURE)
+    expected = EXPECTED_PATH.read_text(encoding="utf-8")
+    assert report == expected, "conformance report must match the canonical bytes"
 
 
 def test_abi_constants_are_exported():

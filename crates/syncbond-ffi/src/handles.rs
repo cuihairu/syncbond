@@ -221,6 +221,20 @@ impl Replicator {
         Ok(self.0.gc_tombstones(now_ms, older_than_ms).collected.len())
     }
 
+    /// Time-threshold tombstone GC (the degraded, dominance-free path the
+    /// conformance runner drives for deterministic collection).
+    pub fn gc_tombstones_time_only(
+        &mut self,
+        now_ms: u64,
+        older_than_ms: u64,
+    ) -> Result<usize, FfiError> {
+        Ok(self
+            .0
+            .gc_tombstones_time_only(now_ms, older_than_ms)
+            .collected
+            .len())
+    }
+
     /// Canonical, fully sorted dump of every record.
     pub fn records_json(&self) -> String {
         serde_json::to_string(&dump_node(&self.0)).expect("dump serialization is infallible")

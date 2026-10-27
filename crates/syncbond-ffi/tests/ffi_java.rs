@@ -56,6 +56,12 @@ fn java_suite_passes() {
 
     let java_dir = manifest.join("java");
 
+    // Drop the previous JNI shim so gradle's UP-TO-DATE check cannot reuse a
+    // build linked against an older shared library; buildNative then re-links
+    // against the freshly copied one.
+    let _ = std::fs::remove_file(java_dir.join("build/libs/libsyncbond_java.so"));
+    let _ = std::fs::remove_file(java_dir.join("build/libs/libsyncbond_ffi.so"));
+
     // The JUnit suite compiles the JNI shim and runs the 13 tests.
     run(Command::new("gradle")
         .args(["--no-daemon", "test"])

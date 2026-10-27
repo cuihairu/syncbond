@@ -48,27 +48,72 @@ static void *run_sync(void *raw)
     return NULL;
 }
 
+/* The canonical cross-language fixture (fixtures/conformance.json), embedded
+ * as the fallback for a standalone run. The Rust harness passes the file path
+ * as argv[1] so the on-disk file stays the single source of truth. */
 static const char *FIXTURE =
-    "{"
-    "\"version\":1,"
-    "\"scenarios\":["
-    "{\"type\":\"replication\",\"name\":\"lww\",\"strategy\":\"lww\","
-    "\"nodes\":{\"left\":1000,\"right\":2000},"
-    "\"steps\":["
-    "{\"put\":{\"node\":\"left\",\"key\":\"k\",\"payload\":\"bGVmdA\"}},"
-    "{\"put\":{\"node\":\"right\",\"key\":\"k\",\"payload\":\"cmlnaHQ\",\"name\":\"left_sees_newer_write\"}},"
-    "{\"sync\":[\"left\",\"right\"]},"
-    "{\"check\":{\"node\":\"left\",\"key\":\"k\",\"state\":\"live\",\"payload\":\"cmlnaHQ\",\"name\":\"left_sees_newer_write\"}},"
-    "{\"check\":{\"node\":\"right\",\"key\":\"k\",\"state\":\"live\",\"payload\":\"cmlnaHQ\",\"name\":\"right_keeps_newer_write\"}}"
-    "]},"
-    "{\"type\":\"key_epoch\",\"name\":\"rotation\",\"group\":\"g\",\"epoch\":1,\"next_epoch\":2,"
-    "\"key\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\","
-    "\"next_key\":\"__________________________________________8\","
-    "\"survivors\":[\"s1\"],\"removed\":[\"gone\"],"
-    "\"plaintext\":\"cGF5bG9hZA\"}"
-    "]}";
+    "{\"version\":1,\"scenarios\":[{\"type\":\"replication\",\"name\":\"merge_lww\",\"strategy\":\"lww\",\"nodes\":{\"left\":"
+    "1000,\"right\":2000},\"steps\":[{\"put\":{\"node\":\"left\",\"key\":\"k\",\"payload\":\"bGVmdA\"}},{\"put\":{\"node\":\"rig"
+    "ht\",\"key\":\"k\",\"payload\":\"cmlnaHQ\"}},{\"sync\":[\"left\",\"right\"]},{\"check\":{\"node\":\"left\",\"key\":\"k\",\"sta"
+    "te\":\"live\",\"payload\":\"cmlnaHQ\",\"name\":\"left_sees_newer_write\"}},{\"check\":{\"node\":\"right\",\"key\":\"k\",\""
+    "state\":\"live\",\"payload\":\"cmlnaHQ\",\"name\":\"right_keeps_newer_write\"}}]},{\"type\":\"replication\",\"name\":"
+    "\"tombstone_gc_blocks_resurrection\",\"strategy\":\"lww\",\"nodes\":{\"a\":2000,\"b\":1000},\"steps\":[{\"put\":{\"no"
+    "de\":\"a\",\"key\":\"k\",\"payload\":\"djI\"}},{\"put\":{\"node\":\"b\",\"key\":\"k\",\"payload\":\"djE\"}},{\"sync\":[\"a\",\"b\"]"
+    "},{\"delete\":{\"node\":\"a\",\"key\":\"k\"}},{\"sync\":[\"a\",\"b\"]},{\"gc\":{\"node\":\"a\",\"older_than_ms\":10000,\"now_"
+    "ms\":12500,\"mode\":\"time_only\"}},{\"sync\":[\"a\",\"b\"]},{\"check\":{\"name\":\"old_write_cannot_resurrect_after"
+    "_gc\",\"node\":\"a\",\"key\":\"k\",\"state\":\"absent\"}},{\"check\":{\"name\":\"barrier_keeps_tombstone\",\"node\":\"a\",\""
+    "barriers\":[\"k\"]}},{\"check\":{\"name\":\"peer_stays_tombstoned\",\"node\":\"b\",\"key\":\"k\",\"state\":\"absent\"}}]}"
+    ",{\"type\":\"key_epoch\",\"name\":\"rotation\",\"group\":\"g\",\"epoch\":1,\"next_epoch\":2,\"key\":\"AAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAA\",\"next_key\":\"__________________________________________8\",\"survivors\":[\"s"
+    "1\"],\"removed\":[\"gone\"],\"plaintext\":\"cGF5bG9hZA\"}]}"
+    ;
 
-int main(void)
+/* Load a whole file into a malloc'd, NUL-terminated string (the caller must
+ * free), or NULL when the path is missing or unreadable. */
+static char *read_file(const char *path)
+{
+    FILE *file = fopen(path, "rb");
+    if (!file) {
+        return NULL;
+    }
+    if (fseek(file, 0, SEEK_END) != 0) {
+        fclose(file);
+        return NULL;
+    }
+    long size = ftell(file);
+    if (size < 0) {
+        fclose(file);
+        return NULL;
+    }
+    rewind(file);
+    char *data = malloc((size_t)size + 1);
+    if (!data) {
+        fclose(file);
+        return NULL;
+    }
+    size_t read = fread(data, 1, (size_t)size, file);
+    fclose(file);
+    data[read] = '\0';
+    return data;
+}
+
+/* Load the fixture from argv[1] when the harness provides it, so the on-disk
+ * file (the single source of truth) drives the run; otherwise use the
+ * embedded copy. Returns a malloc'd string the caller must free, or NULL. */
+static char *read_fixture(int argc, char **argv)
+{
+    if (argc < 2) {
+        size_t len = strlen(FIXTURE);
+        char *copy = malloc(len + 1);
+        if (copy) {
+            memcpy(copy, FIXTURE, len + 1);
+        }
+        return copy;
+    }
+    return read_file(argv[1]);
+}
+
+int main(int argc, char **argv)
 {
     expect(sb_abi_version() == SYNCBOND_ABI_VERSION, "abi version matches header");
     expect(sb_protocol_version() == 1, "protocol version is 1");
@@ -182,14 +227,38 @@ int main(void)
     sb_keyring_free(ring);
 
     /* Cross-language conformance: same runner, same fixture, every language. */
-    const char *report = sb_conformance_run(FIXTURE);
+    char *fixture = read_fixture(argc, argv);
+    if (!fixture) {
+        fail("read conformance fixture");
+        return 1;
+    }
+    const char *report = sb_conformance_run(fixture);
     if (!report) {
         fail("conformance run");
     } else {
         expect(strstr(report, "\"ok\":true") != NULL, "conformance report is ok");
+        expect(strstr(report, "\"name\":\"left_sees_newer_write\"") != NULL,
+               "merge scenario checks ran");
+        expect(strstr(report, "\"name\":\"old_write_cannot_resurrect_after_gc\"") != NULL,
+               "tombstone gc scenario checks ran");
+        expect(strstr(report, "\"name\":\"removed_device_cannot_open_envelope_sealed_after_rotation\"") != NULL,
+               "rotation scenario checks ran");
+        /* Byte-for-byte against the canonical report: the runner output is
+         * deterministic, so any language that mangles it fails here. */
+        if (argc >= 3) {
+            char *expected = read_file(argv[2]);
+            if (expected) {
+                expect(strcmp(report, expected) == 0,
+                       "conformance report matches the canonical bytes");
+                free(expected);
+            } else {
+                fail("read expected conformance report");
+            }
+        }
         printf("conformance: %s\n", report);
         sb_free_string(report);
     }
+    free(fixture);
 
     sb_replicator_free(left);
     sb_replicator_free(right);

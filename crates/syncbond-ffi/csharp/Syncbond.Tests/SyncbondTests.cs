@@ -1,3 +1,4 @@
+using System.IO;
 using System.Text;
 using Syncbond;
 using Xunit;
@@ -11,38 +12,27 @@ public sealed class SyncbondTests
 
     private static string Text(byte[] data) => Encoding.UTF8.GetString(data);
 
-    private const string Fixture = """
+    // The canonical cross-language fixture, shared by every binding
+    // (crates/syncbond-ffi/fixtures/conformance.json). The same on-disk file
+    // drives the merge / tombstone-GC / key-epoch scenarios byte-identically
+    // across languages.
+    private static readonly string Fixture = ReadFixture();
+
+    private static string ReadFixture()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir != null && !Directory.Exists(
+                   Path.Combine(dir.FullName, "crates", "syncbond-ffi", "fixtures")))
         {
-          "version": 1,
-          "scenarios": [
-            {
-              "type": "replication",
-              "name": "lww",
-              "strategy": "lww",
-              "nodes": {"left": 1000, "right": 2000},
-              "steps": [
-                {"put": {"node": "left", "key": "k", "payload": "bGVmdA"}},
-                {"put": {"node": "right", "key": "k", "payload": "cmlnaHQ"}},
-                {"sync": ["left", "right"]},
-                {"check": {"node": "left", "key": "k", "state": "live", "payload": "cmlnaHQ", "name": "left_sees_newer_write"}},
-                {"check": {"node": "right", "key": "k", "state": "live", "payload": "cmlnaHQ", "name": "right_keeps_newer_write"}}
-              ]
-            },
-            {
-              "type": "key_epoch",
-              "name": "rotation",
-              "group": "g",
-              "epoch": 1,
-              "next_epoch": 2,
-              "key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-              "next_key": "__________________________________________8",
-              "survivors": ["s1"],
-              "removed": ["gone"],
-              "plaintext": "cGF5bG9hZA"
-            }
-          ]
+            dir = dir.Parent;
         }
-        """;
+        if (dir == null)
+        {
+            throw new InvalidOperationException("could not locate repo root for conformance fixture");
+        }
+        return File.ReadAllText(
+            Path.Combine(dir.FullName, "crates", "syncbond-ffi", "fixtures", "conformance.json"));
+    }
 
     [Fact]
     public void AbiAndProtocolVersions()
@@ -188,6 +178,37 @@ public sealed class SyncbondTests
         Assert.Contains("\"ok\":true", report);
         Assert.Contains("\"type\":\"replication\"", report);
         Assert.Contains("\"type\":\"key_epoch\"", report);
+        foreach (string check in new[]
+                 {
+                     "left_sees_newer_write",
+                     "old_write_cannot_resurrect_after_gc",
+                     "barrier_keeps_tombstone",
+                     "peer_stays_tombstoned",
+                     "removed_device_cannot_open_envelope_sealed_after_rotation",
+                 })
+        {
+            Assert.Contains("\"name\":\"" + check + "\"", report);
+        }
+        // The runner output is deterministic: byte-for-byte equality against
+        // the canonical report pins any language drift (mangled fixture or
+        // report).
+        Assert.Equal(ReadExpectedReport(), report);
+    }
+
+    private static string ReadExpectedReport()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir != null && !Directory.Exists(
+                   Path.Combine(dir.FullName, "crates", "syncbond-ffi", "fixtures")))
+        {
+            dir = dir.Parent;
+        }
+        if (dir == null)
+        {
+            throw new InvalidOperationException("could not locate repo root for conformance fixture");
+        }
+        return File.ReadAllText(
+            Path.Combine(dir.FullName, "crates", "syncbond-ffi", "fixtures", "conformance.expected.json"));
     }
 
     [Fact]

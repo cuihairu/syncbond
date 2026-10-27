@@ -60,7 +60,7 @@ fn python_wheel_installs_and_pytest_passes() {
     let site = target.join("site");
     std::fs::create_dir_all(&site).expect("create site dir");
     run(Command::new(python())
-        .args(["-m", "pip", "install", "--quiet", "--target"])
+        .args(["-m", "pip", "install", "--quiet", "--upgrade", "--target"])
         .arg(&site)
         .arg(&wheel));
 

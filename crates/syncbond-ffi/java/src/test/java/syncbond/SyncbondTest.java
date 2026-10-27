@@ -9,6 +9,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
 
 /** Mirrors the Go / Python suites over the same C ABI. */
@@ -21,38 +23,19 @@ final class SyncbondTest {
         return new String(data, StandardCharsets.UTF_8);
     }
 
-    private static final String FIXTURE = """
-        {
-          "version": 1,
-          "scenarios": [
-            {
-              "type": "replication",
-              "name": "lww",
-              "strategy": "lww",
-              "nodes": {"left": 1000, "right": 2000},
-              "steps": [
-                {"put": {"node": "left", "key": "k", "payload": "bGVmdA"}},
-                {"put": {"node": "right", "key": "k", "payload": "cmlnaHQ"}},
-                {"sync": ["left", "right"]},
-                {"check": {"node": "left", "key": "k", "state": "live", "payload": "cmlnaHQ", "name": "left_sees_newer_write"}},
-                {"check": {"node": "right", "key": "k", "state": "live", "payload": "cmlnaHQ", "name": "right_keeps_newer_write"}}
-              ]
-            },
-            {
-              "type": "key_epoch",
-              "name": "rotation",
-              "group": "g",
-              "epoch": 1,
-              "next_epoch": 2,
-              "key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-              "next_key": "__________________________________________8",
-              "survivors": ["s1"],
-              "removed": ["gone"],
-              "plaintext": "cGF5bG9hZA"
-            }
-          ]
+    // The canonical cross-language fixture, shared by every binding
+    // (crates/syncbond-ffi/fixtures/conformance.json), read relative to this
+    // module directory. The same on-disk file drives the merge /
+    // tombstone-GC / key-epoch scenarios byte-identically across languages.
+    private static final String FIXTURE = readFixture();
+
+    private static String readFixture() {
+        try {
+            return Files.readString(Path.of("..", "fixtures", "conformance.json"));
+        } catch (Exception error) {
+            throw new IllegalStateException("read canonical conformance fixture", error);
         }
-        """;
+    }
 
     @Test
     void abiAndProtocolVersions() {
@@ -195,6 +178,29 @@ final class SyncbondTest {
         assertTrue(report.contains("\"ok\":true"), "conformance report must be ok: " + report);
         assertTrue(report.contains("\"type\":\"replication\""), report);
         assertTrue(report.contains("\"type\":\"key_epoch\""), report);
+        for (String check : new String[] {
+                "left_sees_newer_write",
+                "old_write_cannot_resurrect_after_gc",
+                "barrier_keeps_tombstone",
+                "peer_stays_tombstoned",
+                "removed_device_cannot_open_envelope_sealed_after_rotation",
+        }) {
+            assertTrue(report.contains("\"name\":\"" + check + "\""),
+                    "conformance report must run check " + check + ": " + report);
+        }
+        // The runner output is deterministic: byte-for-byte equality against
+        // the canonical report pins any language drift (mangled fixture or
+        // report).
+        assertEquals(readFile("..", "fixtures", "conformance.expected.json"), report,
+                "conformance report must match the canonical bytes");
+    }
+
+    private static String readFile(String first, String... rest) {
+        try {
+            return Files.readString(Path.of(first, rest));
+        } catch (Exception error) {
+            throw new IllegalStateException("read fixture file", error);
+        }
     }
 
     @Test

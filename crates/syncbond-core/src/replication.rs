@@ -311,6 +311,17 @@ impl Replicator {
         self.gc_tombstones_with_mode(now_ms, older_than_ms, GcMode::Dominance)
     }
 
+    /// Collect tombstones on the time threshold alone, skipping the causal
+    /// dominance check.
+    ///
+    /// This is the degraded path for replicas that never witness each other
+    /// (e.g. a single-node device that restarts offline) where dominance can
+    /// never hold. It is deterministic under fixed clocks, which is why the
+    /// cross-language conformance fixture drives tombstone GC through it.
+    pub fn gc_tombstones_time_only(&mut self, now_ms: u64, older_than_ms: u64) -> GcReport {
+        self.gc_tombstones_with_mode(now_ms, older_than_ms, GcMode::TimeOnly)
+    }
+
     fn gc_tombstones_with_mode(
         &mut self,
         now_ms: u64,

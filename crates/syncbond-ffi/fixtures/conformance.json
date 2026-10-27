@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "scenarios": [
+    {
+      "type": "replication",
+      "name": "merge_lww",
+      "strategy": "lww",
+      "nodes": { "left": 1000, "right": 2000 },
+      "steps": [
+        { "put": { "node": "left", "key": "k", "payload": "bGVmdA" } },
+        { "put": { "node": "right", "key": "k", "payload": "cmlnaHQ" } },
+        { "sync": ["left", "right"] },
+        {
+          "check": {
+            "node": "left",
+            "key": "k",
+            "state": "live",
+            "payload": "cmlnaHQ",
+            "name": "left_sees_newer_write"
+          }
+        },
+        {
+          "check": {
+            "node": "right",
+            "key": "k",
+            "state": "live",
+            "payload": "cmlnaHQ",
+            "name": "right_keeps_newer_write"
+          }
+        }
+      ]
+    },
+    {
+      "type": "replication",
+      "name": "tombstone_gc_blocks_resurrection",
+      "strategy": "lww",
+      "nodes": { "a": 2000, "b": 1000 },
+      "steps": [
+        { "put": { "node": "a", "key": "k", "payload": "djI" } },
+        { "put": { "node": "b", "key": "k", "payload": "djE" } },
+        { "sync": ["a", "b"] },
+        { "delete": { "node": "a", "key": "k" } },
+        { "sync": ["a", "b"] },
+        { "gc": { "node": "a", "older_than_ms": 10000, "now_ms": 12500, "mode": "time_only" } },
+        { "sync": ["a", "b"] },
+        {
+          "check": {
+            "name": "old_write_cannot_resurrect_after_gc",
+            "node": "a",
+            "key": "k",
+            "state": "absent"
+          }
+        },
+        { "check": { "name": "barrier_keeps_tombstone", "node": "a", "barriers": ["k"] } },
+        {
+          "check": {
+            "name": "peer_stays_tombstoned",
+            "node": "b",
+            "key": "k",
+            "state": "absent"
+          }
+        }
+      ]
+    },
+    {
+      "type": "key_epoch",
+      "name": "rotation",
+      "group": "g",
+      "epoch": 1,
+      "next_epoch": 2,
+      "key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "next_key": "__________________________________________8",
+      "survivors": ["s1"],
+      "removed": ["gone"],
+      "plaintext": "cGF5bG9hZA"
+    }
+  ]
+}

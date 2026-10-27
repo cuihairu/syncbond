@@ -19,25 +19,16 @@ import (
 	"syncbond"
 )
 
-const fixture = `{
-  "version":1,
-  "scenarios":[
-    {"type":"replication","name":"lww","strategy":"lww",
-     "nodes":{"left":1000,"right":2000},
-     "steps":[
-       {"put":{"node":"left","key":"k","payload":"bGVmdA"}},
-       {"put":{"node":"right","key":"k","payload":"cmlnaHQ","name":"left_sees_newer_write"}},
-       {"sync":["left","right"]},
-       {"check":{"node":"left","key":"k","state":"live","payload":"cmlnaHQ","name":"left_sees_newer_write"}},
-       {"check":{"node":"right","key":"k","state":"live","payload":"cmlnaHQ","name":"right_keeps_newer_write"}}
-     ]},
-    {"type":"key_epoch","name":"rotation","group":"g","epoch":1,"next_epoch":2,
-     "key":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-     "next_key":"__________________________________________8",
-     "survivors":["s1"],"removed":["gone"],
-     "plaintext":"cGF5bG9hZA"}
-  ]
-}`
+// The canonical cross-language fixture, shared by every binding
+// (crates/syncbond-ffi/fixtures/conformance.json), read relative to this
+// package directory so the same on-disk file drives every language.
+func readFixture() string {
+	bytes, err := os.ReadFile("../fixtures/conformance.json")
+	if err != nil {
+		fail(fmt.Errorf("read canonical fixture: %w", err))
+	}
+	return string(bytes)
+}
 
 func main() {
 	if abi := syncbond.ABIVersion(); abi != 1 {
@@ -96,10 +87,25 @@ func main() {
 	}
 	fmt.Println("rotated epoch:", epoch, "payload round-trips")
 
-	report, err := syncbond.ConformanceRun(fixture)
+	report, err := syncbond.ConformanceRun(readFixture())
 	check("conformance", err)
 	if !strings.Contains(report, `"ok":true`) {
 		fail(fmt.Errorf("conformance report not ok: %s", report))
+	}
+	for _, name := range []string{
+		"left_sees_newer_write",
+		"old_write_cannot_resurrect_after_gc",
+		"removed_device_cannot_open_envelope_sealed_after_rotation",
+	} {
+		if !strings.Contains(report, name) {
+			fail(fmt.Errorf("conformance report missing check %q", name))
+		}
+	}
+	expected, err := os.ReadFile("../fixtures/conformance.expected.json")
+	if err != nil {
+		fail(fmt.Errorf("read canonical expected report: %w", err))
+	} else if report != string(expected) {
+		fail(fmt.Errorf("conformance report must match the canonical bytes"))
 	}
 	fmt.Println("conformance ok:", report)
 

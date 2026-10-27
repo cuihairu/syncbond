@@ -3,29 +3,23 @@
 package syncbond
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
 
-const fixture = `{
-  "version":1,
-  "scenarios":[
-    {"type":"replication","name":"lww","strategy":"lww",
-     "nodes":{"left":1000,"right":2000},
-     "steps":[
-       {"put":{"node":"left","key":"k","payload":"bGVmdA"}},
-       {"put":{"node":"right","key":"k","payload":"cmlnaHQ","name":"left_sees_newer_write"}},
-       {"sync":["left","right"]},
-       {"check":{"node":"left","key":"k","state":"live","payload":"cmlnaHQ","name":"left_sees_newer_write"}},
-       {"check":{"node":"right","key":"k","state":"live","payload":"cmlnaHQ","name":"right_keeps_newer_write"}}
-     ]},
-    {"type":"key_epoch","name":"rotation","group":"g","epoch":1,"next_epoch":2,
-     "key":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-     "next_key":"__________________________________________8",
-     "survivors":["s1"],"removed":["gone"],
-     "plaintext":"cGF5bG9hZA"}
-  ]
-}`
+// The canonical cross-language fixture, shared by every binding
+// (crates/syncbond-ffi/fixtures/conformance.json), read relative to this
+// package directory. The same on-disk file drives the merge / tombstone-GC /
+// key-epoch scenarios byte-identically across languages.
+func fixture(t *testing.T) string {
+	t.Helper()
+	bytes, err := os.ReadFile("../fixtures/conformance.json")
+	if err != nil {
+		t.Fatalf("read canonical fixture: %v", err)
+	}
+	return string(bytes)
+}
 
 func TestVersions(t *testing.T) {
 	if got := ABIVersion(); got != 1 {
@@ -239,11 +233,29 @@ func TestSessionSendRecv(t *testing.T) {
 }
 
 func TestConformanceRun(t *testing.T) {
-	report, err := ConformanceRun(fixture)
+	report, err := ConformanceRun(fixture(t))
 	if err != nil {
 		t.Fatalf("ConformanceRun: %v", err)
 	}
 	if !strings.Contains(report, `"ok":true`) {
 		t.Fatalf("conformance report not ok: %s", report)
+	}
+	for _, name := range []string{
+		"left_sees_newer_write",
+		"old_write_cannot_resurrect_after_gc",
+		"removed_device_cannot_open_envelope_sealed_after_rotation",
+	} {
+		if !strings.Contains(report, name) {
+			t.Fatalf("conformance report missing check %q: %s", name, report)
+		}
+	}
+	// The runner output is deterministic: byte-for-byte equality against the
+	// canonical report pins any language drift (mangled fixture or report).
+	expected, err := os.ReadFile("../fixtures/conformance.expected.json")
+	if err != nil {
+		t.Fatalf("read canonical expected report: %v", err)
+	}
+	if report != string(expected) {
+		t.Fatalf("conformance report must match the canonical bytes:\n%s", report)
 	}
 }

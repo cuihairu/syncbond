@@ -100,10 +100,25 @@ fn run_replication(spec: &Value) -> Result<Value, FfiError> {
                     .get("now_ms")
                     .and_then(Value::as_u64)
                     .ok_or_else(|| FfiError::input("gc needs now_ms"))?;
-                nodes
+                let mode = args
+                    .get("mode")
+                    .and_then(Value::as_str)
+                    .unwrap_or("dominance");
+                let replicator = nodes
                     .get_mut(&node_id)
-                    .ok_or_else(|| FfiError::input(format!("unknown node {node_id}")))?
-                    .gc_tombstones(now_ms, older_than_ms)?;
+                    .ok_or_else(|| FfiError::input(format!("unknown node {node_id}")))?;
+                match mode {
+                    // The default (and safe) mode requires causal dominance;
+                    // it is not deterministic under fixed clocks, so fixtures
+                    // that must collect use `time_only`.
+                    "dominance" => {
+                        replicator.gc_tombstones(now_ms, older_than_ms)?;
+                    }
+                    "time_only" => {
+                        replicator.gc_tombstones_time_only(now_ms, older_than_ms)?;
+                    }
+                    other => return Err(FfiError::input(format!("unknown gc mode {other}"))),
+                }
             }
             "check" => checks.push(run_check(object_field(step, "check")?, &nodes)?),
             other => return Err(FfiError::input(format!("unknown step type {other}"))),
@@ -164,8 +179,13 @@ fn run_check(
         (want == actual, want.join(","), actual.join(","))
     } else if let Some(want) = spec.get("barriers") {
         let want = strings(want)?;
-        let actual: Vec<String> = serde_json::from_str(&replicator.gc_barriers_json())
-            .map_err(|error| FfiError::internal(error.to_string()))?;
+        // The barrier dump is a key -> compacted-tombstone object; compare
+        // its sorted keys against the expected barrier list.
+        let actual: Vec<String> =
+            serde_json::from_str::<BTreeMap<String, Value>>(&replicator.gc_barriers_json())
+                .map_err(|error| FfiError::internal(error.to_string()))?
+                .into_keys()
+                .collect();
         (want == actual, want.join(","), actual.join(","))
     } else {
         return Err(FfiError::input(format!(

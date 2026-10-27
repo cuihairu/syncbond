@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   abiVersion,
   createBrowserReplicator,
@@ -8,57 +10,22 @@ import {
   runConformance,
 } from "./wasm/wrapper.js";
 
-// The cross-language conformance fixture: two LWW nodes converge on a key
-// (the newer write wins on both sides) and a key-epoch rotation rejects the
-// removed device's attempt to open the envelope sealed after rotation.
-const FIXTURE = {
-  version: 1,
-  scenarios: [
-    {
-      type: "replication",
-      name: "lww",
-      strategy: "lww",
-      nodes: { left: 1000, right: 2000 },
-      steps: [
-        { put: { node: "left", key: "k", payload: "bGVmdA" } },
-        {
-          put: { node: "right", key: "k", payload: "cmlnaHQ", name: "right_writes_newer" },
-        },
-        { sync: ["left", "right"] },
-        {
-          check: {
-            node: "left",
-            key: "k",
-            state: "live",
-            payload: "cmlnaHQ",
-            name: "left_sees_newer_write",
-          },
-        },
-        {
-          check: {
-            node: "right",
-            key: "k",
-            state: "live",
-            payload: "cmlnaHQ",
-            name: "right_keeps_newer_write",
-          },
-        },
-      ],
-    },
-    {
-      type: "key_epoch",
-      name: "rotation",
-      group: "g",
-      epoch: 1,
-      next_epoch: 2,
-      key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-      next_key: "__________________________________________8",
-      survivors: ["s1"],
-      removed: ["gone"],
-      plaintext: "cGF5bG9hZA",
-    },
-  ],
-};
+// The canonical cross-language fixture, shared by every binding
+// (crates/syncbond-ffi/fixtures/conformance.json). The same on-disk file
+// drives the merge / tombstone-GC / key-epoch scenarios byte-identically
+// across languages.
+const fixture = readFileSync(
+  fileURLToPath(
+    new URL("../../../crates/syncbond-ffi/fixtures/conformance.json", import.meta.url),
+  ),
+  "utf8",
+);
+const canonicalReport = readFileSync(
+  fileURLToPath(
+    new URL("../../../crates/syncbond-ffi/fixtures/conformance.expected.json", import.meta.url),
+  ),
+  "utf8",
+);
 
 test("wasm loads and reports versions", async () => {
   await loadSyncbondWasm();
@@ -104,10 +71,24 @@ test("no IndexedDB degrades to memory with an explicit warning", async () => {
 
 test("wasm runs the cross-language conformance fixture", async () => {
   await loadSyncbondWasm();
-  const report = runConformance(JSON.stringify(FIXTURE));
+  const report = runConformance(fixture);
   assert.equal(report.version, 1);
   assert.equal(report.ok, true, JSON.stringify(report));
-  const replication = report.scenarios.find((scenario) => scenario.type === "replication");
-  assert.ok(replication, "replication scenario present");
-  assert.ok(replication.checks.every((check) => check.ok));
+  assert.deepEqual(
+    report.scenarios.map((scenario) => scenario.name).sort(),
+    ["merge_lww", "rotation", "tombstone_gc_blocks_resurrection"],
+  );
+  for (const scenario of report.scenarios) {
+    assert.equal(scenario.ok, true, `scenario ${scenario.name}`);
+    assert.ok(scenario.checks.every((check) => check.ok));
+  }
+  const rotation = report.scenarios.find((scenario) => scenario.name === "rotation");
+  const gone = rotation.rotations.find((row) => row.device === "gone");
+  assert.equal(gone.opened_rotated, false);
+  assert.equal(gone.rotated_error, -5);
+  // The runner output is deterministic: byte-for-byte equality against the
+  // canonical report pins any language drift (mangled fixture or report).
+  // (serde_json emits keys in sorted order, which JSON.parse/stringify
+  // preserves, so the re-serialized object matches the canonical bytes.)
+  assert.equal(JSON.stringify(runConformance(fixture)), canonicalReport);
 });

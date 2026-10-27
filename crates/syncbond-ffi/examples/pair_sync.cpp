@@ -12,7 +12,9 @@
 #include "syncbond.hpp"
 
 #include <cstring>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <string>
 
 namespace {
@@ -26,29 +28,49 @@ void expect(bool condition, const std::string& what) {
   }
 }
 
+/* The canonical cross-language fixture (fixtures/conformance.json), embedded
+ * as the fallback for a standalone run. The Rust harness passes the file path
+ * as argv[1] so the on-disk file stays the single source of truth. */
 const char* FIXTURE =
-    "{"
-    "\"version\":1,"
-    "\"scenarios\":["
-    "{\"type\":\"replication\",\"name\":\"lww\",\"strategy\":\"lww\","
-    "\"nodes\":{\"left\":1000,\"right\":2000},"
-    "\"steps\":["
-    "{\"put\":{\"node\":\"left\",\"key\":\"k\",\"payload\":\"bGVmdA\"}},"
-    "{\"put\":{\"node\":\"right\",\"key\":\"k\",\"payload\":\"cmlnaHQ\",\"name\":\"left_sees_newer_write\"}},"
-    "{\"sync\":[\"left\",\"right\"]},"
-    "{\"check\":{\"node\":\"left\",\"key\":\"k\",\"state\":\"live\",\"payload\":\"cmlnaHQ\",\"name\":\"left_sees_newer_write\"}},"
-    "{\"check\":{\"node\":\"right\",\"key\":\"k\",\"state\":\"live\",\"payload\":\"cmlnaHQ\",\"name\":\"right_keeps_newer_write\"}}"
-    "]},"
-    "{\"type\":\"key_epoch\",\"name\":\"rotation\",\"group\":\"g\",\"epoch\":1,\"next_epoch\":2,"
-    "\"key\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\","
-    "\"next_key\":\"__________________________________________8\","
-    "\"survivors\":[\"s1\"],\"removed\":[\"gone\"],"
-    "\"plaintext\":\"cGF5bG9hZA\"}"
-    "]}";
+    "{\"version\":1,\"scenarios\":[{\"type\":\"replication\",\"name\":\"merge_lww\",\"strategy\":\"lww\",\"nodes\":{\"left\":"
+    "1000,\"right\":2000},\"steps\":[{\"put\":{\"node\":\"left\",\"key\":\"k\",\"payload\":\"bGVmdA\"}},{\"put\":{\"node\":\"rig"
+    "ht\",\"key\":\"k\",\"payload\":\"cmlnaHQ\"}},{\"sync\":[\"left\",\"right\"]},{\"check\":{\"node\":\"left\",\"key\":\"k\",\"sta"
+    "te\":\"live\",\"payload\":\"cmlnaHQ\",\"name\":\"left_sees_newer_write\"}},{\"check\":{\"node\":\"right\",\"key\":\"k\",\""
+    "state\":\"live\",\"payload\":\"cmlnaHQ\",\"name\":\"right_keeps_newer_write\"}}]},{\"type\":\"replication\",\"name\":"
+    "\"tombstone_gc_blocks_resurrection\",\"strategy\":\"lww\",\"nodes\":{\"a\":2000,\"b\":1000},\"steps\":[{\"put\":{\"no"
+    "de\":\"a\",\"key\":\"k\",\"payload\":\"djI\"}},{\"put\":{\"node\":\"b\",\"key\":\"k\",\"payload\":\"djE\"}},{\"sync\":[\"a\",\"b\"]"
+    "},{\"delete\":{\"node\":\"a\",\"key\":\"k\"}},{\"sync\":[\"a\",\"b\"]},{\"gc\":{\"node\":\"a\",\"older_than_ms\":10000,\"now_"
+    "ms\":12500,\"mode\":\"time_only\"}},{\"sync\":[\"a\",\"b\"]},{\"check\":{\"name\":\"old_write_cannot_resurrect_after"
+    "_gc\",\"node\":\"a\",\"key\":\"k\",\"state\":\"absent\"}},{\"check\":{\"name\":\"barrier_keeps_tombstone\",\"node\":\"a\",\""
+    "barriers\":[\"k\"]}},{\"check\":{\"name\":\"peer_stays_tombstoned\",\"node\":\"b\",\"key\":\"k\",\"state\":\"absent\"}}]}"
+    ",{\"type\":\"key_epoch\",\"name\":\"rotation\",\"group\":\"g\",\"epoch\":1,\"next_epoch\":2,\"key\":\"AAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAA\",\"next_key\":\"__________________________________________8\",\"survivors\":[\"s"
+    "1\"],\"removed\":[\"gone\"],\"plaintext\":\"cGF5bG9hZA\"}]}"
+    ;
+
+/* Read a whole file as a string, or "" when it cannot be opened. */
+std::string read_file_contents(const char* path) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file) {
+    return std::string();
+  }
+  return std::string(std::istreambuf_iterator<char>(file),
+                     std::istreambuf_iterator<char>());
+}
+
+/* Load the fixture from argv[1] when the harness provides it, so the on-disk
+ * file (the single source of truth) drives the run; otherwise use the
+ * embedded copy. */
+std::string read_fixture(int argc, char** argv) {
+  if (argc >= 2) {
+    return read_file_contents(argv[1]);
+  }
+  return std::string(FIXTURE);
+}
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
   using namespace syncbond;
 
   expect(abi_version() == SYNCBOND_ABI_VERSION, "abi version matches header");
@@ -121,8 +143,22 @@ int main() {
     expect(stale_rejected, "stale epoch keyring is rejected with KEY_EPOCH_MISMATCH");
 
     /* Cross-language conformance: same runner, same fixture, every language. */
-    const std::string report = conformance_run(FIXTURE);
+    const std::string fixture = read_fixture(argc, argv);
+    const std::string report = conformance_run(fixture);
     expect(report.find("\"ok\":true") != std::string::npos, "conformance report is ok");
+    expect(report.find("\"name\":\"left_sees_newer_write\"") != std::string::npos,
+           "merge scenario checks ran");
+    expect(report.find("\"name\":\"old_write_cannot_resurrect_after_gc\"") != std::string::npos,
+           "tombstone gc scenario checks ran");
+    expect(report.find("\"name\":\"removed_device_cannot_open_envelope_sealed_after_rotation\"")
+                   != std::string::npos,
+           "rotation scenario checks ran");
+    /* Byte-for-byte against the canonical report: the runner output is
+     * deterministic, so any language that mangles it fails here. */
+    if (argc >= 3) {
+      const std::string expected = read_file_contents(argv[2]);
+      expect(report == expected, "conformance report matches the canonical bytes");
+    }
     std::cout << "conformance: " << report << "\n";
   } catch (const Error& error) {
     std::cerr << "FAIL: unexpected error " << error.code() << ": " << error.what() << "\n";
