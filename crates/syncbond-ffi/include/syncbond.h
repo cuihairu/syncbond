@@ -113,7 +113,7 @@ int sb_session_send(const sb_session *session, const uint8_t *payload, size_t le
 /* Blocking: decrypt and return the next application payload. */
 int sb_session_recv(const sb_session *session, sb_buffer_t *out_payload);
 
-void sb_session_invalidate(sb_session *session);
+int sb_session_invalidate(sb_session *session);
 
 /* ------------------------------------------------------------ replication */
 

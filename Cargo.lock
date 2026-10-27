@@ -802,6 +802,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "syncbond-ffi"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "syncbond-core",
+]
+
+[[package]]
 name = "syncbond-napi"
 version = "0.1.0"
 dependencies = [

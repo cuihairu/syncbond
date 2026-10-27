@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/syncbond-core", "crates/syncbond-napi"]
+members = ["crates/syncbond-core", "crates/syncbond-ffi", "crates/syncbond-napi"]
 
 [workspace.package]
 version = "0.1.0"

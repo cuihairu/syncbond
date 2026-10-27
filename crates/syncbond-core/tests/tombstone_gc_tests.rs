@@ -9,7 +9,7 @@ use syncbond_core::identity::DeviceIdentity;
 use syncbond_core::replication::{decode_state, encode_state, Operation, Replicator};
 
 fn node(id: &str) -> Replicator {
-    Replicator::with_fixed_clock(id, 1_000)
+    Replicator::with_fixed_clock(id, Arc::new(LwwHlc), 1_000)
 }
 
 /// Exchange oplogs in both directions (the unencrypted sync half).

@@ -80,6 +80,16 @@ impl DeviceIdentity {
         }
     }
 
+    /// Rebuild an identity from its persisted 64-byte Ed25519 keypair.
+    pub fn from_secret_key_bytes(secret_key: &[u8]) -> Result<Self, IdentityError> {
+        let bytes: [u8; 64] = secret_key
+            .try_into()
+            .map_err(|_| IdentityError::BadKeyMaterial)?;
+        let signing =
+            SigningKey::from_keypair_bytes(&bytes).map_err(|_| IdentityError::BadKeyMaterial)?;
+        Ok(Self::from_signing_key(signing))
+    }
+
     pub fn verifying_key(&self) -> Result<VerifyingKey, IdentityError> {
         VerifyingKey::from_bytes(&self.public_key).map_err(|_| IdentityError::BadKeyMaterial)
     }

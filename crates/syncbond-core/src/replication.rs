@@ -134,11 +134,15 @@ impl Replicator {
     }
 
     /// Deterministic clock: every stamp and merge check uses `fixed_ms`.
-    pub fn with_fixed_clock(node_id: impl Into<String>, fixed_ms: u64) -> Self {
+    pub fn with_fixed_clock(
+        node_id: impl Into<String>,
+        strategy: Arc<dyn MergeStrategy>,
+        fixed_ms: u64,
+    ) -> Self {
         let node_id = node_id.into();
         let clock =
             HybridClock::with_clock(node_id.clone(), 5 * 60_000, Box::new(move || fixed_ms));
-        Self::with_parts(node_id, Arc::new(LwwHlc), clock, Box::new(move || fixed_ms))
+        Self::with_parts(node_id, strategy, clock, Box::new(move || fixed_ms))
     }
 
     fn with_parts(
@@ -541,7 +545,7 @@ mod tests {
     use super::*;
 
     fn node(id: &str) -> Replicator {
-        Replicator::with_fixed_clock(id, 1_000)
+        Replicator::with_fixed_clock(id, Arc::new(LwwHlc), 1_000)
     }
 
     /// Build the situation where the collector has no evidence that every

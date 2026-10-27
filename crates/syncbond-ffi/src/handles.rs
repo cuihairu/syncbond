@@ -1,13 +1,16 @@
 //! Handle-based inner API.
 //!
-//! This is the single semantic surface the C ABI, the Python bindings and the
-//! Node bindings all consume. It performs serialization and resource
+//! This is the single semantic surface the C ABI, the Python bindings and
+//! the Node bindings all consume. It performs serialization and resource
 //! management only: protocol logic stays in syncbond-core.
+
 use std::collections::{BTreeMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use syncbond_core::conflict::{LwwHlc, MergeStrategy, OrSetStrategy, PnCounterStrategy, Record};
-use syncbond_core::crypto::{b64url_decode, b64url_encode, seal, EncryptedEnvelope, KeyRing, SessionKey};
+use syncbond_core::crypto::{
+    b64url_decode, b64url_encode, seal, EncryptedEnvelope, KeyRing, SessionKey,
+};
 use syncbond_core::hlc::HlcStamp;
 use syncbond_core::identity::DeviceIdentity;
 use syncbond_core::pairing::{accept, pair, PairingSession};
@@ -71,7 +74,7 @@ impl PairResult {
         let right = accept(&code, &right_identity, right_transport)?;
         let left = handle
             .join()
-            .map_err(|error| FfiError::internal(format!("pairing thread panicked: {error}")))?;
+            .map_err(|_| FfiError::internal("pairing thread panicked"))?;
         let left = left.map_err(FfiError::from)?;
         Ok(Self {
             initiator: Arc::new(left),
@@ -209,7 +212,9 @@ impl Replicator {
     }
 
     pub fn sync(&mut self, session: &Session, send_first: bool) -> Result<SyncStats, FfiError> {
-        self.0.sync_over(&session.0, send_first).map_err(FfiError::from)
+        self.0
+            .sync_over(&session.0, send_first)
+            .map_err(FfiError::from)
     }
 
     pub fn gc_tombstones(&mut self, now_ms: u64, older_than_ms: u64) -> Result<usize, FfiError> {
@@ -221,6 +226,7 @@ impl Replicator {
         serde_json::to_string(&dump_node(&self.0)).expect("dump serialization is infallible")
     }
 
+    /// Canonical, fully sorted dump of the collected tombstone barriers.
     pub fn gc_barriers_json(&self) -> String {
         let barriers: BTreeMap<String, Json> = self
             .0
@@ -228,7 +234,7 @@ impl Replicator {
             .iter()
             .map(|(key, record)| (key.clone(), dump_record(record)))
             .collect();
-        serde_json::to_string(&Json::Object(barriers.into())).expect("map serialization is infallible")
+        serde_json::to_string(&barriers).expect("dump serialization is infallible")
     }
 }
 
@@ -252,7 +258,7 @@ impl Keyring {
             .try_into()
             .map_err(|_| FfiError::input("group key must be 32 bytes"))?;
         Ok(Self {
-            inner: KeyRing::with_epoch(group_id, epoch, *bytes),
+            inner: KeyRing::with_epoch(group_id, epoch, bytes),
             seen: Mutex::new(HashSet::new()),
         })
     }
@@ -283,7 +289,10 @@ impl Keyring {
     pub fn open_json(&self, envelope_json: &str) -> Result<Vec<u8>, FfiError> {
         let envelope: EncryptedEnvelope = serde_json::from_str(envelope_json)
             .map_err(|error| FfiError::input(format!("invalid envelope json: {error}")))?;
-        let mut seen = self.seen.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut seen = self
+            .seen
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         syncbond_core::crypto::open(
             self.inner.current_key(),
             &envelope,
@@ -293,7 +302,7 @@ impl Keyring {
                 seen_message_ids: &mut seen,
             },
         )
-        .map_err(FfiError::crypto)
+        .map_err(|error| FfiError::crypto(&error))
     }
 }
 
@@ -302,39 +311,59 @@ pub fn decode_b64url(text: &str) -> Result<Vec<u8>, FfiError> {
     b64url_decode(text).map_err(|error| FfiError::input(format!("invalid base64url: {error}")))
 }
 
+/// Canonical dump of one node: sorted records plus sorted live keys.
 pub fn dump_node(replicator: &CoreReplicator) -> Json {
     let records: BTreeMap<String, Json> = replicator
         .records_snapshot()
         .into_iter()
         .map(|(key, record)| (key, dump_record(&record)))
         .collect();
-    let mut node = BTreeMap::new();
-    node.insert("records", Json::Object(records.into()));
-    node.insert("live_keys", Json::Array(replicator.live_keys().iter().map(Json::String).collect()));
-    Json::Object(node.into())
+    let live_keys: Vec<Json> = replicator
+        .live_keys()
+        .iter()
+        .map(|key| Json::String(key.clone()))
+        .collect();
+    let mut node: BTreeMap<String, Json> = BTreeMap::new();
+    node.insert(
+        "records".to_string(),
+        serde_json::to_value(&records).expect("dump serialization is infallible"),
+    );
+    node.insert("live_keys".to_string(), Json::Array(live_keys));
+    serde_json::to_value(&node).expect("dump serialization is infallible")
 }
 
+/// Canonical dump of one record: sorted keys, stable timestamp shape.
 pub fn dump_record(record: &Record) -> Json {
     let witness: BTreeMap<String, Json> = record
         .witness
         .iter()
         .map(|(node, stamp)| (node.clone(), stamp_json(stamp)))
         .collect();
-    let mut conflicts: Vec<Json> = record.conflicts.iter().map(|conflict| stamp_json(&conflict.stamp)).collect();
+    let mut conflicts: Vec<Json> = record
+        .conflicts
+        .iter()
+        .map(|conflict| stamp_json(&conflict.stamp))
+        .collect();
     conflicts.sort_by_key(|value| value.to_string());
-    let mut record_map = BTreeMap::new();
-    record_map.insert("deleted", Json::Bool(record.deleted));
-    record_map.insert("payload", Json::String(b64url_encode(&record.payload)));
-    record_map.insert("stamp", stamp_json(&record.stamp));
-    record_map.insert("witness", Json::Object(witness.into()));
-    record_map.insert("conflicts", Json::Array(conflicts));
-    Json::Object(record_map.into())
+    let mut record_map: BTreeMap<String, Json> = BTreeMap::new();
+    record_map.insert("deleted".to_string(), Json::Bool(record.deleted));
+    record_map.insert(
+        "payload".to_string(),
+        Json::String(b64url_encode(&record.payload)),
+    );
+    record_map.insert("stamp".to_string(), stamp_json(&record.stamp));
+    record_map.insert(
+        "witness".to_string(),
+        serde_json::to_value(&witness).expect("dump serialization is infallible"),
+    );
+    record_map.insert("conflicts".to_string(), Json::Array(conflicts));
+    serde_json::to_value(&record_map).expect("dump serialization is infallible")
 }
 
 fn stamp_json(stamp: &HlcStamp) -> Json {
-    let mut stamp_map = BTreeMap::new();
-    stamp_map.insert("ct", Json::from(stamp.ct));
-    stamp_map.insert("id", Json::String(stamp.id.clone()));
-    stamp_map.insert("pt", Json::from(stamp.pt));
-    Json::Object(stamp_map.into())
+    let mut stamp_map: BTreeMap<String, Json> = BTreeMap::new();
+    stamp_map.insert("ct".to_string(), Json::from(stamp.ct));
+    stamp_map.insert("id".to_string(), Json::String(stamp.id.clone()));
+    stamp_map.insert("pt".to_string(), Json::from(stamp.pt));
+    serde_json::to_value(&stamp_map).expect("stamp serialization is infallible")
 }
