@@ -147,6 +147,12 @@ pub extern "C" fn sb_last_error() -> *const c_char {
     crate::error::last_error_ptr()
 }
 
+/// Last `SB_ERR_*` code of this thread, mirroring `sb_last_error()`.
+#[no_mangle]
+pub extern "C" fn sb_last_error_code() -> c_int {
+    crate::error::last_error_code()
+}
+
 /// # Safety
 ///
 /// only free text returned by this library.

@@ -53,7 +53,7 @@
 **架构定死**：`crates/syncbond-core`(纯逻辑) → `crates/syncbond-ffi`(cdylib，导出稳定 C ABI，句柄式 API，不跨边界传 Rust 结构体) → 各语言 binding。
 
 - [x] R10.3.1 C ABI 层落位(cdylib + 头文件)。验收口径：纯 C 程序能完成 pair/sync 全流程；ABI 版本号随语义变更递增；头文件能被 `gcc -Wall -Werror` 编译通过。证据：本条所在 commit；`crates/syncbond-ffi` crate-type cdylib/staticlib/rlib + `include/syncbond.h`（SYNCBOND_ABI_VERSION 1u，语义变更递增、纯增量不递增）；`examples/pair_sync.c` 纯 C 跑通 pair→双端并发 sync→双端 canonical dump 逐字节一致→keyEpoch 轮换密封/开启→跨语言 conformance；门禁 `cargo test --workspace` 48 passed、`cargo clippy --workspace --all-targets -- -D warnings` 0 warning、`cargo fmt --all -- --check` 干净
-- [ ] R10.3.2 C++ SDK(直接消费 C ABI，附 RAII 包装)。验收：C++ 样例编译运行，pair/sync 通过。
+- [x] R10.3.2 C++ SDK(直接消费 C ABI，附 RAII 包装)。验收口径：`g++ -std=c++17 -Wall -Wextra -Werror` 下头文件与样例均零告警，样例跑通 pair→双端并发 sync→双端收敛→撤销/重放拒绝→keyEpoch 轮换与错纪元拒绝→跨语言 conformance。证据：commit 见 git log；`crates/syncbond-ffi/include/syncbond.hpp`(RAII handle + Buffer + Error 异常，无任何协议逻辑，仅序列化与资源管理；`Sync::run` 只在阻塞的响应端开一个 std::thread，两侧用不同句柄，符合 ABI 单线程约束)、`examples/pair_sync.cpp`、`tests/ffi_cpp.rs` 2 tests ok；ABI 侧新增 `sb_last_error_code()` 让 C++ 能按 `SB_ERR_*` 分支(头文件声明 + abi.rs 导出 + error.rs 线程局部 LAST_CODE)；门禁 cargo test --workspace 50 passed、cargo clippy --workspace --all-targets -- -D warnings 0 warning、cargo fmt --all -- --check 干净
 - [ ] R10.3.3 Python SDK(PyO3)。验收：pip 可安装，pytest 跑通 pair/sync；wheel 覆盖 Linux/macOS/Windows 三平台。
 - [ ] R10.3.4 Go SDK(cgo 薄封装)。验收：`go test` 通过；CGO_ENABLED=0 场景明确报错而不是静默失败。
 - [ ] R10.3.5 Java SDK(JNI over C ABI)。验收：Maven/Gradle 可拉取，JUnit 跑通；注意句柄生命周期要和 GC 协调(显式 close + Cleaner 兜底)。

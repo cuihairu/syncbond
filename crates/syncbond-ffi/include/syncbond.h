@@ -67,8 +67,10 @@ uint32_t sb_abi_version(void);
 uint32_t sb_protocol_version(void);
 
 /* Last error of the calling thread. The pointer stays valid only until the
- * next call into this library from the same thread; copy the text at once. */
+ * next call into this library from the same thread; copy the text at once.
+ * sb_last_error_code() returns the matching SB_ERR_* code. */
 const char *sb_last_error(void);
+int sb_last_error_code(void);
 
 void sb_free_string(const char *s);
 void sb_free_buffer(const sb_buffer_t *buffer);

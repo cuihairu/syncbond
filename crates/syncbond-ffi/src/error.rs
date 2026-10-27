@@ -77,10 +77,15 @@ impl From<syncbond_core::replication::ReplicationError> for FfiError {
 
 thread_local! {
     static LAST_ERROR: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+    static LAST_CODE: std::cell::Cell<i32> = const { std::cell::Cell::new(SB_ERR_NONE) };
 }
 
 /// Record the failure for the calling thread; `None` clears it.
 pub fn set_last_error(error: Option<FfiError>) {
+    let code = error
+        .as_ref()
+        .map(|error| error.code)
+        .unwrap_or(SB_ERR_NONE);
     LAST_ERROR.with(|slot| {
         let mut slot = slot.borrow_mut();
         slot.clear();
@@ -89,6 +94,12 @@ pub fn set_last_error(error: Option<FfiError>) {
             slot.push(0);
         }
     });
+    LAST_CODE.set(code);
+}
+
+/// The `SB_ERR_*` code of the thread-local failure.
+pub fn last_error_code() -> i32 {
+    LAST_CODE.get()
 }
 
 /// Pointer into the thread-local buffer; valid until the next call on this
