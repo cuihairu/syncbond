@@ -72,9 +72,9 @@ Implementation: `src/storage.rs`. Tests: `crash_restart_restores_identity_cursor
 - Abstract `Transport` interface (send/recv frames) (R7.1).
 - In-memory loopback implementation for tests (R7.2).
 - WebSocket minimal persistent relay first in P2 (cross-device, reconnect, async online) (R7.3).
-- LAN discovery (mDNS) and P2P later; relay sees ciphertext only by construction (E2EE at the envelope layer) (R7.4).
+- LAN discovery (mDNS) with the real network adapter behind the default-off `lan` feature; discovered candidates connect through the existing `Transport` and authenticated pairing flow. P2P is later; discovery and relay see metadata/ciphertext only, never plaintext (R7.4).
 
-Implementation: `src/transport.rs`.
+Implementation: `src/discovery.rs` and `src/transport.rs`. Tests: `crates/syncbond-core/tests/discovery_tests.rs`.
 
 ## 8. Groups and namespaces
 
