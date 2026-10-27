@@ -30,7 +30,7 @@
 - [x] 墓碑 GC 落地：时间阈值 + 因果支配判定（设计见 docs/design/merge.md），本地 witness 向量即副本证据，无需另设心跳。验收口径：GC 后旧写入仍不能复活删除。证据：commit 3fdc056；`cargo test -p syncbond-core --test tombstone_gc_tests` 8 passed；实现 `crates/syncbond-core/src/replication.rs` gc_tombstones；证据键 `stale_put_cannot_resurrect_a_collected_delete`
 - [ ] 跨版本协商（接受旧版本对端）是否支持——待拍板项，见下
 - [x] LAN 发现（mDNS）传输第一片：feature 门控（默认 off）、同网段零配置配对的最小发现面——服务端发布 mDNS 服务记录（设备名/能力/端口）、客户端浏览并返回候选列表接入既有配对流程；网络 IO 不阻塞核心 sync 路径，测试用本地 mock/注入（不依赖真实多播环境亦可绿）。证据：commit 见 git log；`crates/syncbond-core/tests/discovery_tests.rs` 4 tests ok（含 `discovered_candidate_completes_existing_pairing_flow`、`mock_provider_supplies_candidates_through_session`、`incompatible_candidate_is_rejected_before_connecting`）；`crates/syncbond-core/src/discovery.rs`；门禁 `cargo test --workspace` 65 passed、`cargo clippy --workspace --all-targets -- -D warnings` 0 warning、`cargo fmt --all -- --check` 干净。来源：同上
-- [ ] P2P/Iroh 传输评估。验收口径：打洞成功率与中继回退路径。来源：同上
+- [x] P2P/Iroh 传输评估。验收口径：打洞成功率与中继回退路径。证据：`docs/research/p2p-iroh-assessment-2026-10-28.md`（iroh 1.4.1 RelayMode 四态 `Disabled/Default/Staging/Custom`、中继无状态仅转发密文、public/managed/self-hosted 三路供给；结论：iroh 不发布实测打洞成功率，市面 92–98% 为示意/营销例证，按"示意低中位 90s%"设计并自测；建议保留既有 WebSocket 中继为保底、iroh 作 feature 门控可选直连 P2P、中继选托管认证或自托管）。来源：同上
 - [ ] tombstone 仅时间阈值裁剪（无支配判定的降级模式）是否开放给应用——待拍板项，见下
 
 ## P3 — 发布（阻断项未清不动）
