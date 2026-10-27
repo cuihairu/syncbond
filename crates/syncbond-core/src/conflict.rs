@@ -7,7 +7,7 @@
 
 use crate::hlc::{compare_stamps, HlcStamp};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// A synced record. `payload` is opaque to the SDK.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -69,6 +69,33 @@ fn saw_version(witness: &HashMap<String, HlcStamp>, record: &Record) -> bool {
     witness
         .get(&record.stamp.id)
         .is_some_and(|seen| compare_stamps(seen, &record.stamp) != std::cmp::Ordering::Less)
+}
+
+/// The later of two stamps.
+fn max_stamp(a: &HlcStamp, b: &HlcStamp) -> HlcStamp {
+    if compare_stamps(a, b) == std::cmp::Ordering::Greater {
+        b.clone()
+    } else {
+        a.clone()
+    }
+}
+
+/// Union of two witnesses, keeping the later stamp per node. Direction
+/// independent, so both replicas of a merge agree on the merged record.
+fn union_witness(
+    a: &HashMap<String, HlcStamp>,
+    b: &HashMap<String, HlcStamp>,
+) -> HashMap<String, HlcStamp> {
+    let mut out = a.clone();
+    for (node, stamp) in b {
+        let newer = out
+            .get(node)
+            .is_none_or(|seen| compare_stamps(seen, stamp) != std::cmp::Ordering::Greater);
+        if newer {
+            out.insert(node.clone(), stamp.clone());
+        }
+    }
+    out
 }
 
 fn dedupe_conflicts(list: Vec<Record>) -> Vec<Record> {
@@ -162,23 +189,49 @@ pub struct OrSetDoc {
     pub rems: Vec<String>,
 }
 
+/// Deterministic wire shape: elements and tags sorted, so two replicas that
+/// merge the same two documents produce byte-identical payloads.
+#[derive(Serialize)]
+struct OrSetWire<'a> {
+    adds: BTreeMap<&'a str, Vec<&'a str>>,
+    rems: Vec<&'a str>,
+}
+
 pub struct OrSetStrategy;
 
 impl OrSetStrategy {
     pub fn encode(doc: &OrSetDoc) -> Vec<u8> {
-        serde_json::to_vec(doc).expect("OR-Set doc serialization is infallible")
+        let adds: BTreeMap<&str, Vec<&str>> = doc
+            .adds
+            .iter()
+            .map(|(element, tags)| {
+                let mut tags: Vec<&str> = tags.iter().map(String::as_str).collect();
+                tags.sort_unstable();
+                tags.dedup();
+                (element.as_str(), tags)
+            })
+            .collect();
+        let mut rems: Vec<&str> = doc.rems.iter().map(String::as_str).collect();
+        rems.sort_unstable();
+        rems.dedup();
+        serde_json::to_vec(&OrSetWire { adds, rems })
+            .expect("OR-Set doc serialization is infallible")
     }
 
     pub fn decode(payload: &[u8]) -> OrSetDoc {
         serde_json::from_slice(payload).expect("OR-Set payload encoding")
     }
 
+    /// Live elements, sorted so callers see the same order on every replica.
     pub fn live(doc: &OrSetDoc) -> Vec<String> {
-        doc.adds
+        let mut live: Vec<String> = doc
+            .adds
             .iter()
             .filter(|(_, tags)| tags.iter().any(|t| !doc.rems.contains(t)))
             .map(|(el, _)| el.clone())
-            .collect()
+            .collect();
+        live.sort();
+        live
     }
 }
 
@@ -205,10 +258,26 @@ impl MergeStrategy for OrSetStrategy {
             }
         }
         let merged = Record {
+            key: local
+                .as_ref()
+                .map_or_else(|| incoming.key.clone(), |r| r.key.clone()),
             payload: Self::encode(&doc),
-            stamp: incoming.stamp.clone(),
-            witness: incoming.witness.clone(),
-            ..incoming.clone()
+            deleted: false,
+            // The union loses nothing, so no conflict is retained and the
+            // merged record sits at the later of the two stamps; both
+            // directions of the merge produce the same record.
+            stamp: max_stamp(
+                local.as_ref().map(|r| &r.stamp).unwrap_or(&incoming.stamp),
+                &incoming.stamp,
+            ),
+            witness: union_witness(
+                local
+                    .as_ref()
+                    .map(|r| &r.witness)
+                    .unwrap_or(&HashMap::new()),
+                &incoming.witness,
+            ),
+            conflicts: Vec::new(),
         };
         MergeOutcome {
             record: merged,
@@ -225,11 +294,30 @@ pub struct PnCounterDoc {
     pub n: HashMap<String, u64>,
 }
 
+/// Deterministic wire shape for slot counters; see `OrSetWire`.
+#[derive(Serialize)]
+struct PnCounterWire {
+    n: BTreeMap<String, u64>,
+    p: BTreeMap<String, u64>,
+}
+
 pub struct PnCounterStrategy;
 
 impl PnCounterStrategy {
     pub fn encode(doc: &PnCounterDoc) -> Vec<u8> {
-        serde_json::to_vec(doc).expect("PN-Counter doc serialization is infallible")
+        // Sorted slot order, like OR-Set: two replicas that merge the same
+        // documents must produce byte-identical payloads.
+        let slots = |slots: &HashMap<String, u64>| -> BTreeMap<String, u64> {
+            slots
+                .iter()
+                .map(|(slot, value)| (slot.clone(), *value))
+                .collect()
+        };
+        serde_json::to_vec(&PnCounterWire {
+            n: slots(&doc.n),
+            p: slots(&doc.p),
+        })
+        .expect("PN-Counter doc serialization is infallible")
     }
 
     pub fn decode(payload: &[u8]) -> PnCounterDoc {
@@ -270,11 +358,23 @@ impl MergeStrategy for PnCounterStrategy {
             }
             None => Self::decode(&incoming.payload),
         };
+        let local_witness = local
+            .as_ref()
+            .map_or_else(HashMap::new, |r| r.witness.clone());
         let merged = Record {
+            key: local
+                .as_ref()
+                .map_or_else(|| incoming.key.clone(), |r| r.key.clone()),
             payload: Self::encode(&doc),
-            stamp: incoming.stamp.clone(),
-            witness: incoming.witness.clone(),
-            ..incoming.clone()
+            deleted: false,
+            // Per-slot max loses nothing, so no conflict is retained and the
+            // merged record sits at the later of the two stamps.
+            stamp: max_stamp(
+                local.as_ref().map(|r| &r.stamp).unwrap_or(&incoming.stamp),
+                &incoming.stamp,
+            ),
+            witness: union_witness(&local_witness, &incoming.witness),
+            conflicts: Vec::new(),
         };
         MergeOutcome {
             record: merged,

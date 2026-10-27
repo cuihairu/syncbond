@@ -181,13 +181,15 @@ fn or_set_concurrent_add_wins_over_remove() {
         OrSetStrategy::live(&merged_a).contains(&"fav:42".to_string()),
         "concurrent add must win over the observed-remove"
     );
-    let mut live_a = OrSetStrategy::live(&merged_a);
-    let mut live_b = OrSetStrategy::live(&merged_b);
-    live_a.sort();
-    live_b.sort();
     assert_eq!(
-        live_a, live_b,
-        "both replicas converge on the same live set"
+        a.get("favorites").unwrap().payload,
+        b.get("favorites").unwrap().payload,
+        "both replicas must hold the same canonical bytes"
+    );
+    assert_eq!(
+        OrSetStrategy::live(&merged_a),
+        OrSetStrategy::live(&merged_b),
+        "both replicas converge on the same live set, in the same order"
     );
 }
 
@@ -205,9 +207,19 @@ fn pn_counter_merges_by_per_node_max() {
     doc_b.n.insert("node-b".into(), 1);
     let op_b = b.put("counter", PnCounterStrategy::encode(&doc_b));
 
+    let op_a = a.put("counter", PnCounterStrategy::encode(&doc_a));
     a.apply_remote(&op_b);
-    let merged = PnCounterStrategy::decode(&a.get("counter").unwrap().payload);
-    assert_eq!(PnCounterStrategy::value(&merged), 2);
+    b.apply_remote(&op_a);
+
+    let merged_a = PnCounterStrategy::decode(&a.get("counter").unwrap().payload);
+    let merged_b = PnCounterStrategy::decode(&b.get("counter").unwrap().payload);
+    assert_eq!(PnCounterStrategy::value(&merged_a), 2);
+    assert_eq!(PnCounterStrategy::value(&merged_b), 2);
+    assert_eq!(
+        a.get("counter").unwrap().payload,
+        b.get("counter").unwrap().payload,
+        "both replicas must hold the same canonical bytes"
+    );
 }
 
 #[test]
