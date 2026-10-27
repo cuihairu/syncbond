@@ -114,6 +114,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2.9.3
       - shell: bash
         run: python -m pip install --upgrade "maturin>=1.5" pytest
+      # rust-cache restores target/ wholesale; stale wheels/site dirs from a
+      # previous run must not survive into this build (pip --target refuses to
+      # replace existing dirs without --upgrade, so old code can win).
+      - shell: bash
+        run: rm -rf target/wheels target/site
       - shell: bash
         run: maturin build -m crates/syncbond-python/Cargo.toml --release -o target/wheels
       - name: Install the wheel and run the pytest suite
