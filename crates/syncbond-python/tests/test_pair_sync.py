@@ -1,0 +1,245 @@
+"""Acceptance tests for the Python bindings.
+
+The bindings must not contain protocol logic: they serialize, manage
+resources, and forward to the shared handle layer. The interesting
+assertions here are cross-language behaviors — merge convergence, key epoch
+rotation, replay rejection, tombstone GC — driven through the same code every
+language runs.
+"""
+
+import json
+
+import pytest
+
+import syncbond
+
+FIXTURE = {
+    "version": 1,
+    "scenarios": [
+        {
+            "type": "replication",
+            "name": "lww",
+            "strategy": "lww",
+            "nodes": {"left": 1000, "right": 2000},
+            "steps": [
+                {"put": {"node": "left", "key": "k", "payload": "bGVmdA"}},
+                {
+                    "put": {
+                        "node": "right",
+                        "key": "k",
+                        "payload": "cmlnaHQ",
+                        "name": "left_sees_newer_write",
+                    }
+                },
+                {"sync": ["left", "right"]},
+                {
+                    "check": {
+                        "node": "left",
+                        "key": "k",
+                        "state": "live",
+                        "payload": "cmlnaHQ",
+                        "name": "left_sees_newer_write",
+                    }
+                },
+                {
+                    "check": {
+                        "node": "right",
+                        "key": "k",
+                        "state": "live",
+                        "payload": "cmlnaHQ",
+                        "name": "right_keeps_newer_write",
+                    }
+                },
+            ],
+        },
+        {
+            "type": "key_epoch",
+            "name": "rotation",
+            "group": "g",
+            "epoch": 1,
+            "next_epoch": 2,
+            "key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "next_key": "__________________________________________8",
+            "survivors": ["s1"],
+            "removed": ["gone"],
+            "plaintext": "cGF5bG9hZA",
+        },
+    ],
+}
+
+
+def test_pair_produces_matching_group_ids():
+    pair = syncbond.pair_memory()
+    assert len(pair.code) == 6
+    assert pair.initiator.group_id == pair.responder.group_id
+    assert pair.initiator.peer_device_id
+    assert not pair.initiator.invalidated
+
+
+def test_pair_with_explicit_code():
+    pair = syncbond.pair_memory("7HJKMP")
+    assert pair.code == "7HJKMP"
+
+
+def test_sync_converges_both_sides():
+    pair = syncbond.pair_memory()
+    left = syncbond.Replicator("left", syncbond.LWW_HLC, 1000)
+    right = syncbond.Replicator("right", syncbond.LWW_HLC, 2000)
+
+    left.put("greeting", b"hello from python")
+    right.put("counter", b"42")
+
+    left_ops, right_ops = syncbond.sync_pair(
+        left, pair.initiator, right, pair.responder
+    )
+    assert (left_ops, right_ops) == (1, 1)
+    assert right.get("greeting") == b"hello from python"
+    assert left.get("counter") == b"42"
+    assert left.records_json() == right.records_json()
+
+
+def test_deleted_key_stays_deleted_after_sync():
+    pair = syncbond.pair_memory()
+    left = syncbond.Replicator("left", syncbond.LWW_HLC, 1000)
+    right = syncbond.Replicator("right", syncbond.LWW_HLC, 2000)
+
+    left.put("doomed", b"x")
+    left.delete("doomed")
+    syncbond.sync_pair(left, pair.initiator, right, pair.responder)
+
+    assert right.get("doomed") is None
+    assert "doomed" not in json.loads(right.live_keys_json())
+    assert json.loads(right.records_json())["records"]["doomed"]["deleted"] is True
+
+
+def test_later_write_wins_over_earlier_concurrent_write():
+    pair = syncbond.pair_memory()
+    left = syncbond.Replicator("left", syncbond.LWW_HLC, 1000)
+    right = syncbond.Replicator("right", syncbond.LWW_HLC, 2000)
+
+    left.put("k", b"left")
+    right.put("k", b"right")
+    syncbond.sync_pair(left, pair.initiator, right, pair.responder)
+
+    assert left.get("k") == b"right"
+    assert right.get("k") == b"right"
+
+
+def test_or_set_strategy_adds_and_removes():
+    pair = syncbond.pair_memory()
+    left = syncbond.Replicator("left", syncbond.OR_SET, 1000)
+    right = syncbond.Replicator("right", syncbond.OR_SET, 2000)
+
+    left.put("s", b'{"adds":{"x":["t1"]},"rems":[]}')
+    right.put("s", b'{"adds":{"y":["t2"]},"rems":[]}')
+    syncbond.sync_pair(left, pair.initiator, right, pair.responder)
+    assert left.records_json() == right.records_json()
+
+
+def test_gc_collects_and_survives_sync():
+    pair = syncbond.pair_memory()
+    left = syncbond.Replicator("left", syncbond.LWW_HLC, 1000)
+    right = syncbond.Replicator("right", syncbond.LWW_HLC, 2000)
+
+    left.put("old", b"v")
+    left.delete("old")
+    right.put("keep", b"k")
+    syncbond.sync_pair(left, pair.initiator, right, pair.responder)
+
+    collected = right.gc_tombstones(now_ms=2000, older_than_ms=0)
+    assert collected == 1
+    assert right.get("old") is None
+    assert right.get("keep") == b"k"
+
+
+def test_gc_rejects_before_the_time_threshold():
+    pair = syncbond.pair_memory()
+    left = syncbond.Replicator("left", syncbond.LWW_HLC, 1000)
+    right = syncbond.Replicator("right", syncbond.LWW_HLC, 2000)
+
+    left.put("old", b"v")
+    left.delete("old")
+    syncbond.sync_pair(left, pair.initiator, right, pair.responder)
+
+    assert right.gc_tombstones(now_ms=2000, older_than_ms=5000) == 0
+
+
+def test_invalidated_session_rejects_send():
+    pair = syncbond.pair_memory()
+    pair.initiator.invalidate()
+    assert pair.initiator.invalidated
+    with pytest.raises(syncbond.Error):
+        pair.initiator.send(b"late")
+
+
+def test_key_epoch_rotation_blocks_a_removed_device():
+    pre_key = b"\x01" * 32
+    next_key = b"\x02" * 32
+    survivor = syncbond.Keyring("g", 2, next_key)
+    removed = syncbond.Keyring("g", 1, pre_key)
+
+    assert survivor.epoch == 2 and removed.epoch == 1
+
+    envelope = survivor.seal("s1", b"payload after rotation")
+    assert survivor.open(envelope) == b"payload after rotation"
+
+    with pytest.raises(syncbond.Error):
+        removed.open(envelope)
+    assert syncbond.last_error_code() == -5  # SB_ERR_KEY_EPOCH_MISMATCH
+
+
+def test_removed_device_keeps_pre_rotation_access():
+    pre_key = b"\x01" * 32
+    survivor = syncbond.Keyring("g", 1, pre_key)
+    removed = syncbond.Keyring("g", 1, pre_key)
+
+    envelope = survivor.seal("s1", b"before rotation")
+    assert removed.open(envelope) == b"before rotation"
+
+
+def test_envelope_replay_is_rejected():
+    key = b"\x03" * 32
+    ring = syncbond.Keyring("g", 1, key)
+    envelope = ring.seal("s1", b"once")
+
+    assert ring.open(envelope) == b"once"
+    with pytest.raises(syncbond.Error):
+        ring.open(envelope)
+    assert syncbond.last_error_code() == -6  # SB_ERR_REPLAY
+
+
+def test_conformance_runner_report_is_ok():
+    report = json.loads(syncbond.conformance_run(json.dumps(FIXTURE)))
+    assert report["version"] == 1
+    assert report["ok"] is True
+    assert {scenario["type"] for scenario in report["scenarios"]} == {
+        "replication",
+        "key_epoch",
+    }
+
+
+def test_conformance_rotation_check_reports_the_rejected_device():
+    report = json.loads(syncbond.conformance_run(json.dumps(FIXTURE)))
+    rotation = next(
+        scenario
+        for scenario in report["scenarios"]
+        if scenario["type"] == "key_epoch"
+    )
+    check = next(
+        row
+        for row in rotation["checks"]
+        if row["name"] == "removed_device_cannot_open_envelope_sealed_after_rotation"
+    )
+    assert check["ok"] is True
+    assert check["actual"] == [False]
+    rejected = next(
+        row for row in rotation["rotations"] if row["device"] == "gone"
+    )
+    assert rejected["rotated_error"] == -5
+
+
+def test_abi_constants_are_exported():
+    assert syncbond.LWW_HLC == 0
+    assert syncbond.OR_SET == 1
+    assert syncbond.PN_COUNTER == 2
+    assert syncbond.err_none() == 0

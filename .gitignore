@@ -10,3 +10,7 @@ docs/.vitepress/cache/
 
 # napi-rs generated artifacts
 packages/ts-bindings/src/native/
+
+# python test/build artifacts
+__pycache__/
+*.pyc

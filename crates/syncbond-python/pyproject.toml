@@ -1,0 +1,19 @@
+[build-system]
+requires = ["maturin>=1.5"]
+build-backend = "maturin.build_backend"
+
+[project]
+name = "syncbond"
+version = "0.1.0"
+description = "Accountless, embeddable, end-to-end encrypted device pairing and data synchronization SDK"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+authors = [{ name = "cuihairu", email = "chuihairu@gmail.com" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+    "Topic :: Communications",
+]
