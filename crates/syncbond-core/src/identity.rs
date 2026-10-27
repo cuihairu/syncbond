@@ -147,7 +147,7 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-mod hex_bytes {
+pub(crate) mod hex_bytes {
     use super::{hex, hex_fixed};
     use serde::{Deserializer, Serializer};
 
@@ -160,7 +160,7 @@ mod hex_bytes {
     }
 }
 
-mod hex_bytes64 {
+pub(crate) mod hex_bytes64 {
     use super::{hex, hex_fixed};
     use serde::{Deserializer, Serializer};
 

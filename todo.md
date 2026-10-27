@@ -26,7 +26,7 @@
 
 - [x] WebSocket 最小持久中继（P2 首项）：跨设备、断线重连、异步上线验证；oplog 增量拉取按游标续传。验收口径：两端经中继收敛；中途掉线端重连后追平且不重复。证据：commit `27c139d`；cargo fmt/clippy/test 全绿（37 tests passed）；`crates/syncbond-core/src/relay.rs:21`、`crates/syncbond-core/tests/replication_tests.rs:247`、`crates/syncbond-core/tests/relay_persistence_tests.rs:18`。来源：用户 2026-10-21 优先级令
 - [x] napi-rs TypeScript 绑定实现（对应 `packages/ts-bindings` 骨架类型）。验收口径：TS 侧跑通 pair/sync 全流程。证据：commit（本条所在 commit）；TS e2e `packages/ts-bindings/src/index.test.js` 4/4 绿（pair → 双向 sync → 双端收敛 → 删除/墓碑传播 → 失效会话拒绝）；Rust 侧 cargo clippy 0 warning、cargo test 37 passed；实现在 `crates/syncbond-napi`（会话走 Arc，无 unsafe 提取）。来源：同上（语言决策）
-- [ ] 成员移除触发自动 keyEpoch 轮换 + 新钥分发协议。验收口径：被移除设备无法解任何轮换后信封。来源：用户 2026-10-21 修正令
+- [x] 成员移除触发自动 keyEpoch 轮换 + 新钥分发协议。验收口径：被移除设备无法解任何轮换后信封。证据：commit 见本条所在提交；`crates/syncbond-core/tests/member_rotation_tests.rs` 8 tests ok（含 `removed_device_cannot_open_any_post_rotation_envelope`、`removed_device_cannot_forge_a_fresh_rotation`、`removed_device_cannot_impersonate_the_source`）；门禁 `cargo test --workspace` 60 passed、`cargo clippy --workspace --all-targets -- -D warnings` 0 warning、`cargo fmt --all -- --check` 干净。来源：用户 2026-10-21 修正令
 - [x] 墓碑 GC 落地：时间阈值 + 因果支配判定（设计见 docs/design/merge.md），本地 witness 向量即副本证据，无需另设心跳。验收口径：GC 后旧写入仍不能复活删除。证据：commit 3fdc056；`cargo test -p syncbond-core --test tombstone_gc_tests` 8 passed；实现 `crates/syncbond-core/src/replication.rs` gc_tombstones；证据键 `stale_put_cannot_resurrect_a_collected_delete`
 - [ ] 跨版本协商（接受旧版本对端）是否支持——待拍板项，见下
 - [ ] LAN 发现（mDNS）传输。验收口径：同网段零配置配对。来源：同上
