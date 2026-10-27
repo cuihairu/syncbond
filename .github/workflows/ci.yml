@@ -53,8 +53,15 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2.9.3
+      - uses: taiki-e/install-action@v2.87.30
+        with:
+          tool: wasm-pack
       - run: pnpm --filter @syncbond/bindings-ts build
+      - run: pnpm --filter @syncbond/bindings-ts build:wasm
+      - run: pnpm --filter @syncbond/bindings-ts test
       - run: pnpm -r typecheck
       - run: pnpm --filter @syncbond/docs build
       - run: node scripts/verify-docs-links.mjs

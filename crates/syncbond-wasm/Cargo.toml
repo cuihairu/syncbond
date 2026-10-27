@@ -1,0 +1,34 @@
+[package]
+name = "syncbond-wasm"
+description = "Browser WASM bindings for syncbond: identity, replicator state with byte persistence, and the conformance runner (single-thread surface)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The library drives the whole in-memory pairing/sync handshake on worker
+# threads, which wasm32-unknown-unknown (without the `atomics` feature)
+# cannot provide. This crate exposes the single-thread-safe surface: identity
+# generation, replicator CRUD with byte save/load (for IndexedDB), and the
+# thread-free conformance runner. Pairing and sync over a real remote
+# transport (WebRTC/WebSocket) live on the application side.
+syncbond-core = { path = "../syncbond-core" }
+# The canonical cross-language conformance runner and the version queries
+# live in the C ABI layer; calling them here keeps the WASM surface on the
+# same contract the other languages consume. (The ABI's in-memory pairing
+# and sync functions use worker threads and are intentionally not exposed.)
+syncbond-ffi = { path = "../syncbond-ffi" }
+wasm-bindgen = "0.2"
+serde_json = "1"
+
+# `rand_core` (pulled by the core for key generation) forwards to the
+# `getrandom` crate, whose wasm32-unknown-unknown implementation needs the
+# `js` feature to draw from `crypto.getRandomValues`. js-sys supplies the
+# wall clock (`Date.now`) that `SystemTime` cannot on bare wasm32.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+js-sys = "0.3"

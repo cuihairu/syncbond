@@ -5,6 +5,7 @@ members = [
     "crates/syncbond-ffi",
     "crates/syncbond-napi",
     "crates/syncbond-python",
+    "crates/syncbond-wasm",
 ]
 
 [workspace.package]

@@ -11,6 +11,9 @@ docs/.vitepress/cache/
 # napi-rs generated artifacts
 packages/ts-bindings/src/native/
 
+# wasm-pack generated artifacts (browser WASM build)
+packages/ts-bindings/src/wasm-gen/
+
 # python test/build artifacts
 __pycache__/
 *.pyc

@@ -1,6 +1,6 @@
 [package]
 name = "syncbond-napi"
-description = "Node.js napi-rs bindings for syncbond-core"
+description = "Node.js napi-rs bindings consuming the syncbond C ABI"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,4 +13,7 @@ crate-type = ["cdylib"]
 napi = "3.14.2"
 napi-derive = "3.6.12"
 serde_json = "1"
-syncbond-core = { path = "../syncbond-core" }
+# The C ABI is the single contract every language consumes; the napi module
+# links it as an rlib and calls the same sb_* functions the other bindings
+# call, so the Node semantics cannot drift from C/Python/Go/Java/C#.
+syncbond-ffi = { path = "../syncbond-ffi" }

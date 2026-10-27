@@ -145,6 +145,22 @@ impl Replicator {
         Self::with_parts(node_id, strategy, clock, Box::new(move || fixed_ms))
     }
 
+    /// A replicator driven by an explicit wall-clock source. The default
+    /// constructor reads `SystemTime`, which some targets do not implement
+    /// (bare wasm32); embedders there supply a clock that works (for
+    /// example `js_sys::Date::now()`).
+    pub fn with_wall_clock(
+        node_id: impl Into<String>,
+        strategy: Arc<dyn MergeStrategy>,
+        now_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
+    ) -> Self {
+        let node_id = node_id.into();
+        let clock_now = Arc::clone(&now_ms);
+        let clock =
+            HybridClock::with_clock(node_id.clone(), 5 * 60_000, Box::new(move || clock_now()));
+        Self::with_parts(node_id, strategy, clock, Box::new(move || now_ms()))
+    }
+
     fn with_parts(
         node_id: impl Into<String>,
         strategy: Arc<dyn MergeStrategy>,
@@ -416,7 +432,17 @@ impl Replicator {
 
     /// Rebuild a replicator from a persisted snapshot (crash restart path).
     pub fn from_state(state: &SyncState, strategy: Arc<dyn MergeStrategy>) -> Self {
-        let mut replicator = Self::with_strategy(state.node_id.clone(), strategy);
+        Self::from_state_with_clock(state, strategy, Arc::new(wall_ms))
+    }
+
+    /// Rebuild from a persisted snapshot with an explicit wall-clock source
+    /// (for targets where `SystemTime` is unavailable, e.g. bare wasm32).
+    pub fn from_state_with_clock(
+        state: &SyncState,
+        strategy: Arc<dyn MergeStrategy>,
+        now_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
+    ) -> Self {
+        let mut replicator = Self::with_wall_clock(state.node_id.clone(), strategy, now_ms);
         replicator.cursor = state.cursor;
         replicator.gc_barriers = state.gc_barriers.clone();
         // The persisted oplog is authoritative; replay rebuilds records and

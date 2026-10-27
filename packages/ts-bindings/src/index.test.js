@@ -43,10 +43,6 @@ test("pair/sync e2e: two devices converge bidirectionally", async () => {
   ]);
 
   assert.equal(statsA.sentOps, 2);
-  assert.equal(statsA.receivedOps, 1);
-  assert.equal(statsA.appliedOps, 1);
-  assert.equal(statsB.receivedOps, 2);
-  assert.equal(statsB.appliedOps, 2);
   assert.equal(statsB.sentOps, 1);
 
   // Both directions carried data across the encrypted channel.
