@@ -69,6 +69,23 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm run docs:build
+  # Build the release static library once, then run the Go binding's suite with
+  # and without cgo. The CGO_ENABLED=0 run proves the no-cgo build fails loudly
+  # rather than silently producing empty state.
+  go:
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2.9.3
+      - uses: actions/setup-go@v7.0.1
+        with:
+          go-version: '1.27'
+      - run: cargo build --release -p syncbond-ffi
+      - run: go test ./...
+        working-directory: crates/syncbond-ffi/go
+      - run: CGO_ENABLED=0 go test ./...
+        working-directory: crates/syncbond-ffi/go
   # Build the Python wheel on every OS the SDK claims support for and run the
   # pytest suite against the installed wheel. Wheels land as build artifacts
   # only; publishing a versioned release is a manual step.
