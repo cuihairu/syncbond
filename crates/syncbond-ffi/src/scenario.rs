@@ -75,6 +75,37 @@ fn run_replication(spec: &Value) -> Result<Value, FfiError> {
                     .ok_or_else(|| FfiError::input(format!("unknown node {node_id}")))?
                     .put(&key, &payload)?;
             }
+            // A step that must fail with an explicit error (not a panic). The
+            // cross-language runner records whether the binding rejected the
+            // malformed payload, so every language can be compared inline.
+            "reject_put" => {
+                let args = object_field(step, "reject_put")?;
+                let node_id = map_string_field(args, "node")?;
+                let key = map_string_field(args, "key")?;
+                let name = args
+                    .get("name")
+                    .map(string_value)
+                    .transpose()?
+                    .unwrap_or_else(|| "reject_put".to_string());
+                let payload = decode(&map_string_field(args, "payload")?)?;
+                let rejected = nodes
+                    .get_mut(&node_id)
+                    .ok_or_else(|| FfiError::input(format!("unknown node {node_id}")))?
+                    .put(&key, &payload)
+                    .map(|_| false)
+                    .map_err(|_| ());
+                let (accepted, reason) = match rejected {
+                    Ok(accepted) => (accepted, "no error".to_string()),
+                    Err(()) => (true, "explicit error".to_string()),
+                };
+                checks.push(json!({
+                    "actual": accepted.to_string(),
+                    "expected": "true",
+                    "name": name,
+                    "ok": accepted,
+                    "reason": reason,
+                }));
+            }
             "delete" => {
                 let args = object_field(step, "delete")?;
                 let node_id = map_string_field(args, "node")?;

@@ -63,6 +63,38 @@
       ]
     },
     {
+      "type": "replication",
+      "name": "malformed_strategy_payload_is_rejected",
+      "strategy": "or_set",
+      "nodes": { "left": 1000 },
+      "steps": [
+        {
+          "reject_put": {
+            "node": "left",
+            "key": "k",
+            "payload": "bm90LWpzb24",
+            "name": "malformed_or_set_payload_rejected"
+          }
+        }
+      ]
+    },
+    {
+      "type": "replication",
+      "name": "malformed_pn_counter_payload_is_rejected",
+      "strategy": "pn_counter",
+      "nodes": { "left": 1000 },
+      "steps": [
+        {
+          "reject_put": {
+            "node": "left",
+            "key": "k",
+            "payload": "e30gZ2FyYmFnZQ",
+            "name": "malformed_pn_counter_payload_rejected"
+          }
+        }
+      ]
+    },
+    {
       "type": "key_epoch",
       "name": "rotation",
       "group": "g",

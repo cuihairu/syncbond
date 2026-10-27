@@ -8,11 +8,20 @@ The SDK does not know what the data means. Merge behavior is an application choi
 
 ```rust
 pub trait MergeStrategy: Send + Sync {
-    fn merge(&self, local: Option<&Record>, incoming: &Record, ctx: &MergeContext) -> MergeOutcome;
+    fn merge(
+        &self,
+        local: Option<&Record>,
+        incoming: &Record,
+        ctx: &MergeContext,
+    ) -> Result<MergeOutcome, MergeError>;
 }
 ```
 
 A `Record` carries: opaque `payload`, `deleted` flag, `stamp` (HLC), `witness` (node → last-seen full HLC stamp at write time), and retained `conflicts`. The built-ins below are conveniences, never imposed semantics.
+
+`merge` is fallible: a strategy that interprets its payload (OR-Set, PN-Counter)
+rejects a malformed document with `MergeError` instead of panicking, so every
+binding reports the same explicit error across languages.
 
 ## Causality: full-stamp witness
 

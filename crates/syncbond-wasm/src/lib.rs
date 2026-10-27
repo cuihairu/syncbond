@@ -69,13 +69,13 @@ impl WasmReplicator {
     }
 
     #[wasm_bindgen]
-    pub fn put(&mut self, key: String, payload: Vec<u8>) {
-        self.inner.put(key, payload);
+    pub fn put(&mut self, key: String, payload: Vec<u8>) -> Result<(), JsValue> {
+        self.inner.put(key, payload).map(|_| ()).map_err(js_error)
     }
 
     #[wasm_bindgen]
-    pub fn delete(&mut self, key: String) {
-        self.inner.delete(key);
+    pub fn delete(&mut self, key: String) -> Result<(), JsValue> {
+        self.inner.delete(key).map(|_| ()).map_err(js_error)
     }
 
     /// Payload of a live record; tombstoned (deleted) or absent keys read as
@@ -123,9 +123,9 @@ impl WasmReplicator {
     #[wasm_bindgen]
     pub fn load(bytes: Vec<u8>) -> Result<WasmReplicator, JsValue> {
         let state = decode_state(&bytes).map_err(js_error)?;
-        Ok(WasmReplicator {
-            inner: Replicator::from_state_with_clock(&state, Arc::new(LwwHlc), wall_clock()),
-        })
+        let inner = Replicator::from_state_with_clock(&state, Arc::new(LwwHlc), wall_clock())
+            .map_err(js_error)?;
+        Ok(WasmReplicator { inner })
     }
 
     /// Drop tombstones older than `older_than_ms` relative to `now_ms`.

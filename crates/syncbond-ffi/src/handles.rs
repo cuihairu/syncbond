@@ -160,16 +160,20 @@ impl Replicator {
         if key.is_empty() {
             return Err(FfiError::input("key must not be empty"));
         }
-        self.0.put(key, payload.to_vec());
-        Ok(())
+        self.0
+            .put(key, payload.to_vec())
+            .map(|_| ())
+            .map_err(|error| FfiError::protocol(error.to_string()))
     }
 
     pub fn delete(&mut self, key: &str) -> Result<(), FfiError> {
         if key.is_empty() {
             return Err(FfiError::input("key must not be empty"));
         }
-        self.0.delete(key);
-        Ok(())
+        self.0
+            .delete(key)
+            .map(|_| ())
+            .map_err(|error| FfiError::protocol(error.to_string()))
     }
 
     /// Payload of a live record; `None` when the key is missing or tombstoned.
@@ -208,7 +212,9 @@ impl Replicator {
     pub fn apply_remote_json(&mut self, op_json: &str) -> Result<bool, FfiError> {
         let op: Operation = serde_json::from_str(op_json)
             .map_err(|error| FfiError::input(format!("invalid op json: {error}")))?;
-        Ok(self.0.apply_remote(&op))
+        self.0
+            .apply_remote(&op)
+            .map_err(|error| FfiError::protocol(error.to_string()))
     }
 
     pub fn sync(&mut self, session: &Session, send_first: bool) -> Result<SyncStats, FfiError> {

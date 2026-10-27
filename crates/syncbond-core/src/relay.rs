@@ -1,5 +1,6 @@
 //! Minimal durable relay protocol.
 
+use crate::conflict::MergeError;
 use crate::replication::Operation;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -16,6 +17,8 @@ pub struct PullRequest {
 pub enum RelayError {
     #[error("relay serialization: {0}")]
     Encoding(String),
+    #[error("relay merge: {0}")]
+    Merge(#[from] MergeError),
 }
 
 pub trait RelayStore: Send + Sync {
@@ -34,11 +37,13 @@ pub fn apply_pull_response(
     replicator: &mut crate::replication::Replicator,
     response: &PullResponse,
 ) -> Result<usize, RelayError> {
-    Ok(response
-        .ops
-        .iter()
-        .filter(|operation| replicator.apply_remote(operation))
-        .count())
+    let mut applied = 0usize;
+    for operation in &response.ops {
+        if replicator.apply_remote(operation)? {
+            applied += 1;
+        }
+    }
+    Ok(applied)
 }
 
 #[derive(Default)]

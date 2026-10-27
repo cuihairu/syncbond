@@ -20,12 +20,12 @@ fn durable_relay_resumes_across_server_restart_without_duplicates() {
     let mut writer = Replicator::new("writer");
 
     let store = FileRelayStore::open(&path).unwrap();
-    let first = writer.put("key", b"first".to_vec());
+    let first = writer.put("key", b"first".to_vec()).unwrap();
     store.append("channel", &first).unwrap();
     let first_pull = store.pull_after("channel", 0).unwrap();
     drop(store);
 
-    let second = writer.put("key", b"second".to_vec());
+    let second = writer.put("key", b"second".to_vec()).unwrap();
     let restarted = FileRelayStore::open(&path).unwrap();
     restarted.append("channel", &first).unwrap();
     restarted.append("channel", &second).unwrap();

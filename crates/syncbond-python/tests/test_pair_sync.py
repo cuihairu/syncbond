@@ -98,6 +98,17 @@ def test_or_set_strategy_adds_and_removes():
     assert left.records_json() == right.records_json()
 
 
+def test_malformed_strategy_payload_rejected_not_panicked():
+    # A malformed OR-Set / PN-Counter payload must surface as a normal error
+    # (the same explicit failure every language binding reports), not a panic
+    # that would crash the interpreter.
+    for strategy in (syncbond.OR_SET, syncbond.PN_COUNTER):
+        replicator = syncbond.Replicator("malformed", strategy, 1000)
+        with pytest.raises(syncbond.Error):
+            replicator.put("k", b"not-a-strategy-payload")
+        assert replicator.record_count == 0
+
+
 def test_gc_collects_and_survives_sync():
     pair = syncbond.pair_memory()
     left = syncbond.Replicator("left", syncbond.LWW_HLC, 1000)
@@ -207,6 +218,8 @@ def test_conformance_named_checks_all_pass():
     assert set(by_name) == {
         "merge_lww",
         "tombstone_gc_blocks_resurrection",
+        "malformed_strategy_payload_is_rejected",
+        "malformed_pn_counter_payload_is_rejected",
         "rotation",
     }
     assert {c["name"] for c in by_name["merge_lww"]["checks"]} == {
@@ -218,6 +231,17 @@ def test_conformance_named_checks_all_pass():
         "barrier_keeps_tombstone",
         "peer_stays_tombstoned",
     }
+    malformed = by_name["malformed_strategy_payload_is_rejected"]
+    assert malformed["checks"][0] == {
+        "actual": "true",
+        "expected": "true",
+        "name": "malformed_or_set_payload_rejected",
+        "ok": True,
+        "reason": "explicit error",
+    }
+    pn = by_name["malformed_pn_counter_payload_is_rejected"]
+    assert pn["checks"][0]["name"] == "malformed_pn_counter_payload_rejected"
+    assert pn["checks"][0]["actual"] == "true"
     for scenario in report["scenarios"]:
         assert scenario["ok"] is True
         for check in scenario["checks"]:

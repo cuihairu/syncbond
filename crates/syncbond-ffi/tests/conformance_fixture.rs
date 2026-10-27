@@ -50,9 +50,11 @@ fn canonical_fixture_passes_all_checks() {
         BTreeSet::from([
             "merge_lww".to_string(),
             "tombstone_gc_blocks_resurrection".to_string(),
+            "malformed_strategy_payload_is_rejected".to_string(),
+            "malformed_pn_counter_payload_is_rejected".to_string(),
             "rotation".to_string(),
         ]),
-        "exactly the three canonical scenarios"
+        "exactly the canonical scenarios"
     );
 
     for scenario in report["scenarios"].as_array().expect("scenarios") {
@@ -100,6 +102,32 @@ fn canonical_fixture_pins_each_behavior() {
         "peer_stays_tombstoned",
     ] {
         assert_eq!(check(&gc, name)["ok"], true, "{name}");
+    }
+
+    // malformed strategy payloads: the binding must reject them with an explicit
+    // error rather than panicking, so no language can crash or diverge here.
+    for scenario_name in [
+        "malformed_strategy_payload_is_rejected",
+        "malformed_pn_counter_payload_is_rejected",
+    ] {
+        let scenario = by_name(scenario_name);
+        let check_name = if scenario_name.contains("pn_counter") {
+            "malformed_pn_counter_payload_rejected"
+        } else {
+            "malformed_or_set_payload_rejected"
+        };
+        let rejection = scenario["checks"]
+            .as_array()
+            .expect("checks")
+            .iter()
+            .find(|candidate| candidate["name"] == check_name)
+            .unwrap_or_else(|| panic!("missing check {check_name} in {scenario_name}"))
+            .clone();
+        assert_eq!(rejection["ok"], true, "reject check ok: {rejection}");
+        assert_eq!(
+            rejection["actual"], "true",
+            "payload must be rejected, not accepted"
+        );
     }
 
     // keyEpoch: the removed device cannot open the envelope sealed after

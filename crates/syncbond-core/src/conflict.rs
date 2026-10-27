@@ -47,6 +47,14 @@ pub struct MergeContext {
     pub max_skew_ms: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum MergeError {
+    #[error("invalid OR-Set payload: {0}")]
+    InvalidOrSet(String),
+    #[error("invalid PN-Counter payload: {0}")]
+    InvalidPnCounter(String),
+}
+
 #[derive(Debug, PartialEq)]
 pub struct MergeOutcome {
     pub record: Record,
@@ -59,7 +67,12 @@ pub struct MergeOutcome {
 }
 
 pub trait MergeStrategy: Send + Sync {
-    fn merge(&self, local: Option<&Record>, incoming: &Record, ctx: &MergeContext) -> MergeOutcome;
+    fn merge(
+        &self,
+        local: Option<&Record>,
+        incoming: &Record,
+        ctx: &MergeContext,
+    ) -> Result<MergeOutcome, MergeError>;
 }
 
 /// True when `witness` shows its writer had seen `record` (causally after).
@@ -118,41 +131,46 @@ fn dedupe_conflicts(list: Vec<Record>) -> Vec<Record> {
 pub struct LwwHlc;
 
 impl MergeStrategy for LwwHlc {
-    fn merge(&self, local: Option<&Record>, incoming: &Record, ctx: &MergeContext) -> MergeOutcome {
+    fn merge(
+        &self,
+        local: Option<&Record>,
+        incoming: &Record,
+        ctx: &MergeContext,
+    ) -> Result<MergeOutcome, MergeError> {
         let local = match local {
             None => {
-                return MergeOutcome {
+                return Ok(MergeOutcome {
                     record: incoming.clone(),
                     concurrent: false,
                     skew_detected: false,
-                };
+                });
             }
             Some(local) => local,
         };
         if local.stamp == incoming.stamp {
-            return MergeOutcome {
+            return Ok(MergeOutcome {
                 record: local.clone(),
                 concurrent: false,
                 skew_detected: false,
-            };
+            });
         }
 
         let local_after = saw_version(&local.witness, incoming);
         let incoming_after = saw_version(&incoming.witness, local);
 
         if local_after && !incoming_after {
-            return MergeOutcome {
+            return Ok(MergeOutcome {
                 record: local.clone(),
                 concurrent: false,
                 skew_detected: false,
-            };
+            });
         }
         if incoming_after && !local_after {
-            return MergeOutcome {
+            return Ok(MergeOutcome {
                 record: incoming.clone(),
                 concurrent: false,
                 skew_detected: false,
-            };
+            });
         }
 
         // Concurrent (or causally unrelated). A run-ahead clock must not win.
@@ -169,11 +187,11 @@ impl MergeStrategy for LwwHlc {
         pool.push(loser.clone());
         pool.extend(loser.conflicts.iter().cloned());
         merged.conflicts = dedupe_conflicts(pool);
-        MergeOutcome {
+        Ok(MergeOutcome {
             record: merged,
             concurrent: true,
             skew_detected,
-        }
+        })
     }
 }
 
@@ -218,8 +236,8 @@ impl OrSetStrategy {
             .expect("OR-Set doc serialization is infallible")
     }
 
-    pub fn decode(payload: &[u8]) -> OrSetDoc {
-        serde_json::from_slice(payload).expect("OR-Set payload encoding")
+    pub fn decode(payload: &[u8]) -> Result<OrSetDoc, MergeError> {
+        serde_json::from_slice(payload).map_err(|error| MergeError::InvalidOrSet(error.to_string()))
     }
 
     /// Live elements, sorted so callers see the same order on every replica.
@@ -241,9 +259,12 @@ impl MergeStrategy for OrSetStrategy {
         local: Option<&Record>,
         incoming: &Record,
         _ctx: &MergeContext,
-    ) -> MergeOutcome {
-        let mut doc = local.map(|r| Self::decode(&r.payload)).unwrap_or_default();
-        let remote: OrSetDoc = Self::decode(&incoming.payload);
+    ) -> Result<MergeOutcome, MergeError> {
+        let mut doc = local
+            .map(|r| Self::decode(&r.payload))
+            .transpose()?
+            .unwrap_or_default();
+        let remote = Self::decode(&incoming.payload)?;
         for (el, tags) in remote.adds {
             let entry = doc.adds.entry(el).or_default();
             for tag in tags {
@@ -279,11 +300,11 @@ impl MergeStrategy for OrSetStrategy {
             ),
             conflicts: Vec::new(),
         };
-        MergeOutcome {
+        Ok(MergeOutcome {
             record: merged,
             concurrent: false,
             skew_detected: false,
-        }
+        })
     }
 }
 
@@ -320,8 +341,9 @@ impl PnCounterStrategy {
         .expect("PN-Counter doc serialization is infallible")
     }
 
-    pub fn decode(payload: &[u8]) -> PnCounterDoc {
-        serde_json::from_slice(payload).expect("PN-Counter payload encoding")
+    pub fn decode(payload: &[u8]) -> Result<PnCounterDoc, MergeError> {
+        serde_json::from_slice(payload)
+            .map_err(|error| MergeError::InvalidPnCounter(error.to_string()))
     }
 
     pub fn value(doc: &PnCounterDoc) -> i64 {
@@ -346,17 +368,17 @@ impl MergeStrategy for PnCounterStrategy {
         local: Option<&Record>,
         incoming: &Record,
         _ctx: &MergeContext,
-    ) -> MergeOutcome {
+    ) -> Result<MergeOutcome, MergeError> {
         let doc = match local {
             Some(local) => {
-                let a: PnCounterDoc = Self::decode(&local.payload);
-                let b: PnCounterDoc = Self::decode(&incoming.payload);
+                let a = Self::decode(&local.payload)?;
+                let b = Self::decode(&incoming.payload)?;
                 PnCounterDoc {
                     p: merge_slot_maps(&a.p, &b.p),
                     n: merge_slot_maps(&a.n, &b.n),
                 }
             }
-            None => Self::decode(&incoming.payload),
+            None => Self::decode(&incoming.payload)?,
         };
         let local_witness = local
             .as_ref()
@@ -376,10 +398,10 @@ impl MergeStrategy for PnCounterStrategy {
             witness: union_witness(&local_witness, &incoming.witness),
             conflicts: Vec::new(),
         };
-        MergeOutcome {
+        Ok(MergeOutcome {
             record: merged,
             concurrent: false,
             skew_detected: false,
-        }
+        })
     }
 }

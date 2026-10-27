@@ -17,10 +17,10 @@ fn exchange(a: &mut Replicator, b: &mut Replicator) {
     let a_ops = a.oplog().to_vec();
     let b_ops = b.oplog().to_vec();
     for op in &a_ops {
-        let _ = b.apply_remote(op);
+        let _ = b.apply_remote(op).unwrap();
     }
     for op in &b_ops {
-        let _ = a.apply_remote(op);
+        let _ = a.apply_remote(op).unwrap();
     }
 }
 
@@ -29,14 +29,14 @@ fn exchange(a: &mut Replicator, b: &mut Replicator) {
 fn tombstoned_with_evidence() -> (Replicator, Replicator, Operation) {
     let mut a = node("node-a");
     let mut b = node("node-b");
-    let created = a.put("k", b"value".to_vec());
-    let stale = b.put("k", b"offline edit".to_vec());
-    a.apply_remote(&stale);
-    let tombstone = a.delete("k");
-    b.apply_remote(&created);
-    b.apply_remote(&tombstone);
-    let echo = b.put("hb", b"echo".to_vec());
-    a.apply_remote(&echo);
+    let created = a.put("k", b"value".to_vec()).unwrap();
+    let stale = b.put("k", b"offline edit".to_vec()).unwrap();
+    a.apply_remote(&stale).unwrap();
+    let tombstone = a.delete("k").unwrap();
+    b.apply_remote(&created).unwrap();
+    b.apply_remote(&tombstone).unwrap();
+    let echo = b.put("hb", b"echo".to_vec()).unwrap();
+    a.apply_remote(&echo).unwrap();
     (a, b, stale)
 }
 
@@ -66,11 +66,11 @@ fn gc_collects_tombstones_after_the_threshold_when_every_replica_saw_the_delete(
 fn gc_refuses_to_collect_without_dominance_evidence() {
     let mut a = node("node-a");
     let mut b = node("node-b");
-    let created = a.put("k", b"value".to_vec());
-    let stale = b.put("k", b"offline".to_vec());
-    a.apply_remote(&stale);
-    a.delete("k");
-    b.apply_remote(&created); // b knows the write, not the delete
+    let created = a.put("k", b"value".to_vec()).unwrap();
+    let stale = b.put("k", b"offline".to_vec()).unwrap();
+    a.apply_remote(&stale).unwrap();
+    a.delete("k").unwrap();
+    b.apply_remote(&created).unwrap(); // b knows the write, not the delete
 
     let report = a.gc_tombstones(1_000, 0);
     assert_eq!(report.scanned, 1);
@@ -101,12 +101,12 @@ fn stale_put_cannot_resurrect_a_collected_delete() {
     a.gc_tombstones(1_000, 0);
 
     assert!(
-        !a.apply_remote(&stale),
+        !a.apply_remote(&stale).unwrap(),
         "the pre-delete write must be rejected"
     );
     assert!(a.get("k").is_none(), "no resurrection");
     // Redelivery is rejected the same way, not lost in a confusing state.
-    assert!(!a.apply_remote(&stale));
+    assert!(!a.apply_remote(&stale).unwrap());
     assert!(a.get("k").is_none());
     assert!(a.gc_barriers().contains_key("k"));
 }
@@ -122,13 +122,13 @@ fn gc_compacts_the_oplog_and_survives_a_restart() {
     let state = a.snapshot_state(&identity, "group-1", 1);
     let loaded = decode_state(&encode_state(&state).unwrap()).unwrap();
 
-    let mut restored = Replicator::from_state(&loaded, Arc::new(LwwHlc));
+    let mut restored = Replicator::from_state(&loaded, Arc::new(LwwHlc)).unwrap();
     assert!(
         restored.gc_barriers().contains_key("k"),
         "barrier survives reload"
     );
     assert!(restored.get("k").is_none());
-    assert!(!restored.apply_remote(&stale));
+    assert!(!restored.apply_remote(&stale).unwrap());
     assert!(restored.get("k").is_none());
 }
 
@@ -139,7 +139,7 @@ fn compacted_peer_converges_with_an_uncompacted_peer() {
 
     // b still holds the full history (payload-bearing tombstone); a only the
     // compacted barrier. Live keys unrelated to k must keep flowing.
-    b.put("keep", b"still here".to_vec());
+    b.put("keep", b"still here".to_vec()).unwrap();
     exchange(&mut a, &mut b);
 
     assert!(
@@ -161,7 +161,7 @@ fn recreate_after_gc_propagates_everywhere() {
     a.gc_tombstones(1_000, 0);
 
     // The application deletes and then recreates the key.
-    a.put("k", b"recreated".to_vec());
+    a.put("k", b"recreated".to_vec()).unwrap();
     exchange(&mut a, &mut b);
 
     assert_eq!(a.get("k").unwrap().payload, b"recreated");

@@ -49,9 +49,9 @@ fn example_1_generic_key_value_sync() {
     let mut a = Replicator::new("kv-device-a");
     let mut b = Replicator::new("kv-device-b");
 
-    a.put("user:theme", b"dark".to_vec());
-    a.put("user:locale", b"zh-CN".to_vec());
-    b.put("user:font_size", b"14".to_vec());
+    a.put("user:theme", b"dark".to_vec()).unwrap();
+    a.put("user:locale", b"zh-CN".to_vec()).unwrap();
+    b.put("user:font_size", b"14".to_vec()).unwrap();
 
     pair_and_exchange("KVPAW3", &mut a, &mut b);
 
@@ -62,7 +62,7 @@ fn example_1_generic_key_value_sync() {
     assert_eq!(b.get("user:theme").unwrap().payload, b"dark");
 
     // Deletion syncs too.
-    a.delete("user:locale");
+    a.delete("user:locale").unwrap();
     pair_and_exchange("KVPAW3", &mut a, &mut b);
     assert!(b.get("user:locale").unwrap().deleted);
 
@@ -72,9 +72,13 @@ fn example_1_generic_key_value_sync() {
         .save(&syncbond_core::replication::encode_state(&state).unwrap())
         .unwrap();
     let restored = Replicator::from_state(
-        &syncbond_core::replication::decode_state(&storage_a.load().unwrap().unwrap()).unwrap(),
+        &syncbond_core::replication::decode_state(
+            &storage_a.load().unwrap().expect("saved state present"),
+        )
+        .unwrap(),
         Arc::new(LwwHlc),
-    );
+    )
+    .unwrap();
     assert!(restored.get("user:locale").unwrap().deleted);
     assert_eq!(restored.get("user:theme").unwrap().payload, b"dark");
 }
@@ -86,15 +90,19 @@ fn example_2_note_documents_with_offline_conflict() {
 
     // A note is just JSON bytes; the SDK never parses it.
     let note = serde_json::json!({"title": "grocery", "body": "milk"});
-    a.put("note:1", serde_json::to_vec(&note).unwrap());
+    a.put("note:1", serde_json::to_vec(&note).unwrap()).unwrap();
     pair_and_exchange("NT6ES2", &mut a, &mut b);
 
     // Both edit offline. b edits without seeing a's newer revision.
     let a_edit = serde_json::json!({"title": "grocery", "body": "milk, eggs"});
-    let a_op = a.put("note:1", serde_json::to_vec(&a_edit).unwrap());
+    let a_op = a
+        .put("note:1", serde_json::to_vec(&a_edit).unwrap())
+        .unwrap();
 
     let b_edit = serde_json::json!({"title": "grocery", "body": "milk, bread"});
-    let b_op = b.put("note:1", serde_json::to_vec(&b_edit).unwrap());
+    let b_op = b
+        .put("note:1", serde_json::to_vec(&b_edit).unwrap())
+        .unwrap();
 
     pair_and_exchange("NT6ES2", &mut a, &mut b);
 
@@ -129,7 +137,7 @@ fn example_3_arbitrary_binary_records() {
 
     // 4 KiB of "binary" data (a fake thumbnail): opaque to the SDK.
     let blob: Vec<u8> = (0..4096u32).map(|i| (i % 251) as u8).collect();
-    a.put("thumb:0001", blob.clone());
+    a.put("thumb:0001", blob.clone()).unwrap();
 
     pair_and_exchange("BNR4VX", &mut a, &mut b);
 
@@ -141,7 +149,7 @@ fn example_3_arbitrary_binary_records() {
 
     // Incremental: a second record syncs without resending the first.
     let blob2: Vec<u8> = (0..2048u32).map(|i| (i % 253) as u8).collect();
-    a.put("thumb:0002", blob2.clone());
+    a.put("thumb:0002", blob2.clone()).unwrap();
     pair_and_exchange("BNR4VX", &mut a, &mut b);
     assert_eq!(b.get("thumb:0002").unwrap().payload, blob2);
     assert_eq!(b.record_count(), 2);

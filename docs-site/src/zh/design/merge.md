@@ -10,11 +10,19 @@ SDK 不知道数据是什么含义。合并行为是应用在一个 trait 背后
 
 ```rust
 pub trait MergeStrategy: Send + Sync {
-    fn merge(&self, local: Option<&Record>, incoming: &Record, ctx: &MergeContext) -> MergeOutcome;
+    fn merge(
+        &self,
+        local: Option<&Record>,
+        incoming: &Record,
+        ctx: &MergeContext,
+    ) -> Result<MergeOutcome, MergeError>;
 }
 ```
 
 一个 `Record` 携带：不透明的 `payload`、`deleted` 标志、`stamp`（HLC 戳）、`witness`（节点 → 写入时最后见到的完整 HLC 戳），以及保留的 `conflicts`。下文的内置策略只是便利设施，从不是强加的语义。
+
+`merge` 是可失败的：解释自身载荷的策略（OR-Set、PN-Counter）遇到畸形文档时
+返回 `MergeError` 而不是 panic，因此每个语言绑定都上报相同的显式错误。
 
 ## 因果性：完整戳 witness
 

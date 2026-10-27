@@ -76,7 +76,13 @@ test("wasm runs the cross-language conformance fixture", async () => {
   assert.equal(report.ok, true, JSON.stringify(report));
   assert.deepEqual(
     report.scenarios.map((scenario) => scenario.name).sort(),
-    ["merge_lww", "rotation", "tombstone_gc_blocks_resurrection"],
+    [
+      "malformed_pn_counter_payload_is_rejected",
+      "malformed_strategy_payload_is_rejected",
+      "merge_lww",
+      "rotation",
+      "tombstone_gc_blocks_resurrection",
+    ],
   );
   for (const scenario of report.scenarios) {
     assert.equal(scenario.ok, true, `scenario ${scenario.name}`);

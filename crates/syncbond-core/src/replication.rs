@@ -5,7 +5,7 @@
 //! application's `MergeStrategy`. Operations are deduplicated by op id, so
 //! out-of-order and duplicate delivery converge to the same state.
 
-use crate::conflict::{LwwHlc, MergeContext, MergeOutcome, MergeStrategy, Record};
+use crate::conflict::{LwwHlc, MergeContext, MergeError, MergeOutcome, MergeStrategy, Record};
 use crate::crypto::{self, SessionKey};
 use crate::hlc::{compare_stamps, HlcStamp, HybridClock};
 use crate::storage::SyncState;
@@ -60,6 +60,8 @@ pub enum ReplicationError {
     Pairing(#[from] crate::pairing::PairingError),
     #[error("serialization: {0}")]
     Encoding(String),
+    #[error("merge: {0}")]
+    Merge(#[from] MergeError),
     #[error("session invalidated")]
     SessionInvalidated,
 }
@@ -183,7 +185,11 @@ impl Replicator {
     }
 
     /// Write (or upsert) a record with an opaque payload.
-    pub fn put(&mut self, key: impl Into<String>, payload: Vec<u8>) -> Operation {
+    pub fn put(
+        &mut self,
+        key: impl Into<String>,
+        payload: Vec<u8>,
+    ) -> Result<Operation, MergeError> {
         let stamp = self.clock.issue();
         self.vector.insert(self.node_id.clone(), stamp.clone());
         let witness = self.vector.clone();
@@ -195,12 +201,12 @@ impl Replicator {
             stamp,
             witness,
         };
-        self.apply_local(op.clone());
-        op
+        self.apply_local(op.clone())?;
+        Ok(op)
     }
 
     /// Delete a record (causal tombstone via the write's witness).
-    pub fn delete(&mut self, key: impl Into<String>) -> Operation {
+    pub fn delete(&mut self, key: impl Into<String>) -> Result<Operation, MergeError> {
         let stamp = self.clock.issue();
         self.vector.insert(self.node_id.clone(), stamp.clone());
         let witness = self.vector.clone();
@@ -212,8 +218,8 @@ impl Replicator {
             stamp,
             witness,
         };
-        self.apply_local(op.clone());
-        op
+        self.apply_local(op.clone())?;
+        Ok(op)
     }
 
     fn next_op_id(&mut self) -> String {
@@ -221,11 +227,11 @@ impl Replicator {
         format!("{}:{}", self.node_id, self.cursor)
     }
 
-    fn apply_local(&mut self, op: Operation) {
-        self.seen_op_ids.insert(op.op_id.clone());
-        // A local write supersedes any compacted delete for the key: it is
-        // the same "recreate after delete" the merge would allow pre-GC.
-        self.gc_barriers.remove(&op.key);
+    fn apply_local(&mut self, op: Operation) -> Result<(), MergeError> {
+        // Merge before mutating any local state: a strategy that rejects the
+        // incoming payload (e.g. malformed OR-Set/PN-Counter) must leave the
+        // replicator untouched, so the caller can surface the error instead of
+        // observing a half-applied write.
         let outcome = self.merge_record(&Record {
             key: op.key.clone(),
             payload: op.payload.clone(),
@@ -233,16 +239,25 @@ impl Replicator {
             stamp: op.stamp.clone(),
             witness: op.witness.clone(),
             conflicts: Vec::new(),
-        });
+        })?;
+        self.seen_op_ids.insert(op.op_id.clone());
+        // A local write supersedes any compacted delete for the key: it is
+        // the same "recreate after delete" the merge would allow pre-GC.
+        self.gc_barriers.remove(&op.key);
         self.records.insert(op.key.clone(), outcome.record);
         self.oplog.push(op);
+        Ok(())
     }
 
-    fn merge_record(&self, incoming: &Record) -> MergeOutcome {
+    fn merge_record(&self, incoming: &Record) -> Result<MergeOutcome, MergeError> {
         self.merge_against(self.records.get(&incoming.key), incoming)
     }
 
-    fn merge_against(&self, local: Option<&Record>, incoming: &Record) -> MergeOutcome {
+    fn merge_against(
+        &self,
+        local: Option<&Record>,
+        incoming: &Record,
+    ) -> Result<MergeOutcome, MergeError> {
         let ctx = MergeContext {
             now_ms: (self.now_ms)(),
             max_skew_ms: self.clock.max_skew_ms,
@@ -253,24 +268,24 @@ impl Replicator {
     /// Apply a remote operation; returns false when it was a duplicate or
     /// when it was rejected because it would resurrect a garbage-collected
     /// delete (docs/design/merge.md).
-    pub fn apply_remote(&mut self, op: &Operation) -> bool {
+    pub fn apply_remote(&mut self, op: &Operation) -> Result<bool, MergeError> {
         if self.seen_op_ids.contains(&op.op_id) {
-            return false;
+            return Ok(false);
         }
         self.ingest(op)
     }
 
-    fn ingest(&mut self, op: &Operation) -> bool {
+    fn ingest(&mut self, op: &Operation) -> Result<bool, MergeError> {
         let incoming = incoming_record(op);
         let had_barrier = self.gc_barriers.contains_key(&op.key);
         let outcome = match self.gc_barriers.get(&op.key) {
             Some(barrier) => self.merge_against(Some(barrier), &incoming),
             None => self.merge_record(&incoming),
-        };
+        }?;
         if had_barrier && !op.deleted && outcome.record.deleted {
             // A live write that loses to a collected tombstone is exactly
             // the resurrection GC must prevent: reject it outright.
-            return false;
+            return Ok(false);
         }
         self.seen_op_ids.insert(op.op_id.clone());
         // Absorb causal knowledge: the op's stamp and its witness.
@@ -285,13 +300,13 @@ impl Replicator {
                 self.gc_barriers
                     .insert(op.key.clone(), compact_tombstone(&outcome.record));
                 self.oplog.push(op.clone());
-                return true;
+                return Ok(true);
             }
             // A live write won against the barrier; the record is live again.
             self.gc_barriers.remove(&op.key);
         }
         self.records.insert(op.key.clone(), outcome.record);
-        true
+        Ok(true)
     }
 
     /// Garbage-collect tombstones that are both old enough and causally
@@ -442,7 +457,10 @@ impl Replicator {
     }
 
     /// Rebuild a replicator from a persisted snapshot (crash restart path).
-    pub fn from_state(state: &SyncState, strategy: Arc<dyn MergeStrategy>) -> Self {
+    pub fn from_state(
+        state: &SyncState,
+        strategy: Arc<dyn MergeStrategy>,
+    ) -> Result<Self, MergeError> {
         Self::from_state_with_clock(state, strategy, Arc::new(wall_ms))
     }
 
@@ -452,7 +470,7 @@ impl Replicator {
         state: &SyncState,
         strategy: Arc<dyn MergeStrategy>,
         now_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
-    ) -> Self {
+    ) -> Result<Self, MergeError> {
         let mut replicator = Self::with_wall_clock(state.node_id.clone(), strategy, now_ms);
         replicator.cursor = state.cursor;
         replicator.gc_barriers = state.gc_barriers.clone();
@@ -461,19 +479,19 @@ impl Replicator {
         replicator.oplog = state.oplog.clone();
         for op in &state.oplog {
             replicator.seen_op_ids.insert(op.op_id.clone());
-            replicator.apply_known(op);
+            replicator.apply_known(op)?;
         }
-        replicator
+        Ok(replicator)
     }
 
     /// Replay a persisted oplog entry without appending it again.
-    fn apply_known(&mut self, op: &Operation) {
+    fn apply_known(&mut self, op: &Operation) -> Result<(), MergeError> {
         let incoming = incoming_record(op);
         let had_barrier = self.gc_barriers.contains_key(&op.key);
         let outcome = match self.gc_barriers.get(&op.key) {
             Some(barrier) => self.merge_against(Some(barrier), &incoming),
             None => self.merge_record(&incoming),
-        };
+        }?;
         Self::absorb(&mut self.vector, &op.stamp);
         for stamp in op.witness.values() {
             Self::absorb(&mut self.vector, stamp);
@@ -482,11 +500,12 @@ impl Replicator {
             if outcome.record.deleted {
                 self.gc_barriers
                     .insert(op.key.clone(), compact_tombstone(&outcome.record));
-                return;
+                return Ok(());
             }
             self.gc_barriers.remove(&op.key);
         }
         self.records.insert(op.key.clone(), outcome.record);
+        Ok(())
     }
 
     /// Keep the newer of the two stamps for a node.
@@ -524,7 +543,7 @@ impl Replicator {
             let ops: Vec<Operation> = decode(&bytes)?;
             let mut applied = 0;
             for op in &ops {
-                if replicator.apply_remote(op) {
+                if replicator.apply_remote(op)? {
                     applied += 1;
                 }
             }
@@ -590,10 +609,10 @@ mod tests {
     fn tombstoned_without_evidence() -> (Replicator, Replicator, Operation) {
         let mut a = node("node-a");
         let mut b = node("node-b");
-        a.put("k", b"value".to_vec());
-        let stale = b.put("k", b"offline".to_vec()); // concurrent, b never saw `created`
-        a.apply_remote(&stale);
-        a.delete("k");
+        a.put("k", b"value".to_vec()).unwrap();
+        let stale = b.put("k", b"offline".to_vec()).unwrap(); // concurrent, b never saw `created`
+        a.apply_remote(&stale).unwrap();
+        a.delete("k").unwrap();
         (a, b, stale)
     }
 
@@ -615,7 +634,7 @@ mod tests {
         );
 
         // Even the unsafe mode keeps the causal barrier.
-        assert!(!a.apply_remote(&stale));
+        assert!(!a.apply_remote(&stale).unwrap());
         assert!(a.get("k").is_none());
     }
 }
