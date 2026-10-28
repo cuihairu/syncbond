@@ -35,12 +35,12 @@
 
 ## P3 — 发布（阻断项未清不动）
 
-- [ ] 最终品牌名（用户另行核验候选，暂用 syncbond 开发名）
-- [ ] npm 发布：**不发布任何 npm 稳定包**；且作用域 `@cuihairu/syncbond` 发布前需确认 scope 权限——待拍板项，见下
+- [ ] 最终品牌名（用户另行核验候选，暂用 syncbond 开发名）——**BLOCKED：用户输入**（2026-10-28 巡检点火确认：候选核验权为用户保留，仓库内无候选清单；README.md:11「syncbond is a temporary development name; the final brand is to be decided」。手动动作：用户核验候选并定名后 → 开启改名工作线（crate/package/scope 更名 + README banner 换下临时名 + CI 矩阵同步），届时本条方可勾除）
+- [ ] npm 发布：**不发布任何 npm 稳定包**；且作用域 `@cuihairu/syncbond` 发布前需确认 scope 权限——**BLOCKED：用户输入**（2026-10-28 巡检点火证据：本机 `npm whoami` → ENEEDAUTH 未登录，scope 归属无从确认；`npm view syncbond` 与 `npm view @cuihairu/syncbond` 均 404 未占用；当前 `packages/ts-bindings/package.json` 包名为 `@syncbond/bindings-ts`（workspace 私有名，非发布目标）。手动动作：用户 `npm adduser` 登录并确认 `@cuihairu` scope 归属 → 按全局红线由用户给出版本号+发布令方可发布（禁止我自判断）；改名（上一条）可能先于发布改变最终包名）
 
 ## 待拍板项（用户决策）
 
-1. **npm 发布策略**：是否发布、何时发布、scope `@cuihairu/syncbond` 权限确认（用户已令：不发布任何 npm 稳定包；scope 权限需确认）。
+1. **npm 发布策略**：是否发布、何时发布、scope `@cuihairu/syncbond` 权限确认（用户已令：不发布任何 npm 稳定包；scope 权限需确认）。2026-10-28 巡检证据：本机 npm 未登录（`npm whoami` ENEEDAUTH），`@cuihairu/syncbond` 未占用（404）。
 2. **最终品牌名**：用户另行核验候选后定（README 已置顶「temporary dev name」）。
 3. **跨版本协商**：~~协议 v2 出现后是否兼容旧对端（当前 v1 仅拒绝不协商）。~~ **已代决（2026-10-28 巡检授权，可推翻）：不支持/不开放——v2 不兼容 v1 对端，维持精确版本匹配硬失败。**
 4. **墓碑降级 GC**：~~是否给应用开放「仅时间阈值」的不安全裁剪模式。~~ **已代决（2026-10-28 巡检授权，可推翻）：不支持/不开放——应用不开放，保留内部/测试（conformance 确定性）专用。**
