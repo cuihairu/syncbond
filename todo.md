@@ -35,8 +35,8 @@
 
 ## P3 — 发布（阻断项未清不动）
 
-- [ ] 最终品牌名（用户另行核验候选，暂用 syncbond 开发名）——**BLOCKED：用户输入**（2026-10-28 巡检点火确认：候选核验权为用户保留，仓库内无候选清单；README.md:11「syncbond is a temporary development name; the final brand is to be decided」。手动动作：用户核验候选并定名后 → 开启改名工作线（crate/package/scope 更名 + README banner 换下临时名 + CI 矩阵同步），届时本条方可勾除）
-- [ ] npm 发布：**不发布任何 npm 稳定包**；且作用域 `@cuihairu/syncbond` 发布前需确认 scope 权限——**BLOCKED：用户输入**（2026-10-28 巡检点火证据：本机 `npm whoami` → ENEEDAUTH 未登录，scope 归属无从确认；`npm view syncbond` 与 `npm view @cuihairu/syncbond` 均 404 未占用；当前 `packages/ts-bindings/package.json` 包名为 `@syncbond/bindings-ts`（workspace 私有名，非发布目标）。手动动作：用户 `npm adduser` 登录并确认 `@cuihairu` scope 归属 → 按全局红线由用户给出版本号+发布令方可发布（禁止我自判断）；改名（上一条）可能先于发布改变最终包名）
+- [ ] 最终品牌名（用户另行核验候选，暂用 syncbond 开发名）——**BLOCKED：用户输入**（2026-10-28 巡检点火确认：候选核验权为用户保留，仓库内无候选清单；README.md:11「syncbond is a temporary development name; the final brand is to be decided」。手动动作：用户核验候选并定名后 → 开启改名工作线（crate/package/scope 更名 + README banner 换下临时名 + CI 矩阵同步），届时本条方可勾除。2026-10-29 复核：若最终沿用 `syncbond`，crates.io `syncbond`/`syncbond-core`/`syncbond-ffi` 均 404 未占用，发布通道无障碍）
+- [ ] npm 发布：**不发布任何 npm 稳定包**；且作用域 `@cuihairu/syncbond` 发布前需确认 scope 权限——**BLOCKED：用户输入**（2026-10-28 巡检点火证据：本机 `npm whoami` → ENEEDAUTH 未登录，scope 归属无从确认；`npm view syncbond` 与 `npm view @cuihairu/syncbond` 均 404 未占用；当前 `packages/ts-bindings/package.json` 包名为 `@syncbond/bindings-ts`（workspace 私有名，非发布目标）。手动动作：用户 `npm adduser` 登录并确认 `@cuihairu` scope 归属 → 按全局红线由用户给出版本号+发布令方可发布（禁止我自判断）；改名（上一条）可能先于发布改变最终包名。2026-10-29 复核：`npm whoami` 仍 ENEEDAUTH（未登录），scope 归属依旧无从确认）
 
 ## 待拍板项（用户决策）
 
