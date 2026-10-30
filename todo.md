@@ -35,16 +35,16 @@
 
 ## P3 — 发布（阻断项未清不动）
 
-- [ ] 最终品牌名（用户另行核验候选，暂用 syncbond 开发名）——**BLOCKED：用户输入**（2026-10-28 巡检点火确认：候选核验权为用户保留，仓库内无候选清单；README.md:11「syncbond is a temporary development name; the final brand is to be decided」。手动动作：用户核验候选并定名后 → 开启改名工作线（crate/package/scope 更名 + README banner 换下临时名 + CI 矩阵同步），届时本条方可勾除。2026-10-29 复核：若最终沿用 `syncbond`，crates.io `syncbond`/`syncbond-core`/`syncbond-ffi` 均 404 未占用，发布通道无障碍）
-- [ ] npm 发布：**不发布任何 npm 稳定包**；且作用域 `@cuihairu/syncbond` 发布前需确认 scope 权限——**BLOCKED：用户输入**（2026-10-28 巡检点火证据：本机 `npm whoami` → ENEEDAUTH 未登录，scope 归属无从确认；`npm view syncbond` 与 `npm view @cuihairu/syncbond` 均 404 未占用；当前 `packages/ts-bindings/package.json` 包名为 `@syncbond/bindings-ts`（workspace 私有名，非发布目标）。手动动作：用户 `npm adduser` 登录并确认 `@cuihairu` scope 归属 → 按全局红线由用户给出版本号+发布令方可发布（禁止我自判断）；改名（上一条）可能先于发布改变最终包名。2026-10-29 复核：`npm whoami` 仍 ENEEDAUTH（未登录），scope 归属依旧无从确认）
+- [ ] 最终品牌名（用户另行核验候选，暂用 syncbond 开发名）——**BLOCKED：用户输入**（2026-10-28 巡检点火确认：候选核验权为用户保留，仓库内无候选清单；README.md:11「syncbond is a temporary development name; the final brand is to be decided」。手动动作：用户核验候选并定名后 → 开启改名工作线（crate/package/scope 更名 + README banner 换下临时名 + CI 矩阵同步），届时本条方可勾除。2026-10-30 修正复核：沿用 `syncbond` 时需覆盖 workspace 实际包名 `syncbond-core`/`syncbond-ffi`/`syncbond-napi`/`syncbond-python`/`syncbond-wasm`；此前仅核验三个名称不充分，且当前环境无法访问 crates.io，占用状态未确认） 已代决:按 docs/review/2026-10-30-decisions.md 执行(2026-10-30)(需用户输入,暂缓)
+- [ ] npm 发布：**不发布任何 npm 稳定包**；且作用域 `@cuihairu/syncbond` 发布前需确认 scope 权限——**BLOCKED：用户输入**（2026-10-28 巡检点火证据：本机 `npm whoami` → ENEEDAUTH 未登录，scope 归属无从确认；`npm view syncbond` 与 `npm view @cuihairu/syncbond` 均 404 未占用；当前 `packages/ts-bindings/package.json` 包名为 `@syncbond/bindings-ts`（workspace 私有名，非发布目标）。手动动作：用户 `npm adduser` 登录并确认 `@cuihairu` scope 归属 → 按全局红线由用户给出版本号+发布令方可发布（禁止我自判断）；改名（上一条）可能先于发布改变最终包名。2026-10-29 复核：`npm whoami` 仍 ENEEDAUTH（未登录），scope 归属依旧无从确认） 已代决:按 docs/review/2026-10-30-decisions.md 执行(2026-10-30)(需用户输入,暂缓)
 
 ## 待拍板项（用户决策）
 
-1. **npm 发布策略**：是否发布、何时发布、scope `@cuihairu/syncbond` 权限确认（用户已令：不发布任何 npm 稳定包；scope 权限需确认）。2026-10-28 巡检证据：本机 npm 未登录（`npm whoami` ENEEDAUTH），`@cuihairu/syncbond` 未占用（404）。
+1. **npm 发布策略**：是否发布、何时发布、scope `@cuihairu/syncbond` 权限确认（用户已令：不发布任何 npm 稳定包；scope 权限需确认）。2026-10-28 巡检证据：本机 npm 未登录（`npm whoami` ENEEDAUTH），`@cuihairu/syncbond` 未占用（404）。 已代决:按 docs/review/2026-10-30-decisions.md 执行(2026-10-30)(需用户输入,暂缓)
 2. **最终品牌名**：用户另行核验候选后定（README 已置顶「temporary dev name」）。
 3. **跨版本协商**：~~协议 v2 出现后是否兼容旧对端（当前 v1 仅拒绝不协商）。~~ **已代决（2026-10-28 巡检授权，可推翻）：不支持/不开放——v2 不兼容 v1 对端，维持精确版本匹配硬失败。**
 4. **墓碑降级 GC**：~~是否给应用开放「仅时间阈值」的不安全裁剪模式。~~ **已代决（2026-10-28 巡检授权，可推翻）：不支持/不开放——应用不开放，保留内部/测试（conformance 确定性）专用。**
-5. **自动轮换触发**：成员移除是否由核心自动 rotate（当前 rotate 是应用手动调用）。
+5. **自动轮换触发**：成员移除是否由核心自动 rotate（当前 rotate 是应用手动调用）。 已代决:按 docs/review/2026-10-30-decisions.md 执行(2026-10-30)
 
 ## 七、多语言 SDK(R10.3，来源：用户 2026-10-24 令)
 
@@ -76,3 +76,7 @@
 **验收口径**：跨语言 conformance fixture 新增 `reject_put` 步骤（`malformed_strategy_payload_is_rejected` / `malformed_pn_counter_payload_is_rejected` 两场景），所有 binding 读同一 fixture 并字节比对 `/fixtures/conformance.expected.json`（`"reason":"explicit error"`、`"actual":"true"`），另加核心 `malformed_strategy_payloads_error_instead_of_panicking` 与 Python `test_malformed_strategy_payload_rejected_not_panicked` 回归测试。
 
 **门禁证据**：`cargo fmt --all -- --check` 干净（FMT=0）；`cargo clippy --workspace --all-targets -- -D warnings` 0 warning（CLIPPY=0）；`cargo test` 全绿 EXIT=0（跨 C/C++/C#/Go/Java/Python/napi/WASM 全部通过，包含 Java 用 CI 固定 Gradle 9.8.0 实跑、Go 清构建缓存防陈旧 `.a`）；`pnpm --filter @syncbond/bindings-ts test` 9 passed（napi + wasm 双路，含 conformance 5 场景）；`pnpm -r typecheck` 干净；`pnpm docs:build` + `node scripts/verify-docs-links.mjs` 干净。提交 e75cb2e，已推送 `origin/main`（无 force、无 tag）。品牌名与 npm 发布仍为用户拍板项，未开工。
+
+## 审核发现
+
+- [x] 审核发现：品牌名条目 2026-10-29 复核称「crates.io `syncbond`/`syncbond-core`/`syncbond-ffi` 均 404 未占用，发布通道无障碍」，但 `syncbond` 并非仓库内任何 package 名（仅为 `crates/syncbond-python/Cargo.toml` 的 `[lib]` 名，其实际 package 名为 `syncbond-python`），且遗漏了其余真实可发布包 `syncbond-napi`/`syncbond-python`/`syncbond-wasm`，导致「发布通道无障碍」结论的证据与实际工作区包结构不一致。**属实，已修正为覆盖五个 workspace 包名，且 crates.io 占用状态在当前网络下未确认**（证据：`Cargo.toml:3-9`；`crates/syncbond-python/Cargo.toml:2`；`crates/syncbond-python/Cargo.toml:10`；`todo.md:38`）
