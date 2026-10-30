@@ -8,7 +8,7 @@
 
 ## 条目 1：最终品牌名（todo.md:38 P3 区块，待拍板#2 同源）
 
-**事实**：`todo.md:38`——BLOCKED：用户输入。`README.md:11`「syncbond is a temporary development name; the final brand is to be decided」。2026-10-30 修正复核：沿用 `syncbond` 时需覆盖 workspace 实际包名 `syncbond-core`/`syncbond-ffi`/`syncbond-napi`/`syncbond-python`/`syncbond-wasm`（`Cargo.toml:3-9`；`crates/syncbond-python/Cargo.toml:2,10`）；当前环境无法访问 crates.io，占用状态未确认。
+**事实**：`todo.md:38`——BLOCKED：用户输入。`README.md:11`「syncbond is a temporary development name; the final brand is to be decided」。2026-10-30 修正复核：沿用 `syncbond` 时需覆盖 workspace 实际包名 `syncbond-core`/`syncbond-ffi`/`syncbond-napi`/`syncbond-python`/`syncbond-wasm`（`Cargo.toml:3-9`；`crates/syncbond-python/Cargo.toml:2,10`）；crates.io 占用状态已实测确认：API 可达（对照 `serde`=200、`index.crates.io`=200），五个 workspace 包名均 404「does not exist」= 确认为未占用。
 
 ### 推荐决策
 
@@ -19,19 +19,19 @@
 1. **收益**：品牌名是产品公开身份，也是所有包名/scope/文档标题的根；定名后才能一次性改到位，避免二次改名。
 2. **成本**：仓库侧零剩余工程——改名工作线（crate/package/scope 更名 + README banner + CI 矩阵同步）已定义，只待定名即可执行。
 3. **风险（不做）**：维持临时开发名，产品以开发名对外，属低风险（当前 pre-1.0 无发布存量）。
-4. **风险（硬做/代决）**：候选核验权为用户保留（`todo.md:38`），仓库内无候选清单；我代决定名=越权替用户做公开身份决策，且 crates.io 占用状态未确认，可能选到已占用名。
-5. **教学性**：为什么品牌名不能「随便取」？因为它会**刻进发布物的名字**——crate 名、npm scope、包 ID、CI 矩阵，一旦发布改名的兼容成本极高（旧名永久占用、下游依赖断裂）。所以「定名」要用户拍板，且要事先核实候选名在 crates.io/npm 未被占用；本次环境连不上 crates.io，占用状态是「未确认」而非「无障碍」。
+4. **风险（硬做/代决）**：候选核验权为用户保留（`todo.md:38`），仓库内无候选清单；我代决定名=越权替用户做公开身份决策。crates.io 占用已实测确认候选名未占用（残余风险排除），但代决定名本身仍属越权。
+5. **教学性**：为什么品牌名不能「随便取」？因为它会**刻进发布物的名字**——crate 名、npm scope、包 ID、CI 矩阵，一旦发布改名的兼容成本极高（旧名永久占用、下游依赖断裂）。所以「定名」要用户拍板，且要事先核实候选名在 crates.io/npm 未被占用；本次已实测 crates.io API 可达、五个 workspace 包名均 404 未占用，占用状态确认为「无障碍」而非「未确认」。
 
 ### 立即执行动作
 
 无（改名需先定名）。
 
-**待用户**：核验候选并定名（若沿用 `syncbond`，按五个 workspace 包名覆盖执行改名工作线；crates.io 占用状态需联网确认）。
+**待用户**：核验候选并定名（若沿用 `syncbond`，按五个 workspace 包名覆盖执行改名工作线；crates.io 占用已实测确认未占用）。
 
 ### 明确不做/延后
 
 - 不代用户定名、不启动改名工作线（等用户给候选）。
-- 不把 crates.io 占用状态写成「无障碍」（未确认 ≠ 无障碍）。
+- 不把 crates.io 占用状态写成未确认（已实测确认未占用）。
 - 不 bump version、不打 tag、不建 Release、不跑发版 workflow。
 
 ---
@@ -65,9 +65,9 @@
 
 ---
 
-## 条目 3：自动轮换触发（todo.md:46 待拍板#5）
+## 条目 3：自动轮换触发（todo.md:47 待拍板#5）
 
-**事实**：`todo.md:46`——成员移除是否由核心自动 rotate（当前 rotate 是应用手动调用）。代码事实：`crates/syncbond-core/src/crypto.rs:160-162` 明文「`rotate()` mints the next epoch key. **Distribution of the new key is the application's job** through the surviving members' channels — a revoked device that only holds epoch N keys cannot read epoch N+1 envelopes」；`crypto.rs:198-204` 的 `rotate()` 只 mint 并返回新键，**不自动分发**；`member_crypto.rs:184-207` 的 `rotate_for_removal()` 已把「移除成员 + 轮换 + 为每个幸存成员生成一条认证分发消息」打包为原子 API，返回 `RotationResult` 交由调用方（应用）投递。
+**事实**：`todo.md:47`——成员移除是否由核心自动 rotate（当前 rotate 是应用手动调用）。代码事实：`crates/syncbond-core/src/crypto.rs:160-162` 明文「`rotate()` mints the next epoch key. **Distribution of the new key is the application's job** through the surviving members' channels — a revoked device that only holds epoch N keys cannot read epoch N+1 envelopes」；`crypto.rs:198-204` 的 `rotate()` 只 mint 并返回新键，**不自动分发**；`member_crypto.rs:184-207` 的 `rotate_for_removal()` 已把「移除成员 + 轮换 + 为每个幸存成员生成一条认证分发消息」打包为原子 API，返回 `RotationResult` 交由调用方（应用）投递。
 
 ### 推荐决策
 
@@ -99,6 +99,6 @@
 |---|---|---|---|
 | 最终品牌名（todo.md:38） | 暂缓，待用户定名 | 无 | 需用户输入，暂缓 |
 | npm 发布（todo.md:39） | 暂缓，维持不发布 | 无 | 需用户输入，暂缓 |
-| 自动轮换触发（todo.md:46） | 维持应用显式 rotate_for_removal，不自动 | 无 | 已代决拍板 |
+| 自动轮换触发（todo.md:47） | 维持应用显式 rotate_for_removal，不自动 | 无 | 已代决拍板 |
 | 跨版本协商（todo.md:31,45） | 既有已代决：不支持/不开放（2026-10-28） | 无 | 已代决，维持 |
 | 墓碑降级 GC（todo.md:34,46） | 既有已代决：不支持/不开放（2026-10-28） | 无 | 已代决，维持 |

@@ -35,13 +35,13 @@
 
 ## P3 — 发布（阻断项未清不动）
 
-- [ ] 最终品牌名（用户另行核验候选，暂用 syncbond 开发名）——**BLOCKED：用户输入**（2026-10-28 巡检点火确认：候选核验权为用户保留，仓库内无候选清单；README.md:11「syncbond is a temporary development name; the final brand is to be decided」。手动动作：用户核验候选并定名后 → 开启改名工作线（crate/package/scope 更名 + README banner 换下临时名 + CI 矩阵同步），届时本条方可勾除。2026-10-30 修正复核：沿用 `syncbond` 时需覆盖 workspace 实际包名 `syncbond-core`/`syncbond-ffi`/`syncbond-napi`/`syncbond-python`/`syncbond-wasm`；此前仅核验三个名称不充分，且当前环境无法访问 crates.io，占用状态未确认） 已代决:按 docs/review/2026-10-30-decisions.md 执行(2026-10-30)(需用户输入,暂缓)
+- [ ] 最终品牌名（用户另行核验候选，暂用 syncbond 开发名）——**BLOCKED：用户输入**（2026-10-28 巡检点火确认：候选核验权为用户保留，仓库内无候选清单；README.md:11「syncbond is a temporary development name; the final brand is to be decided」。手动动作：用户核验候选并定名后 → 开启改名工作线（crate/package/scope 更名 + README banner 换下临时名 + CI 矩阵同步），届时本条方可勾除。2026-10-30 修正复核：沿用 `syncbond` 时需覆盖 workspace 实际包名 `syncbond-core`/`syncbond-ffi`/`syncbond-napi`/`syncbond-python`/`syncbond-wasm`；此前仅核验三个名称不充分。2026-10-31 实测：crates.io API 可达（对照 `serde`=200、`index.crates.io`=200），五个 workspace 包名均 404「does not exist」= 已确认未占用） 已代决:按 docs/review/2026-10-30-decisions.md 执行(2026-10-30)(需用户输入,暂缓)
 - [ ] npm 发布：**不发布任何 npm 稳定包**；且作用域 `@cuihairu/syncbond` 发布前需确认 scope 权限——**BLOCKED：用户输入**（2026-10-28 巡检点火证据：本机 `npm whoami` → ENEEDAUTH 未登录，scope 归属无从确认；`npm view syncbond` 与 `npm view @cuihairu/syncbond` 均 404 未占用；当前 `packages/ts-bindings/package.json` 包名为 `@syncbond/bindings-ts`（workspace 私有名，非发布目标）。手动动作：用户 `npm adduser` 登录并确认 `@cuihairu` scope 归属 → 按全局红线由用户给出版本号+发布令方可发布（禁止我自判断）；改名（上一条）可能先于发布改变最终包名。2026-10-29 复核：`npm whoami` 仍 ENEEDAUTH（未登录），scope 归属依旧无从确认） 已代决:按 docs/review/2026-10-30-decisions.md 执行(2026-10-30)(需用户输入,暂缓)
 
 ## 待拍板项（用户决策）
 
 1. **npm 发布策略**：是否发布、何时发布、scope `@cuihairu/syncbond` 权限确认（用户已令：不发布任何 npm 稳定包；scope 权限需确认）。2026-10-28 巡检证据：本机 npm 未登录（`npm whoami` ENEEDAUTH），`@cuihairu/syncbond` 未占用（404）。 已代决:按 docs/review/2026-10-30-decisions.md 执行(2026-10-30)(需用户输入,暂缓)
-2. **最终品牌名**：用户另行核验候选后定（README 已置顶「temporary dev name」）。
+2. **最终品牌名**：用户另行核验候选后定（README 已置顶「temporary dev name」）。 已代决:按 docs/review/2026-10-30-decisions.md 执行(2026-10-30)(需用户输入,暂缓)
 3. **跨版本协商**：~~协议 v2 出现后是否兼容旧对端（当前 v1 仅拒绝不协商）。~~ **已代决（2026-10-28 巡检授权，可推翻）：不支持/不开放——v2 不兼容 v1 对端，维持精确版本匹配硬失败。**
 4. **墓碑降级 GC**：~~是否给应用开放「仅时间阈值」的不安全裁剪模式。~~ **已代决（2026-10-28 巡检授权，可推翻）：不支持/不开放——应用不开放，保留内部/测试（conformance 确定性）专用。**
 5. **自动轮换触发**：成员移除是否由核心自动 rotate（当前 rotate 是应用手动调用）。 已代决:按 docs/review/2026-10-30-decisions.md 执行(2026-10-30)
@@ -80,3 +80,8 @@
 ## 审核发现
 
 - [x] 审核发现：品牌名条目 2026-10-29 复核称「crates.io `syncbond`/`syncbond-core`/`syncbond-ffi` 均 404 未占用，发布通道无障碍」，但 `syncbond` 并非仓库内任何 package 名（仅为 `crates/syncbond-python/Cargo.toml` 的 `[lib]` 名，其实际 package 名为 `syncbond-python`），且遗漏了其余真实可发布包 `syncbond-napi`/`syncbond-python`/`syncbond-wasm`，导致「发布通道无障碍」结论的证据与实际工作区包结构不一致。**属实，已修正为覆盖五个 workspace 包名，且 crates.io 占用状态在当前网络下未确认**（证据：`Cargo.toml:3-9`；`crates/syncbond-python/Cargo.toml:2`；`crates/syncbond-python/Cargo.toml:10`；`todo.md:38`）
+
+- [x] 审核发现：docs/review/2026-10-30-decisions.md 多处（条目 3 标题「todo.md:46」、小结行「自动轮换触发（todo.md:46）」）将「自动轮换触发」待拍板项定位到 todo.md:46，但该项实际在 todo.md:47（todo.md:46 是待拍板#4 墓碑降级 GC），行号引用偏移 1（docs/review/2026-10-30-decisions.md:68,102）。**属实，已修正**：决策文档条目 3 标题与小节行号改 todo.md:47（docs/review/2026-10-30-decisions.md:68,102）。
+- [x] 审核发现：docs/review/2026-10-30-decisions.md 条目 1 与 todo.md:38 均称「当前环境无法访问 crates.io，占用状态未确认」，但实测 crates.io API 可访问（对照 `serde`=200、index.crates.io=200），五个 workspace 包名 `syncbond`/`syncbond-core`/`syncbond-ffi`/`syncbond-napi`/`syncbond-python`/`syncbond-wasm` 均返回 404「does not exist」（确认为未占用而非访问被阻断），「无法访问」「未确认」表述与事实不符；若占用状态可联网确认，条目 1 理由 4「可能选到已占用名」的残余风险已实际排除（docs/review/2026-10-30-decisions.md:11,22；todo.md:38）。**属实，已修正**：docs/review/2026-10-30-decisions.md:11 与 todo.md:38 改述「已实测确认未占用」，条目 1 理由 4/5 与「待用户」「明确不做」同步更新（crates.io 占用残余风险已排除）。
+- [x] 审核发现：docs/review/2026-10-30-decisions.md 小结「待拍板项（用户决策）#2 最终品牌名」与「条目 1」同源但仅条目 1 在 todo.md:38 标注「已代决」，待拍板#2（todo.md:44）未同步标注「已代决:按 docs/review/2026-10-30-decisions.md 执行」，与待拍板#1（todo.md:43）已同步标注的状态不一致，易被误读为该项尚未处理（docs/review/2026-10-30-decisions.md:101；todo.md:44）。**属实，已修正**：todo.md:44 待拍板#2 补「已代决:按 docs/review/2026-10-30-decisions.md 执行(2026-10-30)(需用户输入,暂缓)」。
+- [x] 审核发现：本轮 diff 中决策文档其余内容（条目 2 npm 发布、条目 3 自动轮换触发及事实引用 `crypto.rs:160-162`/`crypto.rs:198-204`/`member_crypto.rs:184-207`、`Cargo.toml:3-9`、`crates/syncbond-python/Cargo.toml:2,10`、`README.md:11`、`packages/ts-bindings/package.json:2`）与仓库实际一致，未见其他问题（c715a279..HEAD）。**属实，复核通过，无修复**：逐项对照 `crypto.rs:160-162`、`crypto.rs:198-204`、`member_crypto.rs:184-207`、`Cargo.toml:3-9`、`crates/syncbond-python/Cargo.toml:2,10`、`README.md:11`、`packages/ts-bindings/package.json:2` 均与决策文档一致。
