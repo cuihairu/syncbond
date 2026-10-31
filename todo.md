@@ -94,3 +94,5 @@
 - [x] 审核发现：本轮 diff 未见问题（6b1f5ef..65bd5e8）。**属实，复核通过，无修复**：实测 `git diff 6b1f5ef..65bd5e8` 仅在 `todo.md:93` 新增上一条复核记录，且该记录与 `04191bdd..6b1f5ef` 实际改动一致；diff 无其他问题。原标签 `6b1f5ef..HEAD` 会含本行自身（HEAD 实为 6a37b98），已修正为排除自身。（证据：commit `65bd5e8`；`todo.md:93`）
 
 - [x] 审核发现：本轮 diff 未见问题（65bd5e81..43bc097）。**属实，复核通过，无修复**：实测 `git diff 65bd5e81..43bc097` 仅改 `todo.md`——commit 6a37b98 新增上一条复核记录，commit 43bc097 将其中标签由 `6b1f5ef..HEAD` 修正为 `6b1f5ef..65bd5e8` 并注明原委；最终记录与 `git diff 6b1f5ef..65bd5e8` 实测一致；diff 无其他问题。原标签 `65bd5e81..HEAD` 会含本行自身（HEAD 实为 43bc097），已修正为排除自身。（证据：commit `43bc097`；`todo.md:94`）
+
+- [x] 审核发现：本轮 diff 未见问题（43bc097..ea5583c）。**属实，复核通过，无修复**：实测 `git diff 43bc097..ea5583c` 仅改 `todo.md`——commit ea5583c 新增上一条复核记录（65bd5e81..43bc097）并勾除，最终记录与 `git diff 65bd5e81..43bc097` 实测一致；diff 无其他问题。原标签 `43bc097..HEAD` 会含本行自身（HEAD 实为 ea5583c），已修正为排除自身。（证据：本条所在 commit；`todo.md:96`）
