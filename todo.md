@@ -96,3 +96,5 @@
 - [x] 审核发现：本轮 diff 未见问题（65bd5e81..43bc097）。**属实，复核通过，无修复**：实测 `git diff 65bd5e81..43bc097` 仅改 `todo.md`——commit 6a37b98 新增上一条复核记录，commit 43bc097 将其中标签由 `6b1f5ef..HEAD` 修正为 `6b1f5ef..65bd5e8` 并注明原委；最终记录与 `git diff 6b1f5ef..65bd5e8` 实测一致；diff 无其他问题。原标签 `65bd5e81..HEAD` 会含本行自身（HEAD 实为 43bc097），已修正为排除自身。（证据：commit `43bc097`；`todo.md:94`）
 
 - [x] 审核发现：本轮 diff 未见问题（43bc097..ea5583c）。**属实，复核通过，无修复**：实测 `git diff 43bc097..ea5583c` 仅改 `todo.md`——commit ea5583c 新增上一条复核记录（65bd5e81..43bc097）并勾除，最终记录与 `git diff 65bd5e81..43bc097` 实测一致；diff 无其他问题。原标签 `43bc097..HEAD` 会含本行自身（HEAD 实为 ea5583c），已修正为排除自身。（证据：本条所在 commit；`todo.md:96`）
+
+- [x] 审核发现：本轮 diff 未见问题（ea5583cc..19a611b）。**属实，复核通过，无修复**：实测 `git diff ea5583cc..19a611b` 仅改 `todo.md`——commit a2f2446 新增上一条复核记录（43bc097..ea5583c）并勾除，commit 19a611b 将 P3 两条 BLOCKED（最终品牌名、npm 发布）的复核日期由 2026-10-29 刷新至 2026-10-31；两者声明与实测一致：`npm whoami`→ENEEDAUTH（未登录）、`npm view syncbond`/`@cuihairu/syncbond` 均 404、`README.md:11` 仍为临时名、仓库内无品牌候选清单（仅 docs/review/2026-10-30-decisions.md 记录核验结论）。原标签 `ea5583cc..HEAD` 会含本行自身（HEAD 实为 19a611b），已修正为排除自身。（证据：本条所在 commit；`todo.md:100`）
