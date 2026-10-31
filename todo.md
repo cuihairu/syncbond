@@ -92,3 +92,5 @@
 - [x] 审核发现：todo.md:91 新增复核行范围标签「83f583cf..HEAD」与实测范围不符——该行称复核对象为 commit 5df7176 且实测仅 `git diff 83f583cf..5df7176`，但 HEAD 实为 04191bd（本行所在提交），`..HEAD` 会含本行自身，范围标签应写 83f583cf..5df7176（todo.md:91）。**属实，已修正**：范围标签已改为 `83f583cf..5df7176`。（证据：本条所在 commit；todo.md:91）
 - [x] 审核发现：本轮 diff 未见问题（04191bdd..6b1f5ef）。**属实，复核通过，无修复**：实测 `git diff 04191bdd..6b1f5ef` 仅改 `todo.md` 一处——上一复核行的范围标签由 `83f583cf..HEAD` 修正为 `83f583cf..5df7176`（排除自身），并新增本复核行记录该修正；diff 干净，无其他问题。（证据：commit `6b1f5ef`；`todo.md:92`）
 - [x] 审核发现：本轮 diff 未见问题（6b1f5ef..65bd5e8）。**属实，复核通过，无修复**：实测 `git diff 6b1f5ef..65bd5e8` 仅在 `todo.md:93` 新增上一条复核记录，且该记录与 `04191bdd..6b1f5ef` 实际改动一致；diff 无其他问题。原标签 `6b1f5ef..HEAD` 会含本行自身（HEAD 实为 6a37b98），已修正为排除自身。（证据：commit `65bd5e8`；`todo.md:93`）
+
+- [x] 审核发现：本轮 diff 未见问题（65bd5e81..43bc097）。**属实，复核通过，无修复**：实测 `git diff 65bd5e81..43bc097` 仅改 `todo.md`——commit 6a37b98 新增上一条复核记录，commit 43bc097 将其中标签由 `6b1f5ef..HEAD` 修正为 `6b1f5ef..65bd5e8` 并注明原委；最终记录与 `git diff 6b1f5ef..65bd5e8` 实测一致；diff 无其他问题。原标签 `65bd5e81..HEAD` 会含本行自身（HEAD 实为 43bc097），已修正为排除自身。（证据：commit `43bc097`；`todo.md:94`）
