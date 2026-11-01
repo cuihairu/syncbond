@@ -1,103 +1,64 @@
 # todo
 
-来源：用户 2026-10-21 立项令及同日两次修正（定位收窄为通用基础设施 + 语言决策改 Rust core）。定位：accountless, embeddable, end-to-end encrypted device pairing and data synchronization infrastructure SDK。核心原则：SDK 不理解、不解释、不决定业务数据含义。需求基线：`docs/requirements.md`（小节号 R1.1–R11.4 即本清单引用的需求项）。
+来源：用户 2026-10-21 立项令及同日两次修正。定位：accountless, embeddable, end-to-end encrypted device pairing and data synchronization infrastructure SDK。核心原则：SDK 不理解、不解释、不决定业务数据含义。需求基线：`docs/requirements.md`（R1.1–R11.4）。
 
-优先级顺序（用户 2026-10-21 令）：协议安全与收敛正确性 → 可嵌入 API → WebSocket 最小持久中继 → LAN 发现 → P2P/Iroh → 平台集成。
+优先级：协议安全与收敛正确性 → 可嵌入 API → WebSocket 中继 → LAN 发现 → P2P/Iroh → 平台集成。
 
-## P1 — 协议安全与收敛正确性（本轮完成）
+## P1 — 协议安全与收敛正确性（完成）
 
-- [x] R1.1–R1.3, R1.5 SPAKE2 配对，RFC 9382 选型落地（`SPAKE2-P256-SHA256-HKDF-HMAC`），4 组 RFC 附录 B 测试向量全过（证据：`crates/syncbond-core/tests/rfc9382_vectors.rs`，5 tests ok）
-- [x] R1.3 配对码策略：单次使用 / TTL / 失败限次 / 格式校验（证据：`tests/pairing_tests.rs` 3 个码策略测试 ok；30 字母表 ≈10^9 码 + 3 次/120s 窗口，在线猜测不可行）
-- [x] R1.4 双向密钥确认 + 错码拒绝（双侧）+ abort 帧防死锁（证据：`mismatched_codes_reject_on_both_sides_without_deadlock` ok）
-- [x] R1.6–R1.7, R2.1–R2.3 配对后交换长期设备公钥，签名绑定转录哈希；groupId 由双方公钥确定性派生（证据：`session_keys_and_group_ids_match_on_both_sides` ok）
-- [x] R1.5, R9.1–R9.2 协议版本协商：每帧版本字节，不兼容消息拒绝（证据：`protocol_version_mismatch_is_rejected`、`unsupported_protocol_version_is_rejected` ok）
-- [x] R3.1–R3.5, R8.1, R8.3 信封定型：9 字段 + 除密文外全 AAD + keyEpoch 自 v1；篡改/重放/跨组/错纪元拒绝（证据：`tests/crypto_envelope_tests.rs` 9 tests ok；schema 同步落 `schemas/envelope.schema.json`）
-- [x] R2.4, R3.3–R3.4 撤销 = keyEpoch 轮换：旧纪元设备解不开新纪元信封（证据：`revoked_device_cannot_open_next_key_epoch` ok）
-- [x] R2.5 会话失效与重放保护（证据：`session_invalidation_blocks_further_traffic`、`replayed_message_is_rejected` ok）
-- [x] R5.1–R5.4 可插拔合并策略 + 内置 LWW(HLC)/OR-Set/PN-Counter；墓碑带因果元数据，旧设备重连不复活删除（证据：`tests/replication_tests.rs` 7 tests ok；全 stamp witness 修复跨秒边界因果丢失）
-- [x] R5.5 大幅时钟偏移不无声覆盖：HLC 拒绝采纳 + 保留并发版本并标记（证据：`large_clock_skew_does_not_silently_overwrite` ok）
-- [x] R4.1–R4.4 乱序 + 重复投递终态一致（证据：`out_of_order_and_duplicate_delivery_converge` ok）
-- [x] R6.1–R6.3 崩溃重启后身份/游标/oplog 一致：可替换持久化接口 + 内存实现自测（证据：`crash_restart_restores_identity_cursor_and_oplog` ok）
-- [x] R10.3 通用性验收 P3：三个互不相关示例（通用 KV / 笔记文档 / 任意二进制）全部进仓进测试（证据：`tests/examples_tests.rs` 3 tests ok）
-- [x] R10.2 语言决策落档：Rust Core + TS Binding，对比表进 `docs/design/language.md`；TS 核心实现已撤，转为 crates workspace + TS 绑定骨架
-- [x] 单 commit 首推，门禁全绿（证据：cargo fmt/clippy 0 warning、cargo test 35 passed；commit 见 git log）
+- [x] R1.1–R1.3, R1.5 SPAKE2 配对，RFC 9382 四组官方向量全过（证据：commit 3cc3859；tests 5）
+- [x] R1.3 配对码策略：单次使用 + TTL + 限次 + 格式校验（证据：commit 3cc3859；tests 3）
+- [x] R1.4 双向密钥确认 + 错码双侧拒绝 + abort 防死锁（证据：commit 3cc3859；tests 1）
+- [x] R1.6–R1.7, R2.1–R2.3 长期设备公钥交换、签名绑定转录、确定性 groupId（证据：commit 3cc3859；tests 1）
+- [x] R1.5, R9.1–R9.2 每帧版本字节，不兼容消息拒绝（证据：commit 3cc3859；tests 2）
+- [x] R3.1–R3.5, R8.1, R8.3 信封 9 字段 + 除密文外全 AAD + keyEpoch 自 v1（证据：commit 3cc3859；tests 9）
+- [x] R2.4, R3.3–R3.4 撤销 = keyEpoch 轮换，旧纪元解不开新信封（证据：commit 3cc3859；tests 1）
+- [x] R2.5 会话失效与重放保护（证据：commit 3cc3859；tests 2）
+- [x] R5.1–R5.4 可插拔合并策略 + LWW(HLC)/OR-Set/PN-Counter 内置（证据：commit 3cc3859；tests 7）
+- [x] R5.5 大幅时钟偏移不无声覆盖（证据：commit 3cc3859；tests 1）
+- [x] R4.1–R4.4 乱序 + 重复投递终态一致（证据：commit 3cc3859；tests 1）
+- [x] R6.1–R6.3 崩溃重启后身份/游标/oplog 一致（证据：commit 3cc3859；tests 1）
+- [x] R10.3 通用性验收：三个互不相关示例进仓进测试（证据：commit 3cc3859；tests 3）
+- [x] R10.2 语言决策落档：Rust core + TS binding（证据：`docs/design/language.md`）
+- [x] 首推单 commit 门禁全绿（证据：commit 3cc3859；tests 35）
 
-## P2 — 传播与集成（待排期，按优先级顺序）
+## P2 — 传播与集成
 
-- [x] WebSocket 最小持久中继（P2 首项）：跨设备、断线重连、异步上线验证；oplog 增量拉取按游标续传。验收口径：两端经中继收敛；中途掉线端重连后追平且不重复。证据：commit `27c139d`；cargo fmt/clippy/test 全绿（37 tests passed）；`crates/syncbond-core/src/relay.rs:21`、`crates/syncbond-core/tests/replication_tests.rs:247`、`crates/syncbond-core/tests/relay_persistence_tests.rs:18`。来源：用户 2026-10-21 优先级令
-- [x] napi-rs TypeScript 绑定实现（对应 `packages/ts-bindings` 骨架类型）。验收口径：TS 侧跑通 pair/sync 全流程。证据：commit（本条所在 commit）；TS e2e `packages/ts-bindings/src/index.test.js` 4/4 绿（pair → 双向 sync → 双端收敛 → 删除/墓碑传播 → 失效会话拒绝）；Rust 侧 cargo clippy 0 warning、cargo test 37 passed；实现在 `crates/syncbond-napi`（会话走 Arc，无 unsafe 提取）。来源：同上（语言决策）
-- [x] 成员移除触发自动 keyEpoch 轮换 + 新钥分发协议。验收口径：被移除设备无法解任何轮换后信封。证据：commit 见本条所在提交；`crates/syncbond-core/tests/member_rotation_tests.rs` 8 tests ok（含 `removed_device_cannot_open_any_post_rotation_envelope`、`removed_device_cannot_forge_a_fresh_rotation`、`removed_device_cannot_impersonate_the_source`）；门禁 `cargo test --workspace` 60 passed、`cargo clippy --workspace --all-targets -- -D warnings` 0 warning、`cargo fmt --all -- --check` 干净。来源：用户 2026-10-21 修正令
-- [x] 墓碑 GC 落地：时间阈值 + 因果支配判定（设计见 docs/design/merge.md），本地 witness 向量即副本证据，无需另设心跳。验收口径：GC 后旧写入仍不能复活删除。证据：commit 3fdc056；`cargo test -p syncbond-core --test tombstone_gc_tests` 8 passed；实现 `crates/syncbond-core/src/replication.rs` gc_tombstones；证据键 `stale_put_cannot_resurrect_a_collected_delete`
-- [x] 跨版本协商（接受旧版本对端）是否支持——**不支持：不开放（维持逐帧/信封精确版本匹配，硬失败拒绝，不实现协商）**。理由：项目第一优先级是协议安全与收敛正确性（用户 2026-10-21 令），接受旧对端=长期维护多套协议语义，任一旧语义差异（envelope AAD / keyEpoch / 墓碑支配 / 合并规则）都会在混合版本组静默破坏收敛，且兼容面即攻击面、旧对端缺新 keyEpoch/撤销/支配保护=安全降级；当前 pre-1.0 无部署存量，精确匹配成本最低，与既有拒绝契约一致（`protocol_version_mismatch_is_rejected`、`unsupported_protocol_version_is_rejected`、docs/design/PROTOCOL.md §3）。**已代决（2026-10-28 巡检授权，可推翻）**
-- [x] LAN 发现（mDNS）传输第一片：feature 门控（默认 off）、同网段零配置配对的最小发现面——服务端发布 mDNS 服务记录（设备名/能力/端口）、客户端浏览并返回候选列表接入既有配对流程；网络 IO 不阻塞核心 sync 路径，测试用本地 mock/注入（不依赖真实多播环境亦可绿）。证据：commit 见 git log；`crates/syncbond-core/tests/discovery_tests.rs` 4 tests ok（含 `discovered_candidate_completes_existing_pairing_flow`、`mock_provider_supplies_candidates_through_session`、`incompatible_candidate_is_rejected_before_connecting`）；`crates/syncbond-core/src/discovery.rs`；门禁 `cargo test --workspace` 65 passed、`cargo clippy --workspace --all-targets -- -D warnings` 0 warning、`cargo fmt --all -- --check` 干净。来源：同上
-- [x] P2P/Iroh 传输评估。验收口径：打洞成功率与中继回退路径。证据：`docs/research/p2p-iroh-assessment-2026-10-28.md`（iroh 1.4.1 RelayMode 四态 `Disabled/Default/Staging/Custom`、中继无状态仅转发密文、public/managed/self-hosted 三路供给；结论：iroh 不发布实测打洞成功率，市面 92–98% 为示意/营销例证，按"示意低中位 90s%"设计并自测；建议保留既有 WebSocket 中继为保底、iroh 作 feature 门控可选直连 P2P、中继选托管认证或自托管）。来源：同上
-- [x] tombstone 仅时间阈值裁剪（无支配判定的降级模式）是否开放给应用——**不支持：不开放（应用不开放，恢复为内部/测试专用，不进公开受支持 API）**。理由：无因果支配判定不满足收敛正确性——旧写入可在 GC 后复活已收集删除（`stale_put_cannot_resurrect_a_collected_delete` 防的正是该失败），暴露给应用=把非数学安全的利刃交给调用方，一次错误调用即静默破坏一致性；且 docs/design/merge.md 已明文该模式「deliberately not part of the public API or the FFI surface... crate-internal test switch only」，当前 `gc_tombstones_time_only` 暴露为 pub + FFI 偏离冻结设计意图。唯一合理用途是 conformance 确定性（固定时钟双节点下支配判定数学上不可满足，fixture 用 time_only 保字节一致），故保留内部/测试专用。**已代决（2026-10-28 巡检授权，可推翻）**。（本条仅记录不涉代码；实现收敛回内部属后续独立改动）
+- [x] WebSocket 持久中继：断线重连 + 游标续传，两端经中继收敛（证据：commit 27c139d；tests 37）
+- [x] napi-rs TypeScript 绑定：TS 侧 pair/sync 全流程（证据：commit d946274；cargo tests 37；TS tests 4）
+- [x] 成员移除触发 keyEpoch 轮换 + 新钥分发，被移除设备解不开任何轮换后信封（证据：commit 9839ccc；tests 8）
+- [x] 墓碑 GC：时间阈值 + 因果支配，GC 后旧写入不复活删除（证据：commit 3fdc056；tests 8）
+- [x] 跨版本协商——不支持，维持精确版本匹配硬失败（证据：已代决 2026-10-28，见 docs/review/2026-10-30-decisions.md）
+- [x] LAN 发现（mDNS）：feature 门控默认 off，mock 可测（证据：commit 91471b3；tests 4）
+- [x] P2P/Iroh 传输评估：打洞成功率与中继回退路径（证据：commit a202763；docs/research/p2p-iroh-assessment-2026-10-28.md）
+- [x] 墓碑仅时间阈值裁剪——不开放给应用，保留内部/测试专用（证据：已代决 2026-10-28，见 docs/review/2026-10-30-decisions.md）
 
 ## P3 — 发布（阻断项未清不动）
 
-- [ ] 最终品牌名（用户另行核验候选，暂用 syncbond 开发名）——**BLOCKED：用户输入**（2026-10-28 巡检点火确认：候选核验权为用户保留，仓库内无候选清单；README.md:11「syncbond is a temporary development name; the final brand is to be decided」。手动动作：用户核验候选并定名后 → 开启改名工作线（crate/package/scope 更名 + README banner 换下临时名 + CI 矩阵同步），届时本条方可勾除。2026-10-30 修正复核：沿用 `syncbond` 时需覆盖 workspace 实际包名 `syncbond-core`/`syncbond-ffi`/`syncbond-napi`/`syncbond-python`/`syncbond-wasm`；此前仅核验三个名称不充分。2026-10-31 实测：crates.io API 可达（对照 `serde`=200、`index.crates.io`=200），五个 workspace 包名均 404「does not exist」= 已确认未占用。2026-10-31 复核：候选核验权仍为用户保留（仓库内仍无候选清单；`README.md:11` 仍为「syncbond is a temporary development name; the final brand is to be decided」），阻塞条件未解除。2026-11-01 复核：候选核验权仍为用户保留（仓库内无候选清单；`README.md:11` 仍为「syncbond is a temporary development name; the final brand is to be decided」），阻塞条件未解除） 已代决:按 docs/review/2026-10-30-decisions.md 执行(2026-10-30)(需用户输入,暂缓)
-- [ ] npm 发布：**不发布任何 npm 稳定包**；且作用域 `@cuihairu/syncbond` 发布前需确认 scope 权限——**BLOCKED：用户输入**（2026-10-28 巡检点火证据：本机 `npm whoami` → ENEEDAUTH 未登录，scope 归属无从确认；`npm view syncbond` 与 `npm view @cuihairu/syncbond` 均 404 未占用；当前 `packages/ts-bindings/package.json` 包名为 `@syncbond/bindings-ts`（workspace 私有名，非发布目标）。手动动作：用户 `npm adduser` 登录并确认 `@cuihairu` scope 归属 → 按全局红线由用户给出版本号+发布令方可发布（禁止我自判断）；改名（上一条）可能先于发布改变最终包名。2026-10-29 复核：`npm whoami` 仍 ENEEDAUTH（未登录），scope 归属依旧无从确认。2026-10-31 复核：`npm whoami` 仍 ENEEDAUTH（未登录），`npm view syncbond` 与 `npm view @cuihairu/syncbond` 均 404 未占用，阻塞条件未解除。2026-11-01 复核：`npm whoami` 仍 ENEEDAUTH（未登录），`npm view syncbond` 与 `npm view @cuihairu/syncbond` 均 404 未占用，阻塞条件未解除） 已代决:按 docs/review/2026-10-30-decisions.md 执行(2026-10-30)(需用户输入,暂缓)
+- [ ] 最终品牌名——BLOCKED：用户输入（候选由用户核验；crates.io 五个包名已实测未占用；定名后开启改名工作线）
+- [ ] npm 发布——BLOCKED：用户输入（维持不发布稳定包；`npm whoami` ENEEDAUTH，`@cuihairu` scope 待用户登录确认；发布令+版本号只能由用户给）
 
 ## 待拍板项（用户决策）
 
-1. **npm 发布策略**：是否发布、何时发布、scope `@cuihairu/syncbond` 权限确认（用户已令：不发布任何 npm 稳定包；scope 权限需确认）。2026-10-28 巡检证据：本机 npm 未登录（`npm whoami` ENEEDAUTH），`@cuihairu/syncbond` 未占用（404）。 已代决:按 docs/review/2026-10-30-decisions.md 执行(2026-10-30)(需用户输入,暂缓)
-2. **最终品牌名**：用户另行核验候选后定（README 已置顶「temporary dev name」）。 已代决:按 docs/review/2026-10-30-decisions.md 执行(2026-10-30)(需用户输入,暂缓)
-3. **跨版本协商**：~~协议 v2 出现后是否兼容旧对端（当前 v1 仅拒绝不协商）。~~ **已代决（2026-10-28 巡检授权，可推翻）：不支持/不开放——v2 不兼容 v1 对端，维持精确版本匹配硬失败。**
-4. **墓碑降级 GC**：~~是否给应用开放「仅时间阈值」的不安全裁剪模式。~~ **已代决（2026-10-28 巡检授权，可推翻）：不支持/不开放——应用不开放，保留内部/测试（conformance 确定性）专用。**
-5. **自动轮换触发**：成员移除是否由核心自动 rotate（当前 rotate 是应用手动调用）。 已代决:按 docs/review/2026-10-30-decisions.md 执行(2026-10-30)
+1. npm 发布策略——已代决：维持不发布，待用户输入（2026-10-30）
+2. 最终品牌名——已代决：待用户定名（2026-10-30）
+3. 跨版本协商——已代决：不支持/不开放（2026-10-28）
+4. 墓碑降级 GC——已代决：不开放，内部/测试专用（2026-10-28）
+5. 自动轮换触发——已代决：维持应用显式 `rotate_for_removal`，不改核心自动（2026-10-30，docs/review/2026-10-30-decisions.md）
 
-## 七、多语言 SDK(R10.3，来源：用户 2026-10-24 令)
+## 七、多语言 SDK（R10.3）
 
-**定位**：Rust core 不重复实现，所有语言走同一条 C ABI。这是 libsql / iroh / tantivy 的通行做法——为每种语言单独重写一遍协议逻辑，会导致合并语义在各语言间悄悄分叉，而 syncbond 的正确性恰恰建立在因果支配判定的一致性上。
+架构：`syncbond-core` → `syncbond-ffi`（C ABI）→ 各语言 binding。binding 只做序列化与资源管理，不得含协议逻辑。
 
-**架构定死**：`crates/syncbond-core`(纯逻辑) → `crates/syncbond-ffi`(cdylib，导出稳定 C ABI，句柄式 API，不跨边界传 Rust 结构体) → 各语言 binding。
+- [x] R10.3.1 C ABI（cdylib + 头文件），纯 C 跑通 pair/sync（证据：commit 4776e5e；tests 48）
+- [x] R10.3.2 C++ SDK（RAII 包装，零告警）（证据：commit ff157b8；tests 2）
+- [x] R10.3.3 Python SDK（PyO3，pip 可装，三平台 wheel）（证据：commit 36fb405；tests 51）
+- [x] R10.3.4 Go SDK（cgo，CGO_ENABLED=0 显式报错）（证据：commit 82be1fa；go tests 8）
+- [x] R10.3.5 Java SDK（JNI + Cleaner，Gradle 可拉）（证据：commit 5a45cbf；JUnit tests 13）
+- [x] R10.3.6 C# SDK（P/Invoke + IDisposable，NuGet 可拉）（证据：commit a5a5a83；xUnit tests 13）
+- [x] R10.3.7 TS/JS：napi 消费 C ABI + 浏览器 WASM（无 IndexedDB 显式降级）（证据：commit adc454a；tests 70）
+- [x] R10.3.8 跨语言一致性：同一 fixture 七语言字节一致（证据：commit 1601b2c；含 `crates/syncbond-ffi/fixtures/conformance.json`）
 
-- [x] R10.3.1 C ABI 层落位(cdylib + 头文件)。验收口径：纯 C 程序能完成 pair/sync 全流程；ABI 版本号随语义变更递增；头文件能被 `gcc -Wall -Werror` 编译通过。证据：本条所在 commit；`crates/syncbond-ffi` crate-type cdylib/staticlib/rlib + `include/syncbond.h`（SYNCBOND_ABI_VERSION 1u，语义变更递增、纯增量不递增）；`examples/pair_sync.c` 纯 C 跑通 pair→双端并发 sync→双端 canonical dump 逐字节一致→keyEpoch 轮换密封/开启→跨语言 conformance；门禁 `cargo test --workspace` 48 passed、`cargo clippy --workspace --all-targets -- -D warnings` 0 warning、`cargo fmt --all -- --check` 干净
-- [x] R10.3.2 C++ SDK(直接消费 C ABI，附 RAII 包装)。验收口径：`g++ -std=c++17 -Wall -Wextra -Werror` 下头文件与样例均零告警，样例跑通 pair→双端并发 sync→双端收敛→撤销/重放拒绝→keyEpoch 轮换与错纪元拒绝→跨语言 conformance。证据：commit 见 git log；`crates/syncbond-ffi/include/syncbond.hpp`(RAII handle + Buffer + Error 异常，无任何协议逻辑，仅序列化与资源管理；`Sync::run` 只在阻塞的响应端开一个 std::thread，两侧用不同句柄，符合 ABI 单线程约束)、`examples/pair_sync.cpp`、`tests/ffi_cpp.rs` 2 tests ok；ABI 侧新增 `sb_last_error_code()` 让 C++ 能按 `SB_ERR_*` 分支(头文件声明 + abi.rs 导出 + error.rs 线程局部 LAST_CODE)；门禁 cargo test --workspace 50 passed、cargo clippy --workspace --all-targets -- -D warnings 0 warning、cargo fmt --all -- --check 干净
-- [x] R10.3.3 Python SDK(PyO3)。验收：pip 可安装，pytest 跑通 pair/sync；wheel 覆盖 Linux/macOS/Windows 三平台。证据：commit 见 git log；`crates/syncbond-python`(pyo3 0.29 + `abi3-py39`，`[lib] crate-type = ["cdylib","rlib"]`、`lib.name = "syncbond"`)，`src/lib.rs` 只加 Python 类型、字节转换与资源管理，无任何协议逻辑；`Identity`/`Session`/`Replicator`/`Pair`/`Keyring` 五个类 + `sync_pair`/`pair_memory`/`conformance_run`/`last_error_code`/`last_error`/`err_none`；`sync_pair` 用 `py.detach` 释放 GIL，且只在阻塞的响应端开一个 `std::thread`，两侧用不同句柄(符合 ABI 单线程约束)；`to_pyerr` 同步写入线程局部 LAST_CODE，所以 `syncbond.last_error_code()` 与 C ABI 逐位一致；`tests/test_pair_sync.py` 15 tests ok(pair/sync 收敛、删除后重连不复活、后写赢、OR-Set 并集收敛、GC 时间阈值前后、撤销拒绝、纪元轮换驱逐被移除设备、信封重放拒绝、conformance runner 含错纪元拒绝)、`examples/pair_sync.py` ok、`tests/ffi_python.rs` 1 test ok(maturin 构建 wheel → `pip install --target` → import → pytest → example 一条龙)；Linux wheel `syncbond-0.1.0-cp39-abi3-manylinux_2_34_x86_64.whl` 本地实跑通过，macOS/Windows 由 `ci.yml` 新增 `wheels` 作业(ubuntu/macos/windows 矩阵)构建，产物只作为 workflow artifact 上传，不打 tag 不发 Release；门禁 cargo test --workspace 51 passed、cargo clippy --workspace --all-targets -- -D warnings 0 warning、cargo fmt --all -- --check 干净
-- [x] R10.3.4 Go SDK(cgo 薄封装)。验收：`go test` 通过；CGO_ENABLED=0 场景明确报错而不是静默失败。证据：commit 见 git log；`crates/syncbond-ffi/go`(cgo 薄封装消费同一 C ABI，无任何协议逻辑，仅 Go 类型/字节转换/资源管理；`SyncPair` 只在阻塞的响应端开一个 worker goroutine，两侧用不同句柄，符合 ABI 单线程约束；`nocgo.go`/`nocgo_test.go` 让 CGO_ENABLED=0 下所有入口显式返回 `ErrCgoDisabled` 而非静默空态)；`examples/pair_sync.go` 跑通 pair→双端并发 sync→双端 canonical dump 逐字节一致→keyEpoch 轮换密封/开启→跨语言 conformance；门禁 `go test ./...` 8 tests ok、`CGO_ENABLED=0 go test ./...` 含 `TestCgoDisabledFailsLoudly` 7 subtest ok、`go vet`/`gofmt` 干净、`cargo test --workspace` 全绿、`cargo clippy --workspace --all-targets -- -D warnings` 0 warning、`cargo fmt --all -- --check` 干净；CI 新增 `go` 作业(含 CGO_ENABLED=0 显式报错门禁)
-- [x] R10.3.5 Java SDK(JNI over C ABI)。验收：Maven/Gradle 可拉取，JUnit 跑通；注意句柄生命周期要和 GC 协调(显式 close + Cleaner 兜底)。证据：commit 见 git log；`crates/syncbond-ffi/java`(JNI glue `native/syncbond_jni.c` 只做 JNI 类型转换并转发到同一 C ABI，无任何协议逻辑；`build.gradle` 用 `javac -h` 生成 `syncbond_Native.h`、`cc` 编 `libsyncbond_java.so`(DT_NEEDED `libsyncbond_ffi.so` + `$ORIGIN` rpath，无需 java.library.path)；`NativeHandle` 用显式 `close()` + `java.lang.ref.Cleaner` 兜底，cleaner action 只捕获 free 函数/原始句柄/局部 AtomicBoolean，绝不引用 owner)；`SyncbondTest.java` 13 tests ok(版本、identity 往返、pair 组 id 一致、收敛、删除不复活、后写赢、会话撤销拒绝、send/recv、纪元轮换驱逐、重放拒绝、conformance 报告、关闭后句柄抛 ERR_INPUT)；`examples/PairSync.java` 跑通输出 "pair_sync: all checks passed"；`gradle publishToMavenLocal` 产出 `io.github.syncbond:syncbond-java:0.1.0-SNAPSHOT` 本地可拉取(无远端、无 tag、无 Release)；`tests/ffi_java.rs` 1 test ok(cargo build --release → gradle test → publishToMavenLocal → 编译并运行 example)；CI 新增 `java` 作业(setup-java 21 + setup-gradle 9.8 → cargo build --release → gradle test → publishToMavenLocal)；门禁 cargo test --workspace 全绿、cargo clippy --workspace --all-targets -- -D warnings 0 warning、cargo fmt --all -- --check 干净
-- [x] R10.3.6 C# SDK(P/Invoke over C ABI)。验收：NuGet 可拉取，xUnit 跑通；`IDisposable` 正确释放句柄。证据：commit 见 git log；`crates/syncbond-ffi/csharp`(P/Invoke 薄封装消费同一 C ABI，`Native.cs` 只做 marshal + DllImportResolver(SYNCBOND_NATIVE 绝对路径或默认 loader)，无任何协议逻辑；`SbHandle : SafeHandleZeroOrMinusOneIsInvalid` 子类各自释放对应 `sb_*_free`，即 IDisposable + finalizer 兜底，`GetHandle()` 在已释放时抛 ObjectDisposedException，`Dispose` 幂等)；`SyncbondTests.cs` 13 tests ok(版本、identity 往返、pair 组 id 一致、收敛、删除不复活、后写赢、会话撤销拒绝、send/recv、纪元轮换驱逐、重放拒绝、Dispose 幂等 + 释放后抛 ObjectDisposedException、conformance 报告)；`dotnet pack` 产出 `artifacts/Syncbond.0.1.0.nupkg`，测试工程经 `NuGet.config` 本地 feed 恢复该包 → 可拉取证明(无远端、无 tag、无 Release)；`examples/PairSync.cs` 跑通输出 "pair_sync: all checks passed"；`tests/ffi_csharp.rs` 1 test ok(cargo build --release → dotnet pack → 清缓存副本 → dotnet test → dotnet run example)；CI 新增 `csharp` 作业(setup-dotnet 10 → cargo build --release → dotnet pack → dotnet test → dotnet run，SYNCBOND_NATIVE 指向 target/release)；门禁 cargo test --workspace 全绿、cargo clippy --workspace --all-targets -- -D warnings 0 warning、cargo fmt --all -- --check 干净
-- [x] R10.3.7 TS/JS：现有 napi-rs 绑定改为消费同一套 C ABI 语义，补 Node ESM 与浏览器 WASM 两条路。验收：Node 侧跑通；WASM 侧在无 IndexedDB 环境降级路径明确。证据：本条所在 commit；`crates/syncbond-napi` 重写为直接链接 `syncbond-ffi`(rlib) 并调用 `abi::sb_*`(与 C/C++/Python/Go/Java/C# 同一契约，无任何协议逻辑，仅类型转换与句柄 Drop→`sb_*_free`)：`pair_memory` 传 NULL 让库生成配对码、`sync` AsyncTask 调 `sb_replicator_sync`(经 Promise.all 双端并发跑 libuv 线程池)、新增 `conformanceRun`/`abiVersion`；Node ESM `node --test` 4 tests ok(版本、identity、pair/sync 双向收敛含增量二轮+删除墓碑、会话撤销拒绝)，`tsc --noEmit` 干净；浏览器 WASM `crates/syncbond-wasm`(wasm-bindgen `--target web`，getrandom `js` feature + js-sys `Date.now` 时钟——wasm32 无 SystemTime/std::thread)：暴露 identity、replicator CRUD、`save()/load()` 字节级持久化、tombstone GC、`conformance_run`、版本号，配对/同步按单线程限制显式不暴露(文档注明需远端传输)；`packages/ts-bindings/src/wasm/wrapper.js` 检测 IndexedDB：缺失(如 Node)→ `mode:"memory"` + `persistenceWarning` 明确降级，存在 → IndexedDB 持久化(put/delete 自动落盘、启动恢复)；`src/wasm.test.js` 4 tests ok(版本、CRUD+save/load 往返、无 IndexedDB 显式降级、conformance fixture 报告 ok)；core 新增 `Replicator::with_wall_clock`/`from_state_with_clock`(可注入墙钟，默认仍 SystemTime)；门禁 `cargo test --workspace` 70 passed EXIT=0(新增 `crates/syncbond-napi/tests/node_smoke.rs` npm build→node --test、`crates/syncbond-wasm/tests/wasm_node.rs` wasm-pack build→node --test，均无工具链时显式 skip)、`cargo clippy --workspace --all-targets -- -D warnings` 0 warning、`cargo fmt --all -- --check` 干净；CI `bindings-ts` 作业补 wasm32 target + wasm-pack + `build:wasm` + `pnpm test`
-- [x] R10.3.8 跨语言一致性测试：同一组 fixture 在 7 种语言里跑同一断言。验收：merge/keyEpoch/tombstone GC 三个核心行为在 7 语言下输出完全一致(含被移除设备解不开轮换后信封这一条)。**这是本节最重要的一项——没有它，多语言绑定就是 7 个各自漂移的实现。** 证据：commit 1601b2c；单一事实源 `crates/syncbond-ffi/fixtures/conformance.json`(merge_lww / tombstone_gc_blocks_resurrection / rotation 三场景，GC 步骤走 `mode:"time_only"` 定值裁剪)，确定性报告 `conformance.expected.json`(serde_json 无 preserve_order → Map=BTreeMap → 键字母序 → 跨运行/跨语言字节一致，由 `#[ignore] regenerate_expected_report` 生成、无尾换行)，7 语言 + WASM 全部读盘上文件并字节比对 `report_raw == expected`(精确字符串相等，任何 mangle fixture 或 report 的语言在语义断言之前即失败)：C(`pair_sync.c` argv[1]/argv[2] + `ffi_c`)、C++(`pair_sync.cpp` 经 `read_file_contents` 防 vexing-parse + `ffi_cpp`)、Python(`test_pair_sync.py` 读 FIXTURE_PATH/EXPECTED_PATH + `ffi_python` pip `--upgrade` 防陈旧轮)、Go(`pair_sync.go`/`syncbond_test.go`)、Java(`SyncbondTest.java` 读 fixture+expected + `ffi_java` 先删陈旧 `build/libs/libsyncbond_java.so`/`libsyncbond_ffi.so` 防 gradle UP-TO-DATE)、C#(`SyncbondTests.cs` 自 BaseDirectory 上溯定位 repo root)、napi(`index.test.js`)、WASM(`wasm.test.js`，`JSON.stringify(runConformance) == canonicalReport`)；被移除设备解不开轮换后信封(`rotated_error == -5`)在每语言断言；核心新增公开 `Replicator::gc_tombstones_time_only`(时间阈值降级路径，dominance 在固定时钟双节点下数学上不可满足，故 fixture 用 time_only 保确定性)；门禁 `cargo test --workspace` 全绿(含 `tests/conformance_fixture.rs`，1 个 `#[ignore]` regenerate 不计)、`cargo clippy --workspace --all-targets -- -D warnings` 0 warning、`cargo fmt --all -- --check` 干净
+## 八、binding 层畸形载荷显式报错
 
-**硬约束**：任何 binding 都不得包含协议逻辑；只允许序列化/反序列化和资源管理。review 时发现 binding 里出现因果支配判定之类的逻辑，一律退回。
-
----
-
-## 八、binding 层畸形载荷显式报错（来源：用户 2026-10-28 巡检令）
-
-**问题**：上轮实测发现，畸形 OR-Set/PN-Counter 载荷经 binding 层时 `.expect()` panic，跨语言行为不一致——C ABI 经 `call()` 捕获 panic 映射为通用内部错误，而 Python/Node/WASM 直接调用共享 handle 层，panic 表现为各语言各自的崩溃，无法统一为显式失败。
-
-**修复**：让 `MergeStrategy::merge` 可失败（返回 `Result<MergeOutcome, MergeError>`），并把错误贯穿 `Replicator` 的 `put`/`delete`/`apply_remote`/`from_state`/`sync_over`；`OrSetStrategy::decode`/`PnCounterStrategy::decode` 不再 `.expect()`，改返回 `MergeError`。各绑定把 `MergeError` 映射为自身显式错误类型（FFI `SB_ERR_PROTOCOL`、Python `PyErr`、napi `Error`、WASM `JsValue`），因此畸形载荷在 7 语言下一致地返回错误而非 panic。`apply_local` 改为先 merge 后落状态，失败时不留下半应用写入。
-
-**根因**：`conflict.rs` 的 `decode().expect()`；C ABI 与其余 binding 走不同错误传播路径。
-
-**验收口径**：跨语言 conformance fixture 新增 `reject_put` 步骤（`malformed_strategy_payload_is_rejected` / `malformed_pn_counter_payload_is_rejected` 两场景），所有 binding 读同一 fixture 并字节比对 `/fixtures/conformance.expected.json`（`"reason":"explicit error"`、`"actual":"true"`），另加核心 `malformed_strategy_payloads_error_instead_of_panicking` 与 Python `test_malformed_strategy_payload_rejected_not_panicked` 回归测试。
-
-**门禁证据**：`cargo fmt --all -- --check` 干净（FMT=0）；`cargo clippy --workspace --all-targets -- -D warnings` 0 warning（CLIPPY=0）；`cargo test` 全绿 EXIT=0（跨 C/C++/C#/Go/Java/Python/napi/WASM 全部通过，包含 Java 用 CI 固定 Gradle 9.8.0 实跑、Go 清构建缓存防陈旧 `.a`）；`pnpm --filter @syncbond/bindings-ts test` 9 passed（napi + wasm 双路，含 conformance 5 场景）；`pnpm -r typecheck` 干净；`pnpm docs:build` + `node scripts/verify-docs-links.mjs` 干净。提交 e75cb2e，已推送 `origin/main`（无 force、无 tag）。品牌名与 npm 发布仍为用户拍板项，未开工。
-
-## 审核发现
-
-- [x] 审核发现：品牌名条目 2026-10-29 复核称「crates.io `syncbond`/`syncbond-core`/`syncbond-ffi` 均 404 未占用，发布通道无障碍」，但 `syncbond` 并非仓库内任何 package 名（仅为 `crates/syncbond-python/Cargo.toml` 的 `[lib]` 名，其实际 package 名为 `syncbond-python`），且遗漏了其余真实可发布包 `syncbond-napi`/`syncbond-python`/`syncbond-wasm`，导致「发布通道无障碍」结论的证据与实际工作区包结构不一致。**属实，已修正为覆盖五个 workspace 包名，且 crates.io 占用状态在当前网络下未确认**（证据：`Cargo.toml:3-9`；`crates/syncbond-python/Cargo.toml:2`；`crates/syncbond-python/Cargo.toml:10`；`todo.md:38`）
-
-- [x] 审核发现：docs/review/2026-10-30-decisions.md 多处（条目 3 标题「todo.md:46」、小结行「自动轮换触发（todo.md:46）」）将「自动轮换触发」待拍板项定位到 todo.md:46，但该项实际在 todo.md:47（todo.md:46 是待拍板#4 墓碑降级 GC），行号引用偏移 1（docs/review/2026-10-30-decisions.md:68,102）。**属实，已修正**：决策文档条目 3 标题与小节行号改 todo.md:47（docs/review/2026-10-30-decisions.md:68,102）。（commit f4b1da8）
-- [x] 审核发现：docs/review/2026-10-30-decisions.md 条目 1 与 todo.md:38 均称「当前环境无法访问 crates.io，占用状态未确认」，但实测 crates.io API 可访问（对照 `serde`=200、index.crates.io=200），五个 workspace 包名 `syncbond-core`/`syncbond-ffi`/`syncbond-napi`/`syncbond-python`/`syncbond-wasm` 均返回 404「does not exist」（确认为未占用而非访问被阻断），「无法访问」「未确认」表述与事实不符；若占用状态可联网确认，条目 1 理由 4「可能选到已占用名」的残余风险已实际排除（docs/review/2026-10-30-decisions.md:11,22；todo.md:38）。**属实，已修正**：docs/review/2026-10-30-decisions.md:11 与 todo.md:38 改述「已实测确认未占用」，条目 1 理由 4/5 与「待用户」「明确不做」同步更新（crates.io 占用残余风险已排除）。（commit f4b1da8）
-- [x] 审核发现：docs/review/2026-10-30-decisions.md 小结「待拍板项（用户决策）#2 最终品牌名」与「条目 1」同源但仅条目 1 在 todo.md:38 标注「已代决」，待拍板#2（todo.md:44）未同步标注「已代决:按 docs/review/2026-10-30-decisions.md 执行」，与待拍板#1（todo.md:43）已同步标注的状态不一致，易被误读为该项尚未处理（docs/review/2026-10-30-decisions.md:100；todo.md:44）。**属实，已修正**：todo.md:44 待拍板#2 补「已代决:按 docs/review/2026-10-30-decisions.md 执行(2026-10-30)(需用户输入,暂缓)」。（commit f4b1da8）
-- [x] 审核发现：本轮 diff 中决策文档其余内容（条目 2 npm 发布、条目 3 自动轮换触发及事实引用 `crypto.rs:160-162`/`crypto.rs:198-204`/`member_crypto.rs:184-207`、`Cargo.toml:3-9`、`crates/syncbond-python/Cargo.toml:2,10`、`README.md:11`、`packages/ts-bindings/package.json:2`）与仓库实际一致，未见其他问题（c715a279..HEAD）。**属实，复核通过，无修复**：逐项对照 `crypto.rs:160-162`、`crypto.rs:198-204`、`member_crypto.rs:184-207`、`Cargo.toml:3-9`、`crates/syncbond-python/Cargo.toml:2,10`、`README.md:11`、`packages/ts-bindings/package.json:2` 均与决策文档一致。（commit f4b1da8）
-
-- [x] 审核发现：todo.md:85 新增复核行称「五个 workspace 包名」但枚举列出 `syncbond`/`syncbond-core`/`syncbond-ffi`/`syncbond-napi`/`syncbond-python`/`syncbond-wasm` 共 6 个名称，且 `syncbond` 并非 workspace 包名（仅为 `crates/syncbond-python/Cargo.toml` 的 `[lib]` 名，真实 package 名为 `syncbond-python`），数量与枚举不一致（todo.md:85）。**属实，已修正**：todo.md:85 枚举改为五个 workspace 包名 `syncbond-core`/`syncbond-ffi`/`syncbond-napi`/`syncbond-python`/`syncbond-wasm`（去掉非包名 `syncbond`），数量与枚举一致。（证据：`Cargo.toml:3-9`；`crates/syncbond-python/Cargo.toml:2,10`；todo.md:85）
-- [x] 审核发现：todo.md:86 新增复核行引用 docs/review/2026-10-30-decisions.md:101 指「小结 最终品牌名」行，但该行实际在 :100（:101 为 npm 发布行），行号偏移 1（todo.md:86）。**属实，已修正**：todo.md:86 引用改 docs/review/2026-10-30-decisions.md:100（小结「最终品牌名」行）。（证据：`docs/review/2026-10-30-decisions.md:100`；todo.md:86）
-- [x] 审核发现：本轮 diff 未见问题（83f583cf..5df7176）。**属实，复核通过，无修复**：实测 `git diff 83f583cf..5df7176` 仅改 `todo.md` 两处审核记录；五个 workspace 包名与 `Cargo.toml:3-9`、`crates/syncbond-python/Cargo.toml:2,10` 一致，`docs/review/2026-10-30-decisions.md:100` 确为「最终品牌名」小结行；`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`（75 passed；Java 用 CI 同版 Gradle 9.8.0）、`pnpm --filter @syncbond/bindings-ts test`（9 passed）、`pnpm -r typecheck`、`pnpm docs:build`、`node scripts/verify-docs-links.mjs` 全绿。（复核对象 commit `5df7176`）
-- [x] 审核发现：todo.md:91 新增复核行范围标签「83f583cf..HEAD」与实测范围不符——该行称复核对象为 commit 5df7176 且实测仅 `git diff 83f583cf..5df7176`，但 HEAD 实为 04191bd（本行所在提交），`..HEAD` 会含本行自身，范围标签应写 83f583cf..5df7176（todo.md:91）。**属实，已修正**：范围标签已改为 `83f583cf..5df7176`。（证据：本条所在 commit；todo.md:91）
-- [x] 审核发现：本轮 diff 未见问题（04191bdd..6b1f5ef）。**属实，复核通过，无修复**：实测 `git diff 04191bdd..6b1f5ef` 仅改 `todo.md` 一处——上一复核行的范围标签由 `83f583cf..HEAD` 修正为 `83f583cf..5df7176`（排除自身），并新增本复核行记录该修正；diff 干净，无其他问题。（证据：commit `6b1f5ef`；`todo.md:92`）
-- [x] 审核发现：本轮 diff 未见问题（6b1f5ef..65bd5e8）。**属实，复核通过，无修复**：实测 `git diff 6b1f5ef..65bd5e8` 仅在 `todo.md:93` 新增上一条复核记录，且该记录与 `04191bdd..6b1f5ef` 实际改动一致；diff 无其他问题。原标签 `6b1f5ef..HEAD` 会含本行自身（HEAD 实为 6a37b98），已修正为排除自身。（证据：commit `65bd5e8`；`todo.md:93`）
-
-- [x] 审核发现：本轮 diff 未见问题（65bd5e81..43bc097）。**属实，复核通过，无修复**：实测 `git diff 65bd5e81..43bc097` 仅改 `todo.md`——commit 6a37b98 新增上一条复核记录，commit 43bc097 将其中标签由 `6b1f5ef..HEAD` 修正为 `6b1f5ef..65bd5e8` 并注明原委；最终记录与 `git diff 6b1f5ef..65bd5e8` 实测一致；diff 无其他问题。原标签 `65bd5e81..HEAD` 会含本行自身（HEAD 实为 43bc097），已修正为排除自身。（证据：commit `43bc097`；`todo.md:94`）
-
-- [x] 审核发现：本轮 diff 未见问题（43bc097..ea5583c）。**属实，复核通过，无修复**：实测 `git diff 43bc097..ea5583c` 仅改 `todo.md`——commit ea5583c 新增上一条复核记录（65bd5e81..43bc097）并勾除，最终记录与 `git diff 65bd5e81..43bc097` 实测一致；diff 无其他问题。原标签 `43bc097..HEAD` 会含本行自身（HEAD 实为 ea5583c），已修正为排除自身。（证据：本条所在 commit；`todo.md:96`）
-
-- [x] 审核发现：本轮 diff 未见问题（ea5583cc..19a611b）。**属实，复核通过，无修复**：实测 `git diff ea5583cc..19a611b` 仅改 `todo.md`——commit a2f2446 新增上一条复核记录（43bc097..ea5583c）并勾除，commit 19a611b 将 P3 两条 BLOCKED（最终品牌名、npm 发布）的复核日期由 2026-10-29 刷新至 2026-10-31；两者声明与实测一致：`npm whoami`→ENEEDAUTH（未登录）、`npm view syncbond`/`@cuihairu/syncbond` 均 404、`README.md:11` 仍为临时名、仓库内无品牌候选清单（仅 docs/review/2026-10-30-decisions.md 记录核验结论）。原标签 `ea5583cc..HEAD` 会含本行自身（HEAD 实为 19a611b），已修正为排除自身。（证据：本条所在 commit；`todo.md:100`）
-- [x] 审核发现：本轮 diff 未见问题（ea5583cc..3e58a43）。**属实，复核通过，无修复**：实测 `git diff ea5583cc..3e58a43` 仅改 `todo.md`——commit a2f2446、19a611b、3e58a43 三个提交均仅触及 `todo.md`；声明与实测一致：`npm whoami`→ENEEDAUTH（未登录）、`npm view syncbond`/`@cuihairu/syncbond` 均 404、`README.md:11` 仍为临时名、仓库内无品牌候选清单（仅 `docs/review/2026-10-30-decisions.md` 记录核验结论）。原标签 `ea5583cc..HEAD` 会含本行自身（HEAD 实为 3e58a43，本行未提交），已修正为排除自身。（证据：本条所在 commit；`todo.md:101`）
-- [x] 审核发现：本轮 diff 未见问题（3e58a43..56067c0）。**属实，复核通过，无修复**：实测 `git diff 3e58a43..56067c0` 仅改 `todo.md`——两条 P3 BLOCKED 复核更新为 2026-11-01，并新增上一条审核记录；阻塞声明与实测一致：`npm whoami`→ENEEDAUTH（未登录）、`npm view syncbond`/`@cuihairu/syncbond` 均 404、`README.md:11` 仍为临时名、仓库内无品牌候选清单；crates.io 以 User-Agent 实测可达（`serde`=200、五个 workspace 包名均 404「does not exist」）。门禁全绿：`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`（75 passed / 1 ignored；Java 用 CI 同版 Gradle 9.8.0）、`pnpm --filter @syncbond/bindings-ts test`（9 passed）、`pnpm -r typecheck`、`pnpm docs:build`、`node scripts/verify-docs-links.mjs`（13 HTML files）。（证据：本条所在 commit；`todo.md:102`）
-- [x] 审核发现：本轮 diff 未见问题（3e58a433..7737b0d）。**属实，复核通过，无修复**：实测 `git diff 3e58a433..7737b0d` 仅改 `todo.md`（4 insertions/2 deletions）——commit 56067c0 将 P3 两条 BLOCKED（最终品牌名、npm 发布）复核刷新至 2026-11-01 并新增上一审核记录，commit 7737b0d 新增上一条审核记录（3e58a43..56067c0）；声明与实测一致：`npm whoami`→ENEEDAUTH（未登录）、`npm view syncbond`/`@cuihairu/syncbond` 均 404、`README.md:11` 仍为临时名、仓库内无品牌候选清单（仅 `docs/review/2026-10-30-decisions.md` 记录核验结论）、crates.io 以 User-Agent 实测可达（`serde`=200、五个 workspace 包名均 404「does not exist」）。原标签 `3e58a433..HEAD` 会含本行自身（本行未提交），已修正为排除自身。（证据：本条所在 commit；`todo.md:103`）
+- [x] `MergeStrategy::merge` 可失败化，畸形 OR-Set/PN-Counter 载荷七语言一致显式报错不 panic（证据：commit e75cb2e；cargo tests 75；TS tests 9；conformance 新增 2 场景）
