@@ -42,9 +42,11 @@ pub struct GcReport {
 ///
 /// The time-only mode is an internal/test switch: it waives the evidence
 /// requirement, so a collected key can be re-materialized from a peer that
-/// still carries the pre-delete history. It is never reachable from the
-/// public API or the FFI surface and is deliberately undocumented outside
-/// this crate (docs/design/merge.md).
+/// still carries the pre-delete history. The C ABI and the language
+/// bindings expose only the dominance-checked mode; the time-only path is
+/// reached solely through the conformance fixture runner (scenario `gc`
+/// step, `mode: "time_only"`), which drives the test fixtures
+/// (docs/design/merge.md).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GcMode {
     Dominance,
