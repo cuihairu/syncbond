@@ -24,7 +24,7 @@
 
 ## P2 — 传播与集成
 
-- [x] WebSocket 持久中继：断线重连 + 游标续传，两端经中继收敛（证据：commit 27c139d；tests 37）
+- [x] 持久化可续传中继存储：跨重启恢复 + 游标续传，两端经中继收敛（证据：commit 27c139d；tests 37）
 - [x] napi-rs TypeScript 绑定：TS 侧 pair/sync 全流程（证据：commit d946274；cargo tests 37；TS tests 4）
 - [x] 成员移除触发 keyEpoch 轮换 + 新钥分发，被移除设备解不开任何轮换后信封（证据：commit 9839ccc；tests 8）
 - [x] 墓碑 GC：时间阈值 + 因果支配，GC 后旧写入不复活删除（证据：commit 3fdc056；tests 8）
@@ -62,3 +62,4 @@
 ## 八、binding 层畸形载荷显式报错
 
 - [x] `MergeStrategy::merge` 可失败化，畸形 OR-Set/PN-Counter 载荷七语言一致显式报错不 panic（证据：commit e75cb2e；cargo tests 75；TS tests 9；conformance 新增 2 场景）
+

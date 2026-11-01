@@ -33,7 +33,7 @@ Cryptography is assembled on maintained, audited components — RustCrypto `p256
 - **Replication** — oplog with cursors and deduplication; out-of-order and duplicate delivery converge to the same state.
 - **Conflict** — a pluggable `MergeStrategy`; built-ins (HLC-LWW with causal tombstones, OR-Set, PN-Counter) are optional conveniences. See [`docs/design/merge.md`](docs/design/merge.md).
 - **Storage** — a swappable persistence trait; identity, cursor, and oplog must survive a crash-restart (release-blocking test).
-- **Transport** — an in-memory loopback plus a durable WebSocket relay with resumable oplog cursors; LAN (mDNS) discovery behind the default-off `lan` feature. P2P is assessed; see the research notes.
+- **Transport** — an in-memory loopback plus a durable, resumable relay store (file-backed, oplog cursor continuation); transports themselves are application-provided behind the `Transport` trait (no WebSocket in the core). LAN (mDNS) discovery behind the default-off `lan` feature. P2P is assessed; see the research notes.
 
 ## Current status
 

@@ -33,7 +33,7 @@ SDK 不理解、不解释、不决定业务数据的含义：载荷是不透明�
 - **复制** — oplog + 游标 + 去重；乱序与重复投递收敛到同一状态。
 - **冲突** — 可插拔 `MergeStrategy`；内置（HLC-LWW + 因果墓碑、OR-Set、PN-Counter）只是可选便利，不强加。见 [`docs/zh/design/merge.md`](docs/zh/design/merge.md)。
 - **存储** — 可替换持久化 trait；身份、游标、oplog 必须在崩溃重启后保持一致（发布阻断测试）。
-- **传输** — 内存回环 + 可持久化的 WebSocket 中继（oplog 游标断点续传）；LAN（mDNS）发现在默认关闭的 `lan` feature 后。P2P 已完成评估，见调研文档。
+- **传输** — 内存回环 + 可持久化、可续传的中继存储（文件落盘，oplog 游标断点续传）；传输本身由应用经 `Transport` trait 注入（核心不含 WebSocket 实现）。LAN（mDNS）发现在默认关闭的 `lan` feature 后。P2P 已完成评估，见调研文档。
 
 ## 当前状态
 
