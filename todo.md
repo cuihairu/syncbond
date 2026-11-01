@@ -63,3 +63,21 @@
 
 - [x] `MergeStrategy::merge` 可失败化，畸形 OR-Set/PN-Counter 载荷七语言一致显式报错不 panic（证据：commit e75cb2e；cargo tests 75；TS tests 9；conformance 新增 2 场景）
 
+## 九、代码深审遗留（2026-11-01，P2/P3）
+
+审计报告：`docs/review/2026-11-01-code-review.md`（11 条发现，当场修复 3 条）。
+
+P2：
+
+- [ ] 会话/中继接收路径加帧大小上限，防认证对端巨帧 OOM（`pairing.rs` `recv_and_open`、`replication.rs` `sync_over` decode 无上限）
+- [ ] `HybridClock::receive` 死代码处置：`ct` 加法改 saturating 或删除该公开方法（`hlc.rs:96`，`remote.ct = u64::MAX` 时溢出）
+- [ ] 拍板：conformance fixture 的 `time_only` GC 模式是否对应用收紧（现经公开 `conformance_run` 可达，2026-10-28 决策口径为内部/测试专用）
+
+P3：
+
+- [ ] `crypto::open` AEAD 失败时不记录 `message_id`，避免损坏帧永久烧掉同 id 重传（`crypto.rs:145`）
+- [ ] `generate_code` 消除模偏差（`codes.rs:58`，256 % 30 ≠ 0，前 16 符号概率偏高）
+- [ ] 配对码小写不一致：`validate_format` 收小写，`consume`/`register_failure` 按原文匹配必报 Unknown（`codes.rs`）
+- [ ] napi `cstr` 内嵌 NUL 静默截断为空串（`unwrap_or_default`），改为显式报错（`syncbond-napi/src/lib.rs:57`）
+- [ ] `SyncStats` 的 `received_ops`/`applied_ops` 恒为 0：补实际计数或删字段（`replication.rs` `sync_over`）
+- [ ] 身份私钥随 `SyncState` 明文落盘（设计为应用自有存储）：文档标注风险或提供可选加密封装（`identity.rs`/`storage.rs`）
