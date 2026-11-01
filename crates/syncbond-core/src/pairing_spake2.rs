@@ -42,6 +42,12 @@ pub enum Spake2Error {
     ConfirmationFailed,
     #[error("protocol already completed or misused")]
     StateError,
+    /// RFC 9382 §3.2: the shared point K collapsed to the identity element.
+    /// A peer that knows w (the code-derived scalar) can send pB = w·N (or
+    /// pA = w·M) to force this; the protocol must abort instead of deriving
+    /// keys from a known point.
+    #[error("shared secret is the identity point (RFC 9382 §3.2 abort)")]
+    IdentitySharedSecret,
 }
 
 pub fn hex_to_bytes(hex: &str) -> Vec<u8> {
@@ -268,6 +274,9 @@ impl Spake2Initiator {
         let p_a = self.p_a.as_ref().ok_or(Spake2Error::MissingLocalShare)?;
         // K = h * x * (pB - w*N); cofactor h = 1 for P-256.
         let k = (decode_point(p_b)? - n_point() * self.w) * self.x;
+        if k == ProjectivePoint::IDENTITY {
+            return Err(Spake2Error::IdentitySharedSecret);
+        }
         let secrets = compute_secrets(
             &k,
             &self.identity_a,
@@ -341,6 +350,9 @@ impl Spake2Responder {
     ) -> Result<(Vec<u8>, Spake2Secrets, [u8; 32]), Spake2Error> {
         // K = h * y * (pA - w*M); cofactor h = 1 for P-256.
         let k = (decode_point(p_a)? - m_point() * self.w) * self.y;
+        if k == ProjectivePoint::IDENTITY {
+            return Err(Spake2Error::IdentitySharedSecret);
+        }
         let p_b = encode_point(&(n_point() * self.w + generator() * self.y));
         let secrets = compute_secrets(
             &k,
@@ -366,5 +378,35 @@ impl Spake2Responder {
         } else {
             Err(Spake2Error::ConfirmationFailed)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// RFC 9382 §3.2: K must never be the identity element. A peer that
+    /// knows w (the code-derived scalar) can craft pB = w·N / pA = w·M to
+    /// collapse K; the exchange must abort instead of deriving keys from a
+    /// point the attacker already knows.
+    #[test]
+    fn identity_shared_secret_is_rejected() {
+        let code = b"TESTCODE";
+        let w = derive_w(code);
+
+        let mut initiator = Spake2Initiator::new(code);
+        let _p_a = initiator.generate_message();
+        let crafted_b = encode_point(&(n_point() * w));
+        assert!(matches!(
+            initiator.process_response(&crafted_b),
+            Err(Spake2Error::IdentitySharedSecret)
+        ));
+
+        let mut responder = Spake2Responder::new(code);
+        let crafted_a = encode_point(&(m_point() * w));
+        assert!(matches!(
+            responder.process_intro(&crafted_a),
+            Err(Spake2Error::IdentitySharedSecret)
+        ));
     }
 }
