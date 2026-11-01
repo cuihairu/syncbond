@@ -57,7 +57,7 @@ An online attacker gets ≤3 tries per 2 minutes against ≈10^9 codes: expected
 ## 3. Protocol versioning
 
 - The version byte is inside every frame; a mismatch aborts pairing (`protocol version mismatch`). Envelopes carry `protocolVersion` and receivers reject mismatches.
-- v1 → v2 changes MUST bump the constant and keep the abort path; cross-version negotiation (accepting older peers) is a planned decision, not implemented (see todo.md).
+- v1 → v2 changes MUST bump the constant and keep the abort path; cross-version negotiation (accepting older peers) is deliberately not supported — mismatched versions are rejected with a hard failure, per the recorded decision (see todo.md).
 
 ## 4. Encrypted envelopes
 
@@ -74,7 +74,7 @@ All fields except `ciphertext` are AEAD associated data (stable byte encoding). 
 
 ## 5. Key epochs and revocation
 
-The group holds a `KeyRing` with a monotonic `keyEpoch`. `rotate()` mints epoch N+1; the new key is distributed only to devices that remain members. A revoked device holding only epoch-N keys cannot read epoch N+1 envelopes (wrong key fails AEAD; the epoch check rejects first). Session invalidation plus rotation is the revocation recipe; automatic rotation on member removal is a P2 decision (todo.md).
+The group holds a `KeyRing` with a monotonic `keyEpoch`. Removing a member automatically mints epoch N+1 and updates the member set atomically. The resulting distribution message carries the new key, survivor set, removed device, source identity, an Ed25519 signature over all signed fields, and an HKDF-SHA256 MAC derived from the pre-rotation group key. Receivers install it only after protocol/group/epoch/membership checks and both authentication checks pass. A removed device therefore cannot read any later envelope, forge a source-signed rotation, or replay an applied removal.
 
 ## 6. Replication
 

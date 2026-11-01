@@ -57,7 +57,7 @@ An online attacker gets ≤3 tries per 2 minutes against ≈10^9 codes: expected
 ## 3. Protocol versioning
 
 - The version byte is inside every frame; a mismatch aborts pairing (`protocol version mismatch`). Envelopes carry `protocolVersion` and receivers reject mismatches.
-- v1 → v2 changes MUST bump the constant and keep the abort path; cross-version negotiation (accepting older peers) is a planned decision, not implemented (see todo.md).
+- v1 → v2 changes MUST bump the constant and keep the abort path; cross-version negotiation (accepting older peers) is deliberately not supported — mismatched versions are rejected with a hard failure, per the recorded decision (see todo.md).
 
 ## 4. Encrypted envelopes
 

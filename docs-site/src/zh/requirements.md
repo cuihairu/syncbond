@@ -1,4 +1,3 @@
-[English](../requirements.md)
 
 # 需求基线
 

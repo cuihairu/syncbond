@@ -1,6 +1,6 @@
 [English](README.md) | [中文](README.zh.md)
 
-<p align="center"><img src="assets/icon.svg" width="64" height="64" alt="SyncBond logo"> <a href="https://cuihairu.github.io/syncbond//"><img src="https://img.shields.io/badge/docs-blue" alt="docs"></a>
+<p align="center"><img src="assets/icon.svg" width="64" height="64" alt="SyncBond logo"> <a href="https://cuihairu.github.io/syncbond/"><img src="https://img.shields.io/badge/docs-blue" alt="docs"></a>
 </p>
 
 <div align="center">
@@ -19,7 +19,7 @@
 
 # syncbond
 
-An accountless, embeddable, end-to-end encrypted device pairing and data synchronization infrastructure SDK, with a Rust core and TypeScript bindings.
+An accountless, embeddable, end-to-end encrypted device pairing and data synchronization infrastructure SDK, with a Rust core and bindings for C, C++, Python, Go, Java, C#, TypeScript, and browser WASM — all over one C ABI.
 
 The SDK does not understand, interpret, or decide the meaning of business data: payloads are opaque bytes, and merge behavior is a pluggable strategy. There are no dictionaries, notes, passwords, or any other application concepts in the core — an application brings its own data model and its own merge policy.
 
@@ -33,11 +33,11 @@ Cryptography is assembled on maintained, audited components — RustCrypto `p256
 - **Replication** — oplog with cursors and deduplication; out-of-order and duplicate delivery converge to the same state.
 - **Conflict** — a pluggable `MergeStrategy`; built-ins (HLC-LWW with causal tombstones, OR-Set, PN-Counter) are optional conveniences. See [`docs/design/merge.md`](docs/design/merge.md).
 - **Storage** — a swappable persistence trait; identity, cursor, and oplog must survive a crash-restart (release-blocking test).
-- **Transport** — an in-memory loopback now; WebSocket / LAN / P2P are interface-reserved.
+- **Transport** — an in-memory loopback plus a durable WebSocket relay with resumable oplog cursors; LAN (mDNS) discovery behind the default-off `lan` feature. P2P is assessed; see the research notes.
 
 ## Current status
 
-The Rust core is implemented with 35 passing tests, including all four RFC 9382 Appendix B vectors and three unrelated example applications (generic KV, note documents, arbitrary binary records) running on the same core. The TypeScript binding is a typed skeleton; the napi-rs implementation has not started.
+The Rust core is implemented and exercised by the workspace test suite (currently 75+ tests), including all four RFC 9382 Appendix B vectors and three unrelated example applications (generic KV, note documents, arbitrary binary records) running on the same core. Bindings for C, C++, Python, Go, Java, C#, TypeScript (napi), and browser WASM all run the same cross-language conformance fixture byte-for-byte.
 
 Progress and open decisions: [`todo.md`](todo.md). Protocol contract: [`docs/design/PROTOCOL.md`](docs/design/PROTOCOL.md). Merge design: [`docs/design/merge.md`](docs/design/merge.md). Language decision: [`docs/design/language.md`](docs/design/language.md). Requirements baseline: [`docs/requirements.md`](docs/requirements.md). Landscape survey: [`docs/research/survey-2026-10-21.md`](docs/research/survey-2026-10-21.md).
 
@@ -45,14 +45,18 @@ Progress and open decisions: [`todo.md`](todo.md). Protocol contract: [`docs/des
 
 ```
 crates/syncbond-core/   the Rust core (pairing, crypto, replication, conflict, storage, transport)
-packages/ts-bindings/   TypeScript binding skeleton (typed API, napi-rs implementation pending)
+crates/syncbond-ffi/    the C ABI (cdylib + headers), plus the C++/Go/Java/C# bindings and conformance fixtures
+crates/syncbond-napi/   Node.js TypeScript bindings (napi-rs over the C ABI)
+crates/syncbond-wasm/   browser WASM bindings (wasm-bindgen over the core)
+crates/syncbond-python/ Python bindings (PyO3 over the C ABI)
+packages/ts-bindings/   TypeScript bindings package (napi + WASM wrappers)
 schemas/                wire schemas (envelope)
 docs/design/            protocol, merge, and language decision documents
 ```
 
 ## Development
 
-Requires a Rust toolchain (1.85+ / edition 2021) and Node 24 + pnpm.
+Requires a stable Rust toolchain (edition 2021; MSRV not pinned) and Node 24 + pnpm.
 
 ```sh
 cargo test                 # core test suite
