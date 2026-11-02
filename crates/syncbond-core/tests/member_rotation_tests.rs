@@ -143,6 +143,26 @@ fn pre_rotation_envelopes_cannot_open_after_rotation() {
 }
 
 #[test]
+fn member_open_rejects_replayed_envelope() {
+    let identities = identities();
+    let ring = ring(&identities[0], &identities);
+    let envelope = ring.seal(b"hello");
+
+    let first = ring.open(&envelope).expect("first open succeeds");
+    assert_eq!(first, b"hello");
+    let second = ring.open(&envelope);
+    assert!(
+        matches!(
+            second,
+            Err(MemberCryptoError::Crypto(
+                syncbond_core::CryptoError::Replay(_)
+            ))
+        ),
+        "a replayed envelope must be rejected as a replay: {second:?}"
+    );
+}
+
+#[test]
 fn tampered_distribution_is_rejected_without_state_change() {
     let identities = identities();
     let mut leader = ring(&identities[0], &identities);

@@ -14,6 +14,7 @@ use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::sync::Mutex;
 use thiserror::Error;
 
 const MEMBER_KEY_INFO: &[u8] = b"syncbond/v1/member-rotation-key";
@@ -86,7 +87,9 @@ pub struct MemberKeyRing {
     members: BTreeSet<String>,
     member_keys: BTreeMap<String, [u8; 32]>,
     applied_removals: BTreeSet<String>,
-    seen_message_ids: BTreeSet<String>,
+    /// Envelope message ids already opened, so a replayed envelope is rejected.
+    /// Held behind a lock because `open` takes `&self`.
+    seen_message_ids: Mutex<HashSet<String>>,
 }
 
 impl MemberKeyRing {
@@ -103,7 +106,7 @@ impl MemberKeyRing {
             device_id,
             group_id,
             applied_removals: BTreeSet::new(),
-            seen_message_ids: BTreeSet::new(),
+            seen_message_ids: Mutex::new(HashSet::new()),
         })
     }
 
@@ -153,7 +156,7 @@ impl MemberKeyRing {
             device_id,
             group_id,
             applied_removals: BTreeSet::new(),
-            seen_message_ids: BTreeSet::new(),
+            seen_message_ids: Mutex::new(HashSet::new()),
         })
     }
 
@@ -219,12 +222,12 @@ impl MemberKeyRing {
     }
 
     /// Open a payload only when it belongs to the current member-set epoch.
+    /// A message id is accepted once; replaying the envelope fails.
     pub fn open(&self, envelope: &EncryptedEnvelope) -> Result<Vec<u8>, MemberCryptoError> {
         let mut seen = self
             .seen_message_ids
-            .iter()
-            .cloned()
-            .collect::<HashSet<_>>();
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         crypto::open(
             self.keyring.current_key(),
             envelope,
@@ -314,6 +317,8 @@ impl MemberKeyRing {
         self.members = rotation.member_ids;
         self.applied_removals.insert(rotation.removed_device_id);
         self.seen_message_ids
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(epoch_message_id(rotation.epoch));
         Ok(())
     }
@@ -351,6 +356,8 @@ impl MemberKeyRing {
         self.applied_removals
             .insert(rotation.removed_device_id.clone());
         self.seen_message_ids
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(epoch_message_id(rotation.epoch));
         let RotationResult {
             epoch,
