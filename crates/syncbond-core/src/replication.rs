@@ -335,6 +335,14 @@ impl Replicator {
     /// (e.g. a single-node device that restarts offline) where dominance can
     /// never hold. It is deterministic under fixed clocks, which is why the
     /// cross-language conformance fixture drives tombstone GC through it.
+    ///
+    /// This is a non-stable, internal/test-oriented path: it waives the
+    /// evidence requirement, so a collected key can be re-materialized from a
+    /// peer that still carries the pre-delete history. It is reachable from
+    /// the Rust public API (the method is `pub` on the re-exported
+    /// `Replicator`), but the C ABI and the stable language bindings expose
+    /// only the dominance-checked mode.
+    #[doc(hidden)]
     pub fn gc_tombstones_time_only(&mut self, now_ms: u64, older_than_ms: u64) -> GcReport {
         self.gc_tombstones_with_mode(now_ms, older_than_ms, GcMode::TimeOnly)
     }

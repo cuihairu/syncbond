@@ -75,12 +75,14 @@ Two consequences worth noting:
 - A compacted peer converges with an uncompacted peer; the tombstone travels,
   the payload does not (`compacted_peer_converges_with_an_uncompacted_peer`).
 
-The time-threshold-only degraded mode is deliberately **not** part of the
-public API or the FFI surface: it waives the evidence requirement and can
-re-materialize a collected key from a peer still carrying the pre-delete
-history. It exists as a crate-internal test switch only
-(`GcMode::TimeOnly`, exercised by `degraded_time_only_mode_skips_the_evidence_check`),
-off by default and not documented as an application option.
+The time-threshold-only degraded mode is deliberately **not** a stable
+application option: it waives the evidence requirement and can re-materialize
+a collected key from a peer still carrying the pre-delete history. The Rust
+method is marked `#[doc(hidden)]` and is reachable only through the
+conformance fixture runner's `gc` step (`mode: "time_only"`) or by a Rust
+downstream that explicitly opts in; the C ABI and the stable language
+bindings expose only the dominance-checked mode. It is off by default and not
+documented as an application option.
 
 ## Convergence argument
 
