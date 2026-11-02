@@ -119,7 +119,7 @@ pub fn pair_memory(code: Option<String>) -> Result<NativePairingResult> {
     // The library owns code generation; pass NULL for empty so the ABI
     // produces one and reports it back.
     let code_text = code.as_deref().filter(|code| !code.is_empty());
-    let code_c = code_text.map(cstr);
+    let code_c = code_text.map(cstr).transpose()?;
     let code_ptr: *const c_char = code_c
         .as_ref()
         .map_or(std::ptr::null(), |value| value.as_ptr());

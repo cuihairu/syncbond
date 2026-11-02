@@ -53,8 +53,17 @@ pub(crate) unsafe fn take_string(owned: *const c_char) -> Result<String> {
 }
 
 /// A NUL-terminated copy of a Rust string for an ABI call.
-pub(crate) fn cstr(value: &str) -> CString {
-    CString::new(value).unwrap_or_default()
+///
+/// Rejects embedded NUL bytes explicitly instead of silently truncating to an
+/// empty string, which would turn a malformed key into a misleading
+/// "key must not be empty" error.
+pub(crate) fn cstr(value: &str) -> Result<CString> {
+    CString::new(value).map_err(|_| {
+        napi::Error::new(
+            napi::Status::InvalidArg,
+            "string contains an embedded NUL byte",
+        )
+    })
 }
 
 /// Throw on a negative result code (the ABI's error convention).
@@ -140,7 +149,7 @@ pub struct NativeReplicator {
 impl NativeReplicator {
     #[napi(constructor)]
     pub fn new(node_id: String) -> Result<Self> {
-        let c_node_id = cstr(&node_id);
+        let c_node_id = cstr(&node_id)?;
         let handle = unsafe { abi::sb_replicator_new(c_node_id.as_ptr(), SB_STRATEGY_LWW_HLC) };
         if handle.is_null() {
             return Err(last_error());
@@ -152,7 +161,7 @@ impl NativeReplicator {
 
     #[napi]
     pub fn put(&self, key: String, payload: Buffer) -> Result<()> {
-        let c_key = cstr(&key);
+        let c_key = cstr(&key)?;
         let handle = self.inner.lock().unwrap();
         unsafe {
             check(abi::sb_replicator_put(
@@ -166,7 +175,7 @@ impl NativeReplicator {
 
     #[napi]
     pub fn delete(&self, key: String) -> Result<()> {
-        let c_key = cstr(&key);
+        let c_key = cstr(&key)?;
         let handle = self.inner.lock().unwrap();
         unsafe { check(abi::sb_replicator_delete(handle.get(), c_key.as_ptr())) }
     }
@@ -174,7 +183,7 @@ impl NativeReplicator {
     /// Payload of a live record; tombstoned (deleted) keys read as null.
     #[napi]
     pub fn get(&self, key: String) -> Result<Option<Uint8Array>> {
-        let c_key = cstr(&key);
+        let c_key = cstr(&key)?;
         let handle = self.inner.lock().unwrap();
         unsafe {
             let mut buffer: abi::sb_buffer_t = abi::sb_buffer_t {
@@ -278,6 +287,6 @@ pub fn abi_version() -> u32 {
 /// other bindings drive, returning canonical JSON.
 #[napi]
 pub fn conformance_run(fixture_json: String) -> Result<String> {
-    let c_fixture = cstr(&fixture_json);
+    let c_fixture = cstr(&fixture_json)?;
     unsafe { take_string(abi::sb_conformance_run(c_fixture.as_ptr())) }
 }
