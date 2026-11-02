@@ -96,7 +96,10 @@ impl Transport for MemoryTransport {
     }
 
     fn recv(&self) -> Result<Vec<u8>, TransportError> {
-        let mut inbox = self.inbox.lock().unwrap();
+        let mut inbox = self
+            .inbox
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         loop {
             if let Some(frame) = inbox.queue.pop_front() {
                 return Ok(frame);
@@ -104,7 +107,10 @@ impl Transport for MemoryTransport {
             if inbox.closed {
                 return Err(TransportError::Closed);
             }
-            inbox = self.inbox_signal.wait(inbox).unwrap();
+            inbox = self
+                .inbox_signal
+                .wait(inbox)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
         }
     }
 
