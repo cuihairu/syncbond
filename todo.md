@@ -70,7 +70,7 @@
 P2：
 
 - [x] 会话/中继接收路径加帧大小上限，防认证对端巨帧 OOM（证据：commit efec3ea；`MAX_FRAME_BYTES = 16 MiB` 于 `recv_and_open` 收帧即拒，`sync_over` 数据流经该入口故一并覆盖；新增 `oversized_app_frames_are_rejected` 测试）
-- [ ] `HybridClock::receive` 死代码处置：`ct` 加法改 saturating 或删除该公开方法（`hlc.rs:96`，`remote.ct = u64::MAX` 时溢出）
+- [x] `HybridClock::receive` 死代码处置：`ct` 加法改 saturating 或删除该公开方法（证据：`receive` 三处 `+1` 改 `saturating_add(1)`，保留公开 API 不破坏下游；新增 `receive_saturates_at_max_counter` 钉子测试；`hlc.rs:96`）
 - [ ] 拍板：conformance fixture 的 `time_only` GC 模式是否对应用收紧（现经公开 `conformance_run` 可达，2026-10-28 决策口径为内部/测试专用）
 - [ ] `max_stamp` 比较反转：a>b 时返回较小戳，合并记录携带较早时间戳（`conflict.rs:88`，交换分支 + 加钉子测试）
 

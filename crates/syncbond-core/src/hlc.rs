@@ -103,11 +103,11 @@ impl HybridClock {
         }
         let pt = self.pt.max(wall).max(remote.pt);
         let ct = if pt == self.pt && pt == remote.pt {
-            self.ct.max(remote.ct) + 1
+            self.ct.max(remote.ct).saturating_add(1)
         } else if pt == remote.pt {
-            remote.ct + 1
+            remote.ct.saturating_add(1)
         } else if pt == self.pt {
-            self.ct + 1
+            self.ct.saturating_add(1)
         } else {
             0
         };
@@ -125,4 +125,22 @@ impl HybridClock {
 pub enum ClockError {
     #[error("remote clock runs {ahead_ms}ms ahead (limit {limit_ms}ms); refusing to adopt")]
     Skew { ahead_ms: u64, limit_ms: u64 },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn receive_saturates_at_max_counter() {
+        let mut clock = HybridClock::with_clock(
+            "node-a",
+            1_000,
+            Box::new(|| 10_000),
+        );
+        let remote = HlcStamp { pt: 10_000, ct: u64::MAX, id: "node-b".into() };
+        let stamp = clock.receive(&remote).expect("max ct must not overflow");
+        assert_eq!(stamp.ct, u64::MAX);
+        assert_eq!(stamp.pt, 10_000);
+    }
 }
