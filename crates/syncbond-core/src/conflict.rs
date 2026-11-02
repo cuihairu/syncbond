@@ -87,9 +87,9 @@ fn saw_version(witness: &HashMap<String, HlcStamp>, record: &Record) -> bool {
 /// The later of two stamps.
 fn max_stamp(a: &HlcStamp, b: &HlcStamp) -> HlcStamp {
     if compare_stamps(a, b) == std::cmp::Ordering::Greater {
-        b.clone()
-    } else {
         a.clone()
+    } else {
+        b.clone()
     }
 }
 
@@ -403,5 +403,24 @@ impl MergeStrategy for PnCounterStrategy {
             concurrent: false,
             skew_detected: false,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stamp(pt: u64, ct: u64, id: &str) -> HlcStamp {
+        HlcStamp { pt, ct, id: id.into() }
+    }
+
+    #[test]
+    fn max_stamp_returns_the_later_stamp() {
+        let early = stamp(100, 0, "a");
+        let late = stamp(200, 0, "b");
+        assert_eq!(max_stamp(&early, &late), late);
+        assert_eq!(max_stamp(&late, &early), late);
+        // Same pt: the higher counter wins.
+        assert_eq!(max_stamp(&stamp(100, 1, "a"), &stamp(100, 5, "b")), stamp(100, 5, "b"));
     }
 }
