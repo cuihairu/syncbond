@@ -73,6 +73,17 @@ interface EncryptedEnvelope {
 
 All fields except `ciphertext` are AEAD associated data (stable byte encoding). Receivers reject, in order: protocol-version mismatch → cross-group delivery → wrong key epoch → replayed `messageId` → any AEAD failure. `messageId` is random 16 bytes per message; the session keeps the seen-set, and an invalidated session refuses all further traffic (a replayed frame cannot revive it).
 
+The replay check runs before the AEAD check. An attacker who can deliver a
+frame to the receiving side and observe the error type can therefore learn
+whether a given `messageId` was already opened successfully (a `Replay`
+error means it was; an `AuthenticationFailed` error means it was not). This
+leaks no key material and only the receiver's *internal* seen-state, which a
+peer already able to deliver frames can largely infer by delivering its own
+frames. The ordering is a deliberate cost/benefit trade-off: recording the id
+only after the AEAD check passes (as the code does) keeps a tampered frame
+from permanently burning its id, while the pre-AEAD replay check keeps the
+rejection early and avoids a wasted AEAD attempt on a known replay.
+
 ## 5. Key epochs and revocation
 
 The group holds a `KeyRing` with a monotonic `keyEpoch`. Removing a member automatically mints epoch N+1 and updates the member set atomically. The resulting distribution message carries the new key, survivor set, removed device, source identity, an Ed25519 signature over all signed fields, and an HKDF-SHA256 MAC derived from the pre-rotation group key. Receivers install it only after protocol/group/epoch/membership checks and both authentication checks pass. A removed device therefore cannot read any later envelope, forge a source-signed rotation, or replay an applied removal.
