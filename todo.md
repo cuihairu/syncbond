@@ -76,7 +76,7 @@ P2：
 
 P3：
 
-- [ ] `crypto::open` AEAD 失败时不记录 `message_id`，避免损坏帧永久烧掉同 id 重传（`crypto.rs:145`）
+- [x] `crypto::open` AEAD 失败时不记录 `message_id`，避免损坏帧永久烧掉同 id 重传（证据：commit 0c7892e `fix: record envelope id only after authentication`——`open` 现于 AEAD 校验成功后 `insert`，`map_err` 提前返回不记录；钉子测试 `tampered_frame_does_not_consume_message_id`；`crypto.rs:145`）
 - [ ] `generate_code` 消除模偏差（`codes.rs:58`，256 % 30 ≠ 0，前 16 符号概率偏高）
 - [ ] 配对码小写不一致：`validate_format` 收小写，`consume`/`register_failure` 按原文匹配必报 Unknown（`codes.rs`）
 - [ ] napi `cstr` 内嵌 NUL 静默截断为空串（`unwrap_or_default`），改为显式报错（`syncbond-napi/src/lib.rs:57`）
