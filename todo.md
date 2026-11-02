@@ -69,7 +69,7 @@
 
 P2：
 
-- [ ] 会话/中继接收路径加帧大小上限，防认证对端巨帧 OOM（`pairing.rs` `recv_and_open`、`replication.rs` `sync_over` decode 无上限）
+- [x] 会话/中继接收路径加帧大小上限，防认证对端巨帧 OOM（证据：commit efec3ea；`MAX_FRAME_BYTES = 16 MiB` 于 `recv_and_open` 收帧即拒，`sync_over` 数据流经该入口故一并覆盖；新增 `oversized_app_frames_are_rejected` 测试）
 - [ ] `HybridClock::receive` 死代码处置：`ct` 加法改 saturating 或删除该公开方法（`hlc.rs:96`，`remote.ct = u64::MAX` 时溢出）
 - [ ] 拍板：conformance fixture 的 `time_only` GC 模式是否对应用收紧（现经公开 `conformance_run` 可达，2026-10-28 决策口径为内部/测试专用）
 - [ ] `max_stamp` 比较反转：a>b 时返回较小戳，合并记录携带较早时间戳（`conflict.rs:88`，交换分支 + 加钉子测试）
@@ -97,3 +97,12 @@ P3：
 - [ ] 审核发现：replication.rs 的 GcMode 文档与 merge.md 声称 time-only GC「仅经 conformance runner 可达」「不属于公共 API/FFI 表面」，但 `Replicator::gc_tombstones_time_only` 是 `pub` 且类型经 lib.rs:34 重导出，任何 Rust 下游可直接调用——文档与代码不符（crates/syncbond-core/src/replication.rs:42；docs-site/src/design/merge.md:78）
 - [x] 审核发现：README 徽章重排后残留孤立 `</p>` 与空 `<div align="center">…</div>`，HTML 结构畸形（证据：commit bc5b67f `docs: badge row layout and locale links`，已清除残留并恢复 logo 独立行块）
 - [ ] 审核发现：测试缺口——无并发 `open`（本次引入 Mutex 的动机）测试；无「Replay 拒绝后新 id 信封仍可开」测试（「AEAD 失败不烧 id」已随 0c7892e 补上；crates/syncbond-core/tests/member_rotation_tests.rs:146）
+
+## 审核发现（2026-11-03 第三轮，diff 7737b0d3..HEAD 共 19 提交/29 文件）
+
+覆盖范围：全部代码变更逐文件审毕（crypto.rs、member_crypto.rs、pairing.rs、pairing_spake2.rs、codes.rs、replication.rs、tests/×3）；文档类（README×2、docs/、docs-site/、todo.md/.bak 删除）按抽样核对一致性；`cargo test -p syncbond-core` 65/65 通过。已记录于上文的发现（seen_message_ids 无界增长、GcMode 文档与 pub API 不符、无并发 open 测试）不重复列出。以下为本轮新发现：
+
+- [ ] 审核发现：efec3ea 的 16 MiB 帧上限只加在 `recv_and_open`（配对完成后的应用帧），配对握手期帧（pA/pB/cA/cB/identity）经 `expect_frame`→`transport.recv()` 无任何大小上限，identity 帧随后还对未限长 payload 做 `serde_json::from_slice` 解析——这是**未认证**阶段（威胁强于注释所称「认证对端」）可触发的无界分配/解析；测试缺口：无握手路径巨帧测试（crates/syncbond-core/src/pairing.rs:164-181、195-211）
+- [ ] 审核发现：MAX_FRAME_BYTES 检查位于 `transport.recv()` 返回完整缓冲帧之后，未来网络传输实现（WebSocket/LAN/P2P，计划中）在检查触发前已完成对恶意巨帧的整块内存分配——上限挡住的是解码而非收包侧 OOM；Transport trait 未约定大小契约（crates/syncbond-core/src/pairing.rs:98-104、transport.rs:16-23）
+- [ ] 审核发现：同一区间为 `MemberKeyRing` 确立锁中毒恢复惯例（`unwrap_or_else(|poisoned| poisoned.into_inner())`），但 `PairingSession::recv_and_open` 仍 `seen_message_ids.lock().unwrap()`——持有锁的线程一旦 panic，该会话后续所有收包永久 panic，同库两处行为不一致（crates/syncbond-core/src/pairing.rs:114，对比 member_crypto.rs:227-230）
+- [ ] 审核发现：0c7892e 之后 `crypto::open` 的 Replay 前置检查仍先于 AEAD 校验执行，错误类型区分（Replay vs AuthenticationFailed）向能投递帧并观察错误的一方泄漏「该 message_id 是否已被成功打开」的接收方状态；影响低，属顺序权衡，建议在 docs/design/PROTOCOL.md 注明（crates/syncbond-core/src/crypto.rs:149-151）
