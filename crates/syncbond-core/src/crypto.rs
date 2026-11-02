@@ -119,6 +119,10 @@ pub struct EnvelopeContext<'a> {
 /// Open an envelope inside a session context. Rejects, in order:
 /// protocol version mismatch, cross-group delivery, wrong key epoch,
 /// replayed message id, and finally any AEAD authentication failure.
+///
+/// A message id is recorded only after the AEAD check passes, so a tampered
+/// frame does not consume (burn) its id: a later, genuine retransmission of
+/// the same id can still be opened.
 pub fn open(
     key: &SessionKey,
     envelope: &EncryptedEnvelope,
@@ -142,7 +146,7 @@ pub fn open(
             expected: ctx.current_key_epoch,
         });
     }
-    if !ctx.seen_message_ids.insert(envelope.message_id.clone()) {
+    if ctx.seen_message_ids.contains(&envelope.message_id) {
         return Err(CryptoError::Replay(envelope.message_id.clone()));
     }
     let cipher = XChaCha20Poly1305::new(key.into());
@@ -150,9 +154,11 @@ pub fn open(
         msg: &envelope.ciphertext,
         aad: &aad(envelope),
     };
-    cipher
+    let plaintext = cipher
         .decrypt(envelope.nonce.as_ref().into(), payload)
-        .map_err(|_| CryptoError::AuthenticationFailed)
+        .map_err(|_| CryptoError::AuthenticationFailed)?;
+    ctx.seen_message_ids.insert(envelope.message_id.clone());
+    Ok(plaintext)
 }
 
 /// Per-group key material with monotonic epochs.

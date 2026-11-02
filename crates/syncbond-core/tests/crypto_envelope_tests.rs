@@ -123,6 +123,55 @@ fn replayed_message_is_rejected() {
 }
 
 #[test]
+fn tampered_frame_does_not_consume_message_id() {
+    let env = seal(&KEY, GROUP, DEVICE, 1, b"payload bytes");
+    let mut seen = HashSet::new();
+
+    let mut tampered = env.clone();
+    tampered.ciphertext[0] ^= 0x01;
+    assert_eq!(
+        open(
+            &KEY,
+            &tampered,
+            &mut EnvelopeContext {
+                group_id: GROUP,
+                current_key_epoch: 1,
+                seen_message_ids: &mut seen,
+            },
+        ),
+        Err(CryptoError::AuthenticationFailed),
+        "the tampered frame must fail authentication"
+    );
+
+    // The id was NOT burned: a later genuine retransmission of the same id opens.
+    let plain = open(
+        &KEY,
+        &env,
+        &mut EnvelopeContext {
+            group_id: GROUP,
+            current_key_epoch: 1,
+            seen_message_ids: &mut seen,
+        },
+    )
+    .expect("genuine retransmission of the same id must still open");
+    assert_eq!(plain, b"payload bytes");
+
+    // And only now is it consumed.
+    assert_eq!(
+        open(
+            &KEY,
+            &env,
+            &mut EnvelopeContext {
+                group_id: GROUP,
+                current_key_epoch: 1,
+                seen_message_ids: &mut seen,
+            },
+        ),
+        Err(CryptoError::Replay(env.message_id.clone()))
+    );
+}
+
+#[test]
 fn unsupported_protocol_version_is_rejected() {
     let mut env = seal(&KEY, GROUP, DEVICE, 1, b"payload bytes");
     env.protocol_version = 99;
