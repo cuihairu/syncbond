@@ -9,6 +9,10 @@ use std::sync::{Arc, Condvar, Mutex};
 pub enum TransportError {
     #[error("transport closed")]
     Closed,
+    /// No frame is immediately available (only returned by `try_recv`; a
+    /// blocking `recv` waits instead, so this never means the peer closed).
+    #[error("no frame available")]
+    Empty,
     #[error("send failed: {0}")]
     Send(String),
 }
@@ -18,7 +22,10 @@ pub trait Transport: Send + Sync {
     fn send(&self, frame: &[u8]) -> Result<(), TransportError>;
     /// Block until a frame arrives from the peer.
     fn recv(&self) -> Result<Vec<u8>, TransportError>;
-    /// Try to receive without blocking.
+    /// Try to receive without blocking. Returns [`TransportError::Empty`]
+    /// when no frame is queued, which is distinct from [`TransportError::Closed`]
+    /// (the peer closed the channel), so callers can tell "nothing yet" apart
+    /// from "the peer is gone".
     fn try_recv(&self) -> Result<Vec<u8>, TransportError>;
 }
 
@@ -103,6 +110,26 @@ impl Transport for MemoryTransport {
 
     fn try_recv(&self) -> Result<Vec<u8>, TransportError> {
         let mut inbox = self.inbox.lock().unwrap();
-        inbox.queue.pop_front().ok_or(TransportError::Closed)
+        if let Some(frame) = inbox.queue.pop_front() {
+            return Ok(frame);
+        }
+        if inbox.closed {
+            Err(TransportError::Closed)
+        } else {
+            Err(TransportError::Empty)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn try_recv_empty_is_distinct_from_closed() {
+        let (a, b) = MemoryTransport::pair();
+        assert_eq!(a.try_recv(), Err(TransportError::Empty));
+        MemoryTransport::close_pair(&a, &b);
+        assert_eq!(a.try_recv(), Err(TransportError::Closed));
     }
 }
