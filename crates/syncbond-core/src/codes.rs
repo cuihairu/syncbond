@@ -51,12 +51,20 @@ struct IssuedCode {
 }
 
 pub fn generate_code() -> String {
-    let mut bytes = [0u8; CODE_LENGTH];
-    OsRng.fill_bytes(&mut bytes);
-    bytes
-        .iter()
-        .map(|b| CODE_ALPHABET[*b as usize % CODE_ALPHABET.len()] as char)
-        .collect()
+    // Rejection sampling to avoid modulo bias: 256 % 30 != 0, so a plain
+    // `% 30` would give the first 16 symbols a slightly higher probability.
+    // Drop bytes >= 240 (the largest multiple of 30 below 256) and retry,
+    // leaving each of the 30 symbols exactly 1/30.
+    let mut out = String::with_capacity(CODE_LENGTH);
+    while out.len() < CODE_LENGTH {
+        let mut byte = [0u8; 1];
+        OsRng.fill_bytes(&mut byte);
+        let b = byte[0];
+        if b < 240 {
+            out.push(CODE_ALPHABET[b as usize % CODE_ALPHABET.len()] as char);
+        }
+    }
+    out
 }
 
 /// Issues and validates pairing codes on the accepting side.
