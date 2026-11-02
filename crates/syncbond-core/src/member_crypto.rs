@@ -316,10 +316,16 @@ impl MemberKeyRing {
         self.keyring = KeyRing::with_epoch(self.group_id.clone(), rotation.epoch, rotation.key);
         self.members = rotation.member_ids;
         self.applied_removals.insert(rotation.removed_device_id);
-        self.seen_message_ids
+        // The key changed, so old-epoch message ids are unreplayable: an
+        // old-epoch envelope is rejected by the epoch check before it reaches
+        // the seen-set, so dropping the set cannot resurrect a replay. Keep
+        // only the rotation marker so the applied rotation stays replay-safe.
+        let mut seen = self
+            .seen_message_ids
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(epoch_message_id(rotation.epoch));
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        seen.clear();
+        seen.insert(epoch_message_id(rotation.epoch));
         Ok(())
     }
 
@@ -355,10 +361,12 @@ impl MemberKeyRing {
     fn install_local_rotation(&mut self, rotation: Rotation) -> RotationResult {
         self.applied_removals
             .insert(rotation.removed_device_id.clone());
-        self.seen_message_ids
+        let mut seen = self
+            .seen_message_ids
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(epoch_message_id(rotation.epoch));
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        seen.clear();
+        seen.insert(epoch_message_id(rotation.epoch));
         let RotationResult {
             epoch,
             key,
@@ -493,5 +501,38 @@ mod tests {
     fn hex_round_trip() {
         let bytes = [0u8, 1, 0x0f, 0xff];
         assert_eq!(hex_to_bytes(&hex(&bytes)).unwrap().as_slice(), bytes);
+    }
+
+    #[test]
+    fn rotation_drops_old_epoch_seen_ids() {
+        let leader_identity = DeviceIdentity::generate();
+        let survivor_identity = DeviceIdentity::generate();
+        let removed_identity = DeviceIdentity::generate();
+        let mut leader = MemberKeyRing::with_epoch(
+            "g",
+            &leader_identity.device_id,
+            [
+                leader_identity.device_id.clone(),
+                survivor_identity.device_id.clone(),
+                removed_identity.device_id.clone(),
+            ],
+            [
+                (leader_identity.device_id.clone(), leader_identity.public_key),
+                (survivor_identity.device_id.clone(), survivor_identity.public_key),
+                (removed_identity.device_id.clone(), removed_identity.public_key),
+            ],
+            1,
+            [0x42; 32],
+        )
+        .unwrap();
+        // Force a non-empty seen set, then rotate; the set must be dropped.
+        leader.seen_message_ids.lock().unwrap().insert("stale".into());
+        let result = leader
+            .rotate_for_removal(removed_identity.device_id.clone(), &leader_identity)
+            .unwrap();
+        let seen = leader.seen_message_ids.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert!(seen.contains(&epoch_message_id(result.epoch)));
+        assert!(!seen.contains("stale"));
     }
 }
