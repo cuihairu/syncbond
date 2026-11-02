@@ -81,7 +81,7 @@ P3：
 - [x] 配对码小写不一致：`validate_format` 收小写，`consume`/`register_failure` 按原文匹配必报 Unknown（证据：`consume`/`register_failure` 入口把输入 `to_ascii_uppercase()` 后查表，与 `validate_format` 口径一致；新增 `lowercase_code_matches_stored_uppercase` 钉子测试；`codes.rs`）
 - [x] napi `cstr` 内嵌 NUL 静默截断为空串（`unwrap_or_default`），改为显式报错（证据：`cstr` 改返回 `Result<CString>`，`CString::new` 失败时 `map_err` 报 `InvalidArg`（"string contains an embedded NUL byte"），5 处调用点加 `?`，`pairing.rs` 的 `Option` 用 `transpose()?`；`cargo check -p syncbond-napi` 通过；`syncbond-napi/src/lib.rs:57`）
 - [x] `SyncStats` 的 `received_ops`/`applied_ops` 恒为 0：补实际计数或删字段（证据：`sync_over` 的 `receive` 闭包现返回 `(received, applied)`——`received` 为收到的 op 数、`applied` 为 `apply_remote` 返回 true 的合并数，两方向均正确填入 `SyncStats`；文档注释同步；`replication.rs` `sync_over`）
-- [ ] 身份私钥随 `SyncState` 明文落盘（设计为应用自有存储）：文档标注风险或提供可选加密封装（`identity.rs`/`storage.rs`）
+- [x] 身份私钥随 `SyncState` 明文落盘（设计为应用自有存储）：文档标注风险或提供可选加密封装（证据：`DeviceIdentity::secret_key` 与 `SyncState` 均新增风险标注——SDK 从不自行加密存储，应用必须将快照置于受保护后端或在 `SyncStorage` 层加密，否则泄露可被伪造身份；选择文档标注而非加密封装以保 API 稳定；`identity.rs`/`storage.rs`）
 - [ ] `transport::try_recv` 空队列返回 `Closed`，调用方易误判为对端关闭（`transport.rs:104`）
 - [ ] `transport::recv` 锁中毒时 panic，改为中毒恢复（`transport.rs:91`）
 - [ ] `relay::persist` 写后未 fsync，崩溃可能丢续传状态（`relay.rs:123`）

@@ -22,6 +22,13 @@ pub struct DeviceIdentity {
     pub device_id: String,
     #[serde(with = "hex_bytes")]
     pub public_key: [u8; 32],
+    /// Long-term Ed25519 signing secret, serialized in plaintext whenever a
+    /// [`crate::storage::SyncState`] snapshot is persisted. This is a
+    /// deliberate design choice: the SDK treats storage as the application's
+    /// own responsibility and never encrypts it itself. Applications MUST
+    /// store the snapshot in a protected location (or encrypt it at the
+    /// `SyncStorage` layer) so an attacker who reads the backing store cannot
+    /// impersonate this device.
     #[serde(with = "hex_bytes64")]
     pub secret_key: [u8; 64],
 }

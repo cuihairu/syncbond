@@ -44,6 +44,14 @@ impl SyncStorage for MemoryStorage {
 
 /// Everything a device must persist: its long-term identity, replication
 /// cursor, oplog, group membership, key epoch, and compaction barriers.
+///
+/// The snapshot is serialized in plaintext and the embedded `identity`
+/// carries the device's Ed25519 secret key (see `DeviceIdentity`). This is a
+/// deliberate design choice: the SDK never encrypts its own storage, leaving
+/// that to the application. Applications MUST place the snapshot behind a
+/// protected storage backend or encrypt it at the [`SyncStorage`] layer; a
+/// plaintext leak of this snapshot lets an attacker forge this device's
+/// identity and open future sessions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncState {
     pub node_id: String,
