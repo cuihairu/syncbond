@@ -102,7 +102,7 @@ P3：
 
 覆盖范围：全部代码变更逐文件审毕（crypto.rs、member_crypto.rs、pairing.rs、pairing_spake2.rs、codes.rs、replication.rs、tests/×3）；文档类（README×2、docs/、docs-site/、todo.md/.bak 删除）按抽样核对一致性；`cargo test -p syncbond-core` 65/65 通过。已记录于上文的发现（seen_message_ids 无界增长、GcMode 文档与 pub API 不符、无并发 open 测试）不重复列出。以下为本轮新发现：
 
-- [ ] 审核发现：efec3ea 的 16 MiB 帧上限只加在 `recv_and_open`（配对完成后的应用帧），配对握手期帧（pA/pB/cA/cB/identity）经 `expect_frame`→`transport.recv()` 无任何大小上限，identity 帧随后还对未限长 payload 做 `serde_json::from_slice` 解析——这是**未认证**阶段（威胁强于注释所称「认证对端」）可触发的无界分配/解析；测试缺口：无握手路径巨帧测试（crates/syncbond-core/src/pairing.rs:164-181、195-211）
+- [x] 审核发现：efec3ea 的 16 MiB 帧上限只加在 `recv_and_open`（配对完成后的应用帧），配对握手期帧（pA/pB/cA/cB/identity）经 `expect_frame`→`transport.recv()` 无任何大小上限，identity 帧随后还对未限长 payload 做 `serde_json::from_slice` 解析——这是**未认证**阶段（威胁强于注释所称「认证对端」）可触发的无界分配/解析；测试缺口：无握手路径巨帧测试（证据：`expect_frame` 现于 `transport.recv()` 后立即按 `MAX_FRAME_BYTES` 拒巨帧（任何握手帧都经此）；新增 `oversized_handshake_frames_are_rejected` 测试；crates/syncbond-core/src/pairing.rs:164-181、195-211）
 - [ ] 审核发现：MAX_FRAME_BYTES 检查位于 `transport.recv()` 返回完整缓冲帧之后，未来网络传输实现（WebSocket/LAN/P2P，计划中）在检查触发前已完成对恶意巨帧的整块内存分配——上限挡住的是解码而非收包侧 OOM；Transport trait 未约定大小契约（crates/syncbond-core/src/pairing.rs:98-104、transport.rs:16-23）
 - [ ] 审核发现：同一区间为 `MemberKeyRing` 确立锁中毒恢复惯例（`unwrap_or_else(|poisoned| poisoned.into_inner())`），但 `PairingSession::recv_and_open` 仍 `seen_message_ids.lock().unwrap()`——持有锁的线程一旦 panic，该会话后续所有收包永久 panic，同库两处行为不一致（crates/syncbond-core/src/pairing.rs:114，对比 member_crypto.rs:227-230）
 - [ ] 审核发现：0c7892e 之后 `crypto::open` 的 Replay 前置检查仍先于 AEAD 校验执行，错误类型区分（Replay vs AuthenticationFailed）向能投递帧并观察错误的一方泄漏「该 message_id 是否已被成功打开」的接收方状态；影响低，属顺序权衡，建议在 docs/design/PROTOCOL.md 注明（crates/syncbond-core/src/crypto.rs:149-151）

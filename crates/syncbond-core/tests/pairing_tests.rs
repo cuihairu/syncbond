@@ -86,6 +86,25 @@ fn oversized_app_frames_are_rejected() {
 }
 
 #[test]
+fn oversized_handshake_frames_are_rejected() {
+    let (ta, tb) = MemoryTransport::pair();
+    let identity_b = DeviceIdentity::generate();
+
+    let mut frame = vec![0x01u8, 1u8, 4, 0];
+    frame.resize(syncbond_core::pairing::MAX_FRAME_BYTES + 1, 0);
+    ta.send(&frame).expect("send oversized pA");
+
+    let error = match accept("K7Q2M4", &identity_b, tb as Arc<dyn Transport>) {
+        Err(err) => err,
+        Ok(_) => panic!("oversized handshake frame must be rejected before parsing"),
+    };
+    assert!(
+        matches!(error, PairingError::Protocol(ref message) if message.contains("frame too large")),
+        "expected frame-too-large protocol error, got {error:?}"
+    );
+}
+
+#[test]
 fn protocol_version_mismatch_is_rejected() {
     // A "future" initiator speaking version 99.
     let (ta, tb) = MemoryTransport::pair();

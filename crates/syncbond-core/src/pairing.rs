@@ -167,6 +167,12 @@ fn expect_frame(
     what: &str,
 ) -> Result<Vec<u8>, PairingError> {
     let frame = transport.recv()?;
+    if frame.len() > MAX_FRAME_BYTES {
+        return Err(PairingError::Protocol(format!(
+            "frame too large: {} bytes (max {MAX_FRAME_BYTES})",
+            frame.len()
+        )));
+    }
     if frame.first() == Some(&FRAME_ABORT) {
         return Err(PairingError::Protocol("peer aborted the pairing".into()));
     }
