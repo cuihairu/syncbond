@@ -1,7 +1,7 @@
 //! Pairing code issuance and the guess-limiting policy.
 //!
 //! Codes are 6 characters from a 30-symbol unambiguous alphabet (no 0/O/1/I/L)
-//! ≈ 27.3 bits of entropy. Policy defaults: single use, 120 s TTL, at most 3
+//! ≈ 29.4 bits of entropy (30^6). Policy defaults: single use, 120 s TTL, at most 3
 //! failed attempts per code window. See docs/design/PROTOCOL.md for the
 //! online-guessing analysis.
 

@@ -20,7 +20,7 @@
 
 ### 口令 → 标量（w）
 
-`w = OS2IP(scrypt("syncbond/w1/v1" || code, N=2^14, r=8, p=1, 64)) mod n` —— 64 字节输出避免模偏差（NIST SP 800-56Ar3 建议）；scrypt 是 RFC 推荐的 MHF。诚实的边界：短码的熵是有上限的，因此码必须单次使用、短时效且均匀随机（见 §3）；SPAKE2 保护交换过程，策略约束在线猜测，而录制的转录只允许以码的熵为界的离线猜测（6 字符约 27 比特——这正是 TTL 与单次使用为强制项的原因）。
+`w = OS2IP(scrypt("syncbond/w1/v1" || code, N=2^14, r=8, p=1, 64)) mod n` —— 64 字节输出避免模偏差（NIST SP 800-56Ar3 建议）；scrypt 是 RFC 推荐的 MHF。诚实的边界：短码的熵是有上限的，因此码必须单次使用、短时效且均匀随机（见 §3）；SPAKE2 保护交换过程，策略约束在线猜测，而录制的转录只允许以码的熵为界的离线猜测（6 字符约 29.4 比特——这正是 TTL 与单次使用为强制项的原因）。
 
 ### 握手流程与身份绑定
 
@@ -38,6 +38,7 @@ A (initiator, pair())                    B (responder, accept())
 
 - **角色绑定**：发起方扮演 A（使用 M），接受方扮演 B（使用 N）；角色由谁发起交换决定，双方无需协商即达成一致。
 - **双向密钥确认**：`cA = HMAC(KcA, TT)`、`cB = HMAC(KcB, TT)`；A 在验证 cB 之前不得完成，B 在验证 cA 之前同样不得完成（RFC 9382 §3.1）。码不匹配在此处失败；失败方发送 `abort` 帧（0x07），对端因此不会阻塞等待。
+- **单位元中止（RFC 9382 §3.2）**：若计算出的共享秘密 `K` 为群单位元，交换中止（低概率的无效点，绝不能当作有效密钥）。实现为 SPAKE2 派生中的显式 `IdentitySharedSecret` 拒绝。
 - **身份绑定**：确认完成后，双方各自发送长期 Ed25519 公钥及对 `SHA-256("syncbond/identity/v1" || role || TT)` 的签名——身份绑定到已认证的转录上，中间人无法替换密钥。
 - **组 ID**：`SHA-256("syncbond/group/v1" || sorted member public keys)[..24]` —— 与顺序无关，为双方派生同步组。
 - **应用域分离**：会话密钥为 `HKDF-SHA256(Ke, nil, "syncbond/v1/session-key", 32)`；`syncbond` 前缀把 HKDF 输出绑定到本应用与本版本。确认密钥用 RFC 的 `"ConfirmationKeys"` info 串单独派生。
@@ -45,7 +46,7 @@ A (initiator, pair())                    B (responder, accept())
 
 ## 2. 配对码策略（猜测限制）
 
-字母表：30 个无歧义符号（`23456789ABCDEFGHJKMNPQRSTUVWXYZ`，不含 0/O/1/I/L），长度 6 → 字母表熵约 29.5 比特（30^6 ≈ 0.87 × 10^9）。默认值（`crates/syncbond-core/src/codes.rs`）：
+字母表：30 个无歧义符号（`23456789ABCDEFGHJKMNPQRSTUVWXYZ`，不含 0/O/1/I/L），长度 6 → 字母表熵约 29.4 比特（30^6 = 729,000,000）。默认值（`crates/syncbond-core/src/codes.rs`）：
 
 | 规则 | 取值 | 理由 |
 |---|---|---|

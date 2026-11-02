@@ -18,7 +18,7 @@ Chosen: **SPAKE2, RFC 9382**, ciphersuite `SPAKE2-P256-SHA256-HKDF-HMAC` (RFC 93
 
 ### Password → scalar (w)
 
-`w = OS2IP(scrypt("syncbond/w1/v1" || code, N=2^14, r=8, p=1, 64)) mod n` — 64 output bytes avoid mod bias (NIST SP 800-56Ar3 suggestion); scrypt is the RFC-recommended MHF. Honest limit: a short code has bounded entropy, so the code must be single-use, short-lived and uniformly random (see §3); SPAKE2 protects the exchange, the policy bounds online guessing, and recorded transcripts only permit offline guessing at the code's entropy (≈27 bits for 6 characters — the reason TTL and single-use are mandatory).
+`w = OS2IP(scrypt("syncbond/w1/v1" || code, N=2^14, r=8, p=1, 64)) mod n` — 64 output bytes avoid mod bias (NIST SP 800-56Ar3 suggestion); scrypt is the RFC-recommended MHF. Honest limit: a short code has bounded entropy, so the code must be single-use, short-lived and uniformly random (see §3); SPAKE2 protects the exchange, the policy bounds online guessing, and recorded transcripts only permit offline guessing at the code's entropy (≈29.4 bits for 6 characters — the reason TTL and single-use are mandatory).
 
 ### Handshake flow and identity binding
 
@@ -36,6 +36,7 @@ A (initiator, pair())                    B (responder, accept())
 
 - **Role binding**: initiator plays A (uses M), responder plays B (uses N); roles are fixed by who starts the exchange, both sides agree without negotiation.
 - **Mutual key confirmation**: `cA = HMAC(KcA, TT)`, `cB = HMAC(KcB, TT)`; A MUST NOT complete before verifying cB and B MUST NOT before cA (RFC 9382 §3.1). Mismatched codes fail here; the failing side sends an `abort` frame (0x07) so the peer never blocks.
+- **Identity element abort (RFC 9382 §3.2)**: if the computed shared secret `K` is the identity element of the group, the exchange aborts (a low-probability invalid point that must never be treated as a valid key). Implemented as an explicit `IdentitySharedSecret` rejection in the SPAKE2 derivation.
 - **Identity binding**: after confirmation each side sends its long-term Ed25519 public key with a signature over `SHA-256("syncbond/identity/v1" || role || TT)` — the identity is bound to the authenticated transcript, so a man-in-the-middle cannot substitute keys.
 - **Group id**: `SHA-256("syncbond/group/v1" || sorted member public keys)[..24]` — order-independent, derives the sync group for both sides.
 - **Application domain separation**: the session key is `HKDF-SHA256(Ke, nil, "syncbond/v1/session-key", 32)`; the `syncbond` prefix binds HKDF outputs to this application and version. Confirmation keys are separately derived with the RFC's `"ConfirmationKeys"` info string.
@@ -43,7 +44,7 @@ A (initiator, pair())                    B (responder, accept())
 
 ## 2. Pairing code policy (guess limiting)
 
-Alphabet: 30 unambiguous symbols (`23456789ABCDEFGHJKMNPQRSTUVWXYZ`, no 0/O/1/I/L), length 6 → ≈29.5 bits of alphabet entropy (30^6 ≈ 0.87 × 10^9). Defaults (`crates/syncbond-core/src/codes.rs`):
+Alphabet: 30 unambiguous symbols (`23456789ABCDEFGHJKMNPQRSTUVWXYZ`, no 0/O/1/I/L), length 6 → ≈29.4 bits of alphabet entropy (30^6 = 729,000,000). Defaults (`crates/syncbond-core/src/codes.rs`):
 
 | Rule | Value | Rationale |
 |---|---|---|
