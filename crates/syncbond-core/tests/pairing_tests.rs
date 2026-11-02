@@ -164,6 +164,17 @@ fn code_single_use_is_enforced() {
 }
 
 #[test]
+fn lowercase_code_matches_stored_uppercase() {
+    let mut board = PairingCodeBoard::new(PairingPolicy::default());
+    let code = board.issue();
+    let lower = code.to_lowercase();
+    // validate_format accepts lower case; consume/register_failure must too.
+    assert!(PairingCodeBoard::validate_format(&lower).is_ok());
+    assert_eq!(board.consume(&lower), Ok(()));
+    assert!(!board.is_accepting(&lower));
+}
+
+#[test]
 fn expired_code_is_rejected() {
     // Clock: calls 1..=2 see t0 (issue + consume within TTL), later calls
     // see t0 + 2s (past the 1s TTL).

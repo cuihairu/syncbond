@@ -121,7 +121,13 @@ impl PairingCodeBoard {
     /// can never pair again.
     pub fn consume(&mut self, code: &str) -> Result<(), CodeError> {
         let now = (self.now)();
-        let entry = self.issued.get_mut(code).ok_or(CodeError::Unknown)?;
+        // `validate_format` accepts lower-case letters, so normalize here too:
+        // a lower-case entry of a valid code must match the stored upper-case
+        // key instead of failing as Unknown.
+        let entry = self
+            .issued
+            .get_mut(&code.to_ascii_uppercase())
+            .ok_or(CodeError::Unknown)?;
         if entry.used {
             return Err(CodeError::AlreadyUsed);
         }
@@ -136,7 +142,10 @@ impl PairingCodeBoard {
     /// attempt limit for this code window is exhausted.
     pub fn register_failure(&mut self, code: &str) -> Result<(), CodeError> {
         let now = (self.now)();
-        let entry = self.issued.get_mut(code).ok_or(CodeError::Unknown)?;
+        let entry = self
+            .issued
+            .get_mut(&code.to_ascii_uppercase())
+            .ok_or(CodeError::Unknown)?;
         if now > entry.expires_at {
             return Err(CodeError::Expired);
         }
