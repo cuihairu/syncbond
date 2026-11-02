@@ -548,7 +548,7 @@ impl Replicator {
             session.seal_and_send(&encode(&replicator.oplog)?)?;
             Ok(sent)
         };
-        let receive = |replicator: &mut Self| -> Result<usize, ReplicationError> {
+        let receive = |replicator: &mut Self| -> Result<(usize, usize), ReplicationError> {
             let bytes = session.recv_and_open()?;
             let ops: Vec<Operation> = decode(&bytes)?;
             let mut applied = 0;
@@ -557,25 +557,25 @@ impl Replicator {
                     applied += 1;
                 }
             }
-            Ok(applied)
+            Ok((ops.len(), applied))
         };
 
         if send_first {
             let sent = send(self)?;
-            let _received_count = receive(self)?;
+            let (received, applied) = receive(self)?;
             let stats = SyncStats {
                 sent_ops: sent,
-                received_ops: 0,
-                applied_ops: 0,
+                received_ops: received,
+                applied_ops: applied,
             };
             Ok(stats)
         } else {
-            let _ = receive(self)?;
+            let (received, applied) = receive(self)?;
             let sent = send(self)?;
             Ok(SyncStats {
                 sent_ops: sent,
-                received_ops: 0,
-                applied_ops: 0,
+                received_ops: received,
+                applied_ops: applied,
             })
         }
     }
@@ -595,9 +595,10 @@ pub struct SessionCrypto {
     pub key: SessionKey,
 }
 
-/// Stats are returned after both directions completed; `received`/`applied`
-/// are tracked on the receiving side of each direction, so callers that need
-/// them should read convergence from the store instead.
+/// Stats are returned after both directions completed. `received_ops` is the
+/// number of operations received on this side during the exchange, and
+/// `applied_ops` is how many of those were actually merged (a duplicate or a
+/// rejected op does not count); `sent_ops` is what this side sent.
 impl SyncStats {
     pub fn total_exchanged(&self) -> usize {
         self.sent_ops + self.received_ops
