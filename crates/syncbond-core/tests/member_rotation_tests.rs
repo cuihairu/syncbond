@@ -163,6 +163,46 @@ fn member_open_rejects_replayed_envelope() {
 }
 
 #[test]
+fn concurrent_open_accepts_each_unique_envelope_once() {
+    use std::sync::Arc;
+    use std::thread;
+
+    let identities = identities();
+    let ring = Arc::new(ring(&identities[0], &identities));
+    let envelopes: Vec<_> = (0..32).map(|i| ring.seal(format!("msg-{i}").as_bytes())).collect();
+    let handles: Vec<_> = envelopes
+        .into_iter()
+        .enumerate()
+        .map(|(i, envelope)| {
+            let ring = ring.clone();
+            thread::spawn(move || {
+                let opened = ring.open(&envelope).expect("unique id opens");
+                assert_eq!(opened, format!("msg-{i}").as_bytes());
+            })
+        })
+        .collect();
+    for handle in handles {
+        handle.join().expect("open thread");
+    }
+}
+
+#[test]
+fn replay_rejected_then_fresh_id_still_opens() {
+    let identities = identities();
+    let ring = ring(&identities[0], &identities);
+    let replay = ring.seal(b"once");
+    assert_eq!(ring.open(&replay).expect("first open"), b"once");
+    assert!(matches!(
+        ring.open(&replay),
+        Err(MemberCryptoError::Crypto(syncbond_core::CryptoError::Replay(_)))
+    ));
+    // A brand-new envelope with a fresh message id must still open after the
+    // replay rejection; the seen-set must not have been poisoned.
+    let fresh = ring.seal(b"fresh");
+    assert_eq!(ring.open(&fresh).expect("fresh id opens"), b"fresh");
+}
+
+#[test]
 fn tampered_distribution_is_rejected_without_state_change() {
     let identities = identities();
     let mut leader = ring(&identities[0], &identities);

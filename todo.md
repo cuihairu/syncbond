@@ -96,7 +96,7 @@ P3：
 - [x] 审核发现：`seen_message_ids` 现随每次成功 open 无界增长且从不清理（含跨密钥轮换），旧 epoch 的 id 本可在轮换时清空（旧 epoch 信封先被 epoch 检查拒绝），否则长驻成员内存无界增长（证据：`apply_rotation`/`install_local_rotation` 现于轮换时清空 `seen_message_ids` 并保留轮换标记 id；新增 `rotation_drops_old_epoch_seen_ids` 单元测试；crates/syncbond-core/src/member_crypto.rs:92）
 - [x] 审核发现：replication.rs 的 GcMode 文档与 merge.md 声称 time-only GC「仅经 conformance runner 可达」「不属于公共 API/FFI 表面」，但 `Replicator::gc_tombstones_time_only` 是 `pub` 且类型经 lib.rs:34 重导出，任何 Rust 下游可直接调用——文档与代码不符（证据：`gc_tombstones_time_only` 加 `#[doc(hidden)]` 标注非稳定/内部专用面并改述为「Rust 下游可显式 opt-in，C ABI/稳定绑定仅暴露 dominance」，`merge.md` 同步；crates/syncbond-core/src/replication.rs:42；docs-site/src/design/merge.md:78）
 - [x] 审核发现：README 徽章重排后残留孤立 `</p>` 与空 `<div align="center">…</div>`，HTML 结构畸形（证据：commit bc5b67f `docs: badge row layout and locale links`，已清除残留并恢复 logo 独立行块）
-- [ ] 审核发现：测试缺口——无并发 `open`（本次引入 Mutex 的动机）测试；无「Replay 拒绝后新 id 信封仍可开」测试（「AEAD 失败不烧 id」已随 0c7892e 补上；crates/syncbond-core/tests/member_rotation_tests.rs:146）
+- [x] 审核发现：测试缺口——无并发 `open`（本次引入 Mutex 的动机）测试；无「Replay 拒绝后新 id 信封仍可开」测试（证据：新增 `concurrent_open_accepts_each_unique_envelope_once`（32 线程并发唯一 id 全开）与 `replay_rejected_then_fresh_id_still_opens`（Replay 拒绝后新 id 仍可开）；tests 11/0；crates/syncbond-core/tests/member_rotation_tests.rs:146）
 
 ## 审核发现（2026-11-03 第三轮，diff 7737b0d3..HEAD 共 19 提交/29 文件）
 
