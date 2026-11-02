@@ -89,3 +89,11 @@ P3：
 - [ ] `b64url_decode` 接受非规范填充，应拒绝（`crypto.rs`）
 - [ ] `sb_last_error` 成功路径返回悬垂非空指针（0x1）：文档标注或返回空（`syncbond-ffi`）
 - [ ] `MergeStrategy::delete` 在 OR-Set/PN-Counter 下的语义未文档化（`conflict.rs`）
+
+## 审核发现（2026-11-03 复核，处置中）
+
+- [x] 审核发现：1fae572 让 `MemberKeyRing::open` 把 message_id 持久写入 `seen_message_ids`，但 `crypto::open` 在 AEAD 校验之前就 `insert`，损坏/篡改帧会永久烧掉该 id，之后合法重传同 id 信封被拒为 Replay——此前克隆后丢弃使该烧 id 仅瞬时，此修复将其激活为持久（证据：commit 0c7892e `fix: record envelope id only after authentication`；改 `crypto::open` 为「contains 前置检查、AEAD 成功后才 insert」，新增 `tampered_frame_does_not_consume_message_id` 钉子测试；tests 10/0）
+- [ ] 审核发现：`seen_message_ids` 现随每次成功 open 无界增长且从不清理（含跨密钥轮换），旧 epoch 的 id 本可在轮换时清空（旧 epoch 信封先被 epoch 检查拒绝），否则长驻成员内存无界增长（crates/syncbond-core/src/member_crypto.rs:92）
+- [ ] 审核发现：replication.rs 的 GcMode 文档与 merge.md 声称 time-only GC「仅经 conformance runner 可达」「不属于公共 API/FFI 表面」，但 `Replicator::gc_tombstones_time_only` 是 `pub` 且类型经 lib.rs:34 重导出，任何 Rust 下游可直接调用——文档与代码不符（crates/syncbond-core/src/replication.rs:42；docs-site/src/design/merge.md:78）
+- [x] 审核发现：README 徽章重排后残留孤立 `</p>` 与空 `<div align="center">…</div>`，HTML 结构畸形（证据：commit bc5b67f `docs: badge row layout and locale links`，已清除残留并恢复 logo 独立行块）
+- [ ] 审核发现：测试缺口——无并发 `open`（本次引入 Mutex 的动机）测试；无「Replay 拒绝后新 id 信封仍可开」测试（「AEAD 失败不烧 id」已随 0c7892e 补上；crates/syncbond-core/tests/member_rotation_tests.rs:146）
