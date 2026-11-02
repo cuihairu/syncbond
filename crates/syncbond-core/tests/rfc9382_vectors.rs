@@ -3,7 +3,7 @@
 
 use sha2::{Digest, Sha256};
 use syncbond_core::pairing_spake2::{
-    scalar_from_hex, Spake2Initiator, Spake2Responder, TestScalars,
+    hex_to_bytes, scalar_from_hex, Spake2Initiator, Spake2Responder, TestScalars,
 };
 
 fn hex(bytes: &[u8]) -> String {
@@ -173,9 +173,9 @@ const VECTORS: &[Vector] = &[
 
 fn run_vector(v: &Vector) {
     let test = TestScalars {
-        w: Some(scalar_from_hex(v.w)),
-        x: Some(scalar_from_hex(v.x)),
-        y: Some(scalar_from_hex(v.y)),
+        w: Some(scalar_from_hex(v.w).expect("vector w hex")),
+        x: Some(scalar_from_hex(v.x).expect("vector x hex")),
+        y: Some(scalar_from_hex(v.y).expect("vector y hex")),
     };
     let mut a = Spake2Initiator::new_with_params(&[], v.id_a.as_bytes(), v.id_b.as_bytes(), &[])
         .with_scalars(&test);
@@ -238,4 +238,11 @@ fn reject_public_value_that_is_not_a_curve_point() {
     let mut b = Spake2Responder::new(b"code");
     let bad = [0u8; 65]; // 0x00 prefix is not a valid SEC1 encoding
     assert!(b.process_intro(&bad).is_err());
+}
+
+#[test]
+fn odd_length_hex_is_rejected_instead_of_panicking() {
+    assert!(scalar_from_hex("abc").is_err());
+    assert!(hex_to_bytes("abc").is_err());
+    assert_eq!(hex_to_bytes("ab").unwrap(), vec![0xab]);
 }

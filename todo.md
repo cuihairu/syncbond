@@ -85,7 +85,7 @@ P3：
 - [x] `transport::try_recv` 空队列返回 `Closed`，调用方易误判为对端关闭（证据：`TransportError` 新增 `Empty` 变体（"no frame available"），`try_recv` 空队列返回 `Empty`、对端关闭返回 `Closed`；新增 `try_recv_empty_is_distinct_from_closed` 测试；`transport.rs:104`）
 - [x] `transport::recv` 锁中毒时 panic，改为中毒恢复（证据：`recv` 的 `lock()` 与 `condvar.wait()` 均改 `unwrap_or_else(|poisoned| poisoned.into_inner())` 中毒恢复；`transport.rs:91`）
 - [x] `relay::persist` 写后未 fsync，崩溃可能丢续传状态（证据：`persist` 改 `File::create+write_all+sync_all` 后 rename，再对父目录 `sync_all` 保证 rename 持久；`relay.rs:123`）
-- [ ] `scalar_from_hex` 奇长十六进制串 panic（`pairing_spake2.rs:53`）
+- [x] `scalar_from_hex` 奇长十六进制串 panic（证据：`hex_to_bytes`/`scalar_from_hex` 改返回 `Result<_, String>`，奇长十六进制显式 `Err` 不再越界 panic，内部调用改 `expect`，测试向量调用改 `expect`；新增 `odd_length_hex_is_rejected_instead_of_panicking` 测试；`pairing_spake2.rs:53`）
 - [ ] `b64url_decode` 接受非规范填充，应拒绝（`crypto.rs`）
 - [ ] `sb_last_error` 成功路径返回悬垂非空指针（0x1）：文档标注或返回空（`syncbond-ffi`）
 - [ ] `MergeStrategy::delete` 在 OR-Set/PN-Counter 下的语义未文档化（`conflict.rs`）

@@ -24,11 +24,11 @@ const M_HEX: &str = "02886e2f97ace46e55ba9dd7242579f2993b64e16ef3dcab95afd497333
 const N_HEX: &str = "03d8bbd6c639c62937b04d997f38c3770719c629d7014d49a24b4f98baa1292b49";
 
 /// Parse a hex scalar and reduce it by the group order (test-vector helper).
-pub fn scalar_from_hex(hex: &str) -> Scalar {
-    let bytes = hex_to_bytes(hex);
+pub fn scalar_from_hex(hex: &str) -> Result<Scalar, String> {
+    let bytes = hex_to_bytes(hex)?;
     let mut wide = [0u8; 64];
     wide[64 - bytes.len()..].copy_from_slice(&bytes);
-    wide_reduce(&wide)
+    Ok(wide_reduce(&wide))
 }
 const HALF_LEN: usize = 16;
 
@@ -50,15 +50,20 @@ pub enum Spake2Error {
     IdentitySharedSecret,
 }
 
-pub fn hex_to_bytes(hex: &str) -> Vec<u8> {
-    (0..hex.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("valid hex"))
+pub fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, String> {
+    if !hex.len().is_multiple_of(2) {
+        return Err(format!("hex string has odd length {}", hex.len()));
+    }
+    (0..hex.len() / 2)
+        .map(|index| {
+            u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16)
+                .map_err(|_| format!("invalid hex byte at {index}"))
+        })
         .collect()
 }
 
 fn point_from_hex(hex: &str) -> ProjectivePoint {
-    let key = p256::PublicKey::from_sec1_bytes(&hex_to_bytes(hex))
+    let key = p256::PublicKey::from_sec1_bytes(&hex_to_bytes(hex).expect("RFC fixed point hex"))
         .expect("RFC 9382 fixed point is a valid P-256 point");
     ProjectivePoint::from(key.as_affine())
 }
@@ -89,7 +94,7 @@ pub fn derive_w(code: &[u8]) -> Scalar {
 /// Modular reduction of a 512-bit value by the P-256 group order.
 fn wide_reduce(wide: &[u8; 64]) -> Scalar {
     let mut order_bytes = [0u8; 64];
-    order_bytes[32..].copy_from_slice(&hex_to_bytes(N_SCALAR_HEX));
+    order_bytes[32..].copy_from_slice(&hex_to_bytes(N_SCALAR_HEX).expect("scalar order hex"));
     let order = NonZero::<U512>::new(U512::from_be_slice(&order_bytes)).expect("nonzero order");
     let reduced = U512::from_be_slice(wide).rem(&order);
     // reduced < n < 2^256, so the low 32 bytes carry the whole value.
