@@ -84,7 +84,7 @@ P3：
 - [x] 身份私钥随 `SyncState` 明文落盘（设计为应用自有存储）：文档标注风险或提供可选加密封装（证据：`DeviceIdentity::secret_key` 与 `SyncState` 均新增风险标注——SDK 从不自行加密存储，应用必须将快照置于受保护后端或在 `SyncStorage` 层加密，否则泄露可被伪造身份；选择文档标注而非加密封装以保 API 稳定；`identity.rs`/`storage.rs`）
 - [x] `transport::try_recv` 空队列返回 `Closed`，调用方易误判为对端关闭（证据：`TransportError` 新增 `Empty` 变体（"no frame available"），`try_recv` 空队列返回 `Empty`、对端关闭返回 `Closed`；新增 `try_recv_empty_is_distinct_from_closed` 测试；`transport.rs:104`）
 - [x] `transport::recv` 锁中毒时 panic，改为中毒恢复（证据：`recv` 的 `lock()` 与 `condvar.wait()` 均改 `unwrap_or_else(|poisoned| poisoned.into_inner())` 中毒恢复；`transport.rs:91`）
-- [ ] `relay::persist` 写后未 fsync，崩溃可能丢续传状态（`relay.rs:123`）
+- [x] `relay::persist` 写后未 fsync，崩溃可能丢续传状态（证据：`persist` 改 `File::create+write_all+sync_all` 后 rename，再对父目录 `sync_all` 保证 rename 持久；`relay.rs:123`）
 - [ ] `scalar_from_hex` 奇长十六进制串 panic（`pairing_spake2.rs:53`）
 - [ ] `b64url_decode` 接受非规范填充，应拒绝（`crypto.rs`）
 - [ ] `sb_last_error` 成功路径返回悬垂非空指针（0x1）：文档标注或返回空（`syncbond-ffi`）

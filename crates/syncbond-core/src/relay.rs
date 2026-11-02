@@ -128,10 +128,28 @@ impl FileRelayStore {
         let temp_path = self.path.with_extension("tmp");
         let bytes =
             serde_json::to_vec(state).map_err(|error| RelayError::Encoding(error.to_string()))?;
-        std::fs::write(&temp_path, bytes)
-            .map_err(|error| RelayError::Encoding(error.to_string()))?;
+        {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&temp_path)
+                .map_err(|error| RelayError::Encoding(error.to_string()))?;
+            file.write_all(&bytes)
+                .map_err(|error| RelayError::Encoding(error.to_string()))?;
+            file.sync_all()
+                .map_err(|error| RelayError::Encoding(error.to_string()))?;
+        }
         std::fs::rename(&temp_path, &self.path)
-            .map_err(|error| RelayError::Encoding(error.to_string()))
+            .map_err(|error| RelayError::Encoding(error.to_string()))?;
+        // fsync the containing directory so the rename itself is durable.
+        if let Some(parent) = self.path.parent() {
+            std::fs::File::open(parent)
+                .and_then(|dir| dir.sync_all())
+                .map_err(|error| RelayError::Encoding(error.to_string()))?;
+        }
+        Ok(())
     }
 }
 
