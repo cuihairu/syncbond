@@ -72,6 +72,7 @@ P2：
 - [ ] 会话/中继接收路径加帧大小上限，防认证对端巨帧 OOM（`pairing.rs` `recv_and_open`、`replication.rs` `sync_over` decode 无上限）
 - [ ] `HybridClock::receive` 死代码处置：`ct` 加法改 saturating 或删除该公开方法（`hlc.rs:96`，`remote.ct = u64::MAX` 时溢出）
 - [ ] 拍板：conformance fixture 的 `time_only` GC 模式是否对应用收紧（现经公开 `conformance_run` 可达，2026-10-28 决策口径为内部/测试专用）
+- [ ] `max_stamp` 比较反转：a>b 时返回较小戳，合并记录携带较早时间戳（`conflict.rs:88`，交换分支 + 加钉子测试）
 
 P3：
 
@@ -81,3 +82,10 @@ P3：
 - [ ] napi `cstr` 内嵌 NUL 静默截断为空串（`unwrap_or_default`），改为显式报错（`syncbond-napi/src/lib.rs:57`）
 - [ ] `SyncStats` 的 `received_ops`/`applied_ops` 恒为 0：补实际计数或删字段（`replication.rs` `sync_over`）
 - [ ] 身份私钥随 `SyncState` 明文落盘（设计为应用自有存储）：文档标注风险或提供可选加密封装（`identity.rs`/`storage.rs`）
+- [ ] `transport::try_recv` 空队列返回 `Closed`，调用方易误判为对端关闭（`transport.rs:104`）
+- [ ] `transport::recv` 锁中毒时 panic，改为中毒恢复（`transport.rs:91`）
+- [ ] `relay::persist` 写后未 fsync，崩溃可能丢续传状态（`relay.rs:123`）
+- [ ] `scalar_from_hex` 奇长十六进制串 panic（`pairing_spake2.rs:53`）
+- [ ] `b64url_decode` 接受非规范填充，应拒绝（`crypto.rs`）
+- [ ] `sb_last_error` 成功路径返回悬垂非空指针（0x1）：文档标注或返回空（`syncbond-ffi`）
+- [ ] `MergeStrategy::delete` 在 OR-Set/PN-Counter 下的语义未文档化（`conflict.rs`）

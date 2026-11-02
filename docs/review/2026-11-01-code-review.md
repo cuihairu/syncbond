@@ -105,3 +105,38 @@
 ## 六、与文档审计的关系
 
 本报告 CR-001 是 `docs/审计-文档一致性.md` D-03 的**回归**：上轮审计将「WebSocket/LAN/P2P 接口预留」过度修正为「WebSocket 中继已实现」，而核心只有持久化可续传中继存储。已在该审计文件「六、后续更正」记录，并把 D-03 重新划入 A 桶后修复。教训：否定性结论须先验证搜索树（本报告对 WebSocket 全仓 grep 确认无实现后才下结论），且「有同名模块 ≠ 实现了声称的能力」。
+
+## 七、复核轮（2026-11-02）
+
+全仓重扫（安全静态扫描 + 隐藏 bug 猎捕 + 质量门），并逐条核对上轮 11 条发现的现状。
+
+### 上轮修复核验（3/3 在位）
+
+- CR-001（commit `84f9162`）：README 措辞已更正为「transports are application-provided」，在位。
+- CR-002（commit `47539b3`）：`pairing_spake2.rs:277-279`、`:353-355` 双侧 `IdentitySharedSecret` 拒绝 + 内联测试 `identity_shared_secret_is_rejected`（`:392-411`），在位。
+- CR-003（commit `a7f9966`）：`replication.rs:40-49` 注释更正，在位。
+
+遗留 9 条（CR-004…CR-011 + 拍板项）逐条对位复核：全部仍在 todo，代码位置未漂移。
+
+### 新发现
+
+**CR-012（P1，已修）`MemberKeyRing::open` 重放保护失效**
+`member_crypto.rs`：`open()` 把 `seen_message_ids`（BTreeSet）克隆进一次性 `HashSet` 传给 `EnvelopeContext`，去重结果随调用丢弃——同一信封可被反复 `open` 成功，README 声称的 replay 拒绝在该 API 上不成立（临时复现：第二次 `open` 返回 `Ok("hello")`）。FFI 面不受影响（`handles.rs` 的 `Keyring` 自带持久 `Mutex<HashSet>`，仅核心 `MemberKeyRing` 有此缺陷）。
+修复：字段改 `Mutex<HashSet<String>>`，`open()` 持锁传入持久集合（锁中毒按 `handles.rs` 既有模式恢复），`apply_rotation`/`install_local_rotation` 经锁插入 epoch 消息号；新增钉子测试 `member_open_rejects_replayed_envelope`（第二次 `open` 必须以 `CryptoError::Replay` 拒绝）。commit `1fae572`，tests 77/0。
+
+**CR-013（P2，记 todo）`max_stamp` 比较反转**
+`conflict.rs:88-94`：`compare_stamps(a,b)==Greater` 时返回 `b.clone()`（较小方），OR-Set/PN-Counter 合并后记录携带较早时间戳。合并仍确定、可交换、无分叉，无安全影响，故 P2 记 todo（修法：交换分支 + 钉子测试）。
+
+**P3 观察（7 条，记 todo）**：`transport::try_recv` 空队列返回 `Closed`；`transport::recv` 锁中毒 panic；`relay::persist` 无 fsync；`scalar_from_hex` 奇长串 panic；`b64url_decode` 接受非规范填充；`sb_last_error` 成功路径悬垂指针；`MergeStrategy::delete` 在 OR-Set/PN-Counter 下语义未文档化。
+
+### 复核轮处置汇总
+
+| 项 | 值 |
+|---|---|
+| 新发现 | **9**（P1×1，P2×1，P3×7） |
+| 当场修复 | **1**（CR-012） |
+| 记 todo | **8**（CR-013 + 7 条 P3，已入 todo.md 第九节） |
+| 提交 | `1fae572`（fix: persist replay tracking in member keyring open） |
+| 门禁 | `cargo test` 77/0；clippy `-D warnings` 0；fmt 干净 |
+
+正向结论（复核后仍成立）：FFI 边界（catch_unwind/ManuallyDrop/长度校验）健全；wasm 路径用 `js_sys::Date` 避开 `SystemTime` panic；帧解析无越界；无硬编码密钥/shell 注入/SQL 拼接/eval。
