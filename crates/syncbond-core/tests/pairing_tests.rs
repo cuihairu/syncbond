@@ -48,6 +48,44 @@ fn mismatched_codes_reject_on_both_sides_without_deadlock() {
 }
 
 #[test]
+fn oversized_app_frames_are_rejected() {
+    let (ta, tb) = MemoryTransport::pair();
+    let identity_a = DeviceIdentity::generate();
+    let identity_b = DeviceIdentity::generate();
+    let (_sa, sb) = std::thread::scope(|s| {
+        let ha = s.spawn({
+            let ta = ta.clone();
+            move || pair("K7Q2M4", &identity_a, ta as Arc<dyn Transport>)
+        });
+        let hb = s.spawn({
+            let tb = tb.clone();
+            move || accept("K7Q2M4", &identity_b, tb as Arc<dyn Transport>)
+        });
+        (
+            ha.join()
+                .expect("initiator thread")
+                .expect("initiator paired"),
+            hb.join()
+                .expect("responder thread")
+                .expect("responder paired"),
+        )
+    });
+
+    // A hostile (already authenticated) peer sends an app frame above the cap.
+    let mut frame = vec![0x08u8, 1u8];
+    frame.resize(syncbond_core::pairing::MAX_FRAME_BYTES + 1, 0);
+    ta.send(&frame).expect("send oversized frame");
+
+    let error = sb
+        .recv_and_open()
+        .expect_err("oversized frame must be rejected");
+    assert!(
+        matches!(error, PairingError::Protocol(ref message) if message.contains("frame too large")),
+        "expected frame-too-large protocol error, got {error:?}"
+    );
+}
+
+#[test]
 fn protocol_version_mismatch_is_rejected() {
     // A "future" initiator speaking version 99.
     let (ta, tb) = MemoryTransport::pair();

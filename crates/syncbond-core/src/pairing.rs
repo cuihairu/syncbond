@@ -33,6 +33,10 @@ const SESSION_KEY_INFO: &[u8] = b"syncbond/v1/session-key";
 /// Epoch used for envelopes inside a freshly paired session; epoch rotation
 /// afterwards is the application's job via `KeyRing::rotate`.
 pub const SESSION_EPOCH: u64 = 1;
+/// Upper bound on a received frame (app envelope JSON included). Far above
+/// any legitimate payload; a hostile authenticated peer's oversized frame
+/// becomes a clean protocol error instead of an unbounded decode.
+pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Error, PartialEq, Eq, Clone)]
 pub enum PairingError {
@@ -92,6 +96,12 @@ impl PairingSession {
     pub fn recv_and_open(&self) -> Result<Vec<u8>, PairingError> {
         self.assert_live()?;
         let frame = self.transport.recv()?;
+        if frame.len() > MAX_FRAME_BYTES {
+            return Err(PairingError::Protocol(format!(
+                "frame too large: {} bytes (max {MAX_FRAME_BYTES})",
+                frame.len()
+            )));
+        }
         if frame.len() < 2 || frame[0] != FRAME_APP {
             return Err(PairingError::Protocol(format!(
                 "expected application frame, got type 0x{:02x}",
