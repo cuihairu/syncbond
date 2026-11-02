@@ -80,3 +80,15 @@ The group holds a `KeyRing` with a monotonic `keyEpoch`. Removing a member autom
 ## 6. Replication
 
 Records are opaque payloads with an HLC stamp and a causal witness (last-seen full stamp per node). Sync exchanges oplogs over the encrypted session; operations are deduplicated by id, so out-of-order and duplicate delivery converge. Merge behavior is a pluggable `MergeStrategy` (docs/design/merge.md). Full protocol log/cursor semantics live in `crates/syncbond-core/src/replication.rs`.
+
+## 7. Frame size contract
+
+The core enforces a hard cap of 16 MiB (`MAX_FRAME_BYTES`) on every received
+frame: both the pairing handshake frames (via `expect_frame`) and the
+post-pairing application frames (via `recv_and_open`) are rejected once the
+assembled buffer exceeds it. This bounds the work a decoder does, but it
+cannot prevent a transport from allocating a huge buffer before returning it:
+the cap is checked *after* `Transport::recv()` has produced the whole frame.
+Every `Transport` implementation MUST therefore apply the same cap while
+reading from the network (never accumulate more than `MAX_FRAME_BYTES`), and
+the core's check is the final protocol guard, not the allocation guard.
