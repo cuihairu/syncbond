@@ -111,7 +111,10 @@ impl PairingSession {
         check_version(&frame)?;
         let envelope: crypto::EncryptedEnvelope = serde_json::from_slice(&frame[2..])
             .map_err(|e| PairingError::Protocol(format!("envelope decoding: {e}")))?;
-        let mut seen = self.seen_message_ids.lock().unwrap();
+        let mut seen = self
+            .seen_message_ids
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let plaintext = crypto::open(
             &self.session_key,
             &envelope,
