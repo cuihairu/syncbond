@@ -110,8 +110,11 @@ fn seal_and_send_rejects_oversized_payload_before_sending() {
     });
 
     // A payload that would push the encoded envelope past the frame cap must
-    // be refused locally rather than emitted and rejected by the peer.
-    let oversized = vec![0u8; syncbond_core::pairing::MAX_FRAME_BYTES];
+    // be refused locally rather than emitted and rejected by the peer. The
+    // pre-encryption hint rejects a plaintext already at/above the cap before
+    // any sealing or allocation; a payload just under the cap is still
+    // rejected by the exact post-encode check.
+    let oversized = vec![0u8; syncbond_core::pairing::MAX_FRAME_BYTES + 1];
     let error = sa
         .seal_and_send(&oversized)
         .expect_err("oversized payload must be refused locally");

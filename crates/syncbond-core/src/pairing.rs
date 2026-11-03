@@ -37,6 +37,11 @@ pub const SESSION_EPOCH: u64 = 1;
 /// any legitimate payload; a hostile authenticated peer's oversized frame
 /// becomes a clean protocol error instead of an unbounded decode.
 pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
+/// Conservative plaintext bound used to reject obvious over-sized sends
+/// before encryption. Frame encoding adds metadata, a 16-byte tag, and
+/// base64url expansion, so payloads at or above this may still be rejected
+/// later by the exact `MAX_FRAME_BYTES` check.
+const MAX_PLAINTEXT_HINT_BYTES: usize = MAX_FRAME_BYTES;
 
 #[derive(Debug, Error, PartialEq, Eq, Clone)]
 pub enum PairingError {
@@ -75,6 +80,12 @@ impl PairingSession {
     /// Encrypt and send an application payload over the session channel.
     pub fn seal_and_send(&self, plaintext: &[u8]) -> Result<(), PairingError> {
         self.assert_live()?;
+        if plaintext.len() > MAX_PLAINTEXT_HINT_BYTES {
+            return Err(PairingError::Protocol(format!(
+                "frame too large: plaintext {} bytes exceeds max frame {MAX_FRAME_BYTES}",
+                plaintext.len()
+            )));
+        }
         let envelope = crypto::seal(
             &self.session_key,
             &self.group_id,
