@@ -122,7 +122,7 @@ P3：
 ## 漏洞扫描遗留（2026-11-03 全舰队扫描，源 scratch/vuln-scan-*.md）
 
 - [x] VULN-SYNCB-001 [中危·RUSTSEC-2026-0387] crypto-bigint 0.5.5→0.7.6+【跨大版本需改代码】：由 elliptic-curve 0.13/p256 或 rsa 0.9 锁定；验收：cargo audit 该 ID 清零 + cargo test 绿（证据：Cargo.lock crypto-bigint 0.7.10；cargo audit exit 0/147 deps 无漏洞；cargo test --workspace 全绿）
-- [ ] VULN-SYNCB-002 [高危·GHSA-587h-7wmj-h5pm 路径穿越] vite 5.4.21→6.4.4【跨大版本（override 强制 5→6）·补跑任务】：pnpm-workspace.yaml 的 `vite@<6.4.4: 6.4.4` override 在扫描窗口被并发进程回退 3 次；本任务复核 override 已不在、lock 仍为 vite@5.4.21；验收：override 落盘 + pnpm audit --audit-level=high 中 vite 不再命中 + pnpm -r test 绿（9/9）
+- [x] VULN-SYNCB-002 [高危·GHSA-587h-7wmj-h5pm 路径穿越] vite 5.4.21→6.4.4【跨大版本（override 强制 5→6）·补跑任务】：pnpm-workspace.yaml 的 `vite@<6.4.4: 6.4.4` override 在扫描窗口被并发进程回退 3 次；本任务复核 override 已不在、lock 仍为 vite@5.4.21；验收：override 落盘 + pnpm audit --audit-level=high 中 vite 不再命中 + pnpm -r test 绿（9/9）（证据：pnpm-workspace.yaml override vite:6.4.4 落盘；pnpm-lock.yaml vite@6.4.4；pnpm audit --audit-level=high 高危清零；pnpm -r test 9/9 绿；docs:build 通过）
 
 ## 审核发现（2026-11-03 第五轮，diff 303a2623..HEAD 共 15 提交/9 文件）
 
