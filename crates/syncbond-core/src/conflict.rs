@@ -411,7 +411,11 @@ mod tests {
     use super::*;
 
     fn stamp(pt: u64, ct: u64, id: &str) -> HlcStamp {
-        HlcStamp { pt, ct, id: id.into() }
+        HlcStamp {
+            pt,
+            ct,
+            id: id.into(),
+        }
     }
 
     #[test]
@@ -421,6 +425,9 @@ mod tests {
         assert_eq!(max_stamp(&early, &late), late);
         assert_eq!(max_stamp(&late, &early), late);
         // Same pt: the higher counter wins.
-        assert_eq!(max_stamp(&stamp(100, 1, "a"), &stamp(100, 5, "b")), stamp(100, 5, "b"));
+        assert_eq!(
+            max_stamp(&stamp(100, 1, "a"), &stamp(100, 5, "b")),
+            stamp(100, 5, "b")
+        );
     }
 }

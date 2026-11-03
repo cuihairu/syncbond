@@ -169,7 +169,9 @@ fn concurrent_open_accepts_each_unique_envelope_once() {
 
     let identities = identities();
     let ring = Arc::new(ring(&identities[0], &identities));
-    let envelopes: Vec<_> = (0..32).map(|i| ring.seal(format!("msg-{i}").as_bytes())).collect();
+    let envelopes: Vec<_> = (0..32)
+        .map(|i| ring.seal(format!("msg-{i}").as_bytes()))
+        .collect();
     let handles: Vec<_> = envelopes
         .into_iter()
         .enumerate()
@@ -194,7 +196,9 @@ fn replay_rejected_then_fresh_id_still_opens() {
     assert_eq!(ring.open(&replay).expect("first open"), b"once");
     assert!(matches!(
         ring.open(&replay),
-        Err(MemberCryptoError::Crypto(syncbond_core::CryptoError::Replay(_)))
+        Err(MemberCryptoError::Crypto(
+            syncbond_core::CryptoError::Replay(_)
+        ))
     ));
     // A brand-new envelope with a fresh message id must still open after the
     // replay rejection; the seen-set must not have been poisoned.

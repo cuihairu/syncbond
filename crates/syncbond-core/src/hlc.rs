@@ -133,12 +133,12 @@ mod tests {
 
     #[test]
     fn receive_saturates_at_max_counter() {
-        let mut clock = HybridClock::with_clock(
-            "node-a",
-            1_000,
-            Box::new(|| 10_000),
-        );
-        let remote = HlcStamp { pt: 10_000, ct: u64::MAX, id: "node-b".into() };
+        let mut clock = HybridClock::with_clock("node-a", 1_000, Box::new(|| 10_000));
+        let remote = HlcStamp {
+            pt: 10_000,
+            ct: u64::MAX,
+            id: "node-b".into(),
+        };
         let stamp = clock.receive(&remote).expect("max ct must not overflow");
         assert_eq!(stamp.ct, u64::MAX);
         assert_eq!(stamp.pt, 10_000);

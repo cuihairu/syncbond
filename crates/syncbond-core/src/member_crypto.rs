@@ -517,16 +517,29 @@ mod tests {
                 removed_identity.device_id.clone(),
             ],
             [
-                (leader_identity.device_id.clone(), leader_identity.public_key),
-                (survivor_identity.device_id.clone(), survivor_identity.public_key),
-                (removed_identity.device_id.clone(), removed_identity.public_key),
+                (
+                    leader_identity.device_id.clone(),
+                    leader_identity.public_key,
+                ),
+                (
+                    survivor_identity.device_id.clone(),
+                    survivor_identity.public_key,
+                ),
+                (
+                    removed_identity.device_id.clone(),
+                    removed_identity.public_key,
+                ),
             ],
             1,
             [0x42; 32],
         )
         .unwrap();
         // Force a non-empty seen set, then rotate; the set must be dropped.
-        leader.seen_message_ids.lock().unwrap().insert("stale".into());
+        leader
+            .seen_message_ids
+            .lock()
+            .unwrap()
+            .insert("stale".into());
         let result = leader
             .rotate_for_removal(removed_identity.device_id.clone(), &leader_identity)
             .unwrap();
