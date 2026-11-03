@@ -27,8 +27,12 @@ serde_json = "1"
 
 # `rand_core` (pulled by the core for key generation) forwards to the
 # `getrandom` crate, whose wasm32-unknown-unknown implementation needs the
-# `js` feature to draw from `crypto.getRandomValues`. js-sys supplies the
-# wall clock (`Date.now`) that `SystemTime` cannot on bare wasm32.
+# `js`/`wasm_js` feature to draw from `crypto.getRandomValues`. p256 0.14
+# (via elliptic-curve 0.14) pulls getrandom 0.4, which needs `wasm_js`;
+# the core's rand_core 0.6 chain pulls getrandom 0.2, which needs `js`.
+# js-sys supplies the wall clock (`Date.now`) that `SystemTime` cannot on
+# bare wasm32.
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 getrandom = { version = "0.2", features = ["js"] }
+getrandom04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }
 js-sys = "0.3"

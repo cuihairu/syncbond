@@ -15,8 +15,8 @@ license = "MIT"
 authors = ["cuihairu"]
 
 [workspace.dependencies]
-p256 = { version = "0.13", features = ["ecdsa", "arithmetic"] }
-elliptic-curve = "0.13"
+p256 = { version = "0.14", features = ["ecdsa", "arithmetic"] }
+elliptic-curve = "0.14"
 sha2 = "0.10"
 sha1 = "0.10"
 hmac = "0.12"

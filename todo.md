@@ -121,5 +121,24 @@ P3：
 
 ## 漏洞扫描遗留（2026-11-03 全舰队扫描，源 scratch/vuln-scan-*.md）
 
-- [ ] VULN-SYNCB-001 [中危·RUSTSEC-2026-0387] crypto-bigint 0.5.5→0.7.6+【跨大版本需改代码】：由 elliptic-curve 0.13/p256 或 rsa 0.9 锁定；验收：cargo audit 该 ID 清零 + cargo test 绿
+- [x] VULN-SYNCB-001 [中危·RUSTSEC-2026-0387] crypto-bigint 0.5.5→0.7.6+【跨大版本需改代码】：由 elliptic-curve 0.13/p256 或 rsa 0.9 锁定；验收：cargo audit 该 ID 清零 + cargo test 绿（证据：Cargo.lock crypto-bigint 0.7.10；cargo audit exit 0/147 deps 无漏洞；cargo test --workspace 全绿）
 - [ ] VULN-SYNCB-002 [高危·GHSA-587h-7wmj-h5pm 路径穿越] vite 5.4.21→6.4.4【跨大版本（override 强制 5→6）·补跑任务】：pnpm-workspace.yaml 的 `vite@<6.4.4: 6.4.4` override 在扫描窗口被并发进程回退 3 次；本任务复核 override 已不在、lock 仍为 vite@5.4.21；验收：override 落盘 + pnpm audit --audit-level=high 中 vite 不再命中 + pnpm -r test 绿（9/9）
+
+## 审核发现（2026-11-03 第五轮，diff 303a2623..HEAD 共 15 提交/9 文件）
+
+覆盖范围：逐提交逐文件审毕（codes.rs、hlc.rs、pairing.rs、relay.rs、transport.rs、member_rotation_tests.rs、pairing_tests.rs、relay_persistence_tests.rs）；`cargo test -p syncbond-core --lib`（15 绿）及三集成测试二进制（member_rotation 12、pairing 13、relay_persistence 2）全绿。已记录于上文各轮的发现在此轮 diff 内未见复发（codes 阈值 248/is_accepting 归一、transport send/try_recv 中毒恢复、issue 饱和、relay 裸路径、并发同 id open、seal_and_send 发送侧守卫均已按证据闭合）。以下为本轮发现：
+
+- [ ] 审核发现：codes.rs 模块注释「≈ 30.7 bits of entropy (31^6)」数值错误——log2(31^6)=log2(887,503,681)=29.725，应为 ≈29.7 bits；与同文件「4.954 bits/字符 ×6 = 29.72」自相矛盾，PROTOCOL.md:21 亦为 29.4 口径（crates/syncbond-core/src/codes.rs:4）
+- [ ] 审核发现：提交 97ba6e2 将 codes.rs 注释「30 符号→31 符号」并修正阈值，但 docs/design/PROTOCOL.md:21/47/53 仍「30 unambiguous symbols / ≈29.4 bits / 30^6 = 729,000,000」——codes.rs:5 明确以该文档为 online-guessing 分析出处，文档与实现口径脱节；且 :47 所列字母串 `23456789…WXYZ` 实为 31 字符却称 30 符号，内部自相矛盾；修复未传播（docs/design/PROTOCOL.md:21、47、53）
+- [ ] 审核发现：`rejection_threshold_is_multiple_of_alphabet` 测试硬编码 248，与 `generate_code` 的阈值 248 各自独立、无共享常量——若实现改回有偏值（如 240）该测试仍绿，未真正守卫阈值与模偏差；应提取共享常量或统计 `generate_code` 输出分布（crates/syncbond-core/src/codes.rs:63、179）
+- [ ] 审核发现：`issue()` 改 `saturating_add(1)` 只保单调不减、不保唯一——`receive` 吸收恶意/异常远端 `(pt≈now, ct=u64::MAX)` 后，同一 wall-ms 内连续两次 `issue()` 返回相同 `(pt, u64::MAX, id)` 戳，破坏 `HlcStamp`「totally ordered and unique」不变量（hlc.rs:14）；新测试仅 issue 一次未覆盖重复戳，注释「saturating keeps monotonic uniqueness」失实（crates/syncbond-core/src/hlc.rs:81-83、150）
+- [ ] 审核发现：relay.rs 裸相对路径修复用 `.filter(|p| !p.as_os_str().is_empty())` 整段跳过目录 fsync，而非把空父路径映射到 `.`（`File::open(".")` 在 Linux 可 sync）——裸路径（如 `"state.json"`）下 e11824f 引入的 rename 持久性保证静默失效，落盘耐久与否仅由路径形态决定，行为不对称（crates/syncbond-core/src/relay.rs:150-154）
+- [ ] 审核发现：本轮将 `send`/`try_recv` 与 `recv` 统一为锁中毒恢复（`unwrap_or_else(|p| p.into_inner())`），但同文件 `close_pair` 仍 `inbox.lock().unwrap()`——持锁线程 panic 后 `close_pair` 仍永久 panic，中毒恢复惯例在类内未完全一致（crates/syncbond-core/src/transport.rs:79）
+- [ ] 审核发现：`durable_relay_accepts_bare_relative_path` 用 `env::set_current_dir` 改动进程级 CWD——测试二进制各测试默认并行运行，CWD 为进程全局态；现仅因另一测试用绝对临时路径才未串扰，若任一并行测试用相对路径或本测试在 `set_current_dir(temp)` 后、`set_current_dir(cwd)` 恢复前中断（catch_unwind 外 panic），将污染同进程其他测试（crates/syncbond-core/tests/relay_persistence_tests.rs:66、74）
+
+## 审核发现（2026-11-04 第六轮复核，diff 303a2623..HEAD 共 15 提交/9 文件）
+
+覆盖范围：逐提交逐文件复核（codes.rs、hlc.rs、pairing.rs、relay.rs、transport.rs、member_rotation_tests.rs、pairing_tests.rs、relay_persistence_tests.rs）；`git diff --stat` 与第五轮一致（9 文件/+230/−13），HEAD 未再前移，本轮与第五轮同区间。已逐条对照当前代码复核第五轮 7 条发现：**全部仍然成立**（codes.rs:4「30.7 bits」数值错、PROTOCOL.md:21/47/53 仍「30 符号/29.4 bits/30^6=729,000,000」、codes.rs:176-181 rejection 测试硬编码 248 与实现无共享常量、hlc.rs:83 issue() 饱和后同 ms 重复戳、relay.rs:150-154 裸路径整段跳过 fsync、transport.rs:79 close_pair 仍 `lock().unwrap()`、relay_persistence_tests.rs:66/74 `set_current_dir` 改进程级 CWD）。以下为本轮新增发现（均低危，不影响第五轮结论）：
+
+- [ ] 审核发现：`seal_and_send` 先 `crypto::seal`（加密整段 plaintext）并 `serde_json::to_vec(&envelope)`（整体序列化/分配）之后才做 `frame.len() > MAX_FRAME_BYTES` 检查——发送侧守卫只挡「不发出」，不挡「不加密/不分配」；调用方传超大 plaintext 时先付出全部加密与内存（plaintext + 编码膨胀）才被拒，守卫时机偏晚；建议组帧前先对 `plaintext.len()`（或上界）预检（crates/syncbond-core/src/pairing.rs:78-96）
+- [ ] 审核发现：`generate_code` 采样路径无分布测试——现有覆盖只有 `rejection_threshold_is_multiple_of_alphabet` 的算术断言（`248 % 31 == 0`），从未调用 `generate_code` 验证 31 个符号均可达、输出等概率；实现若在循环/下标处引入新偏差（如错用 `% 30` 或改阈值）该测试仍绿；建议对 `generate_code` 输出做大样本频次统计断言（crates/syncbond-core/src/codes.rs:53-68、176-181）

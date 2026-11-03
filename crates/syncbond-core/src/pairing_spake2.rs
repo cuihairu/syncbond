@@ -10,7 +10,7 @@
 //! docs/design/pairing-codes.md (code policy).
 
 use p256::elliptic_curve::bigint::{ArrayEncoding, NonZero, U512};
-use p256::elliptic_curve::{sec1::ToEncodedPoint, PrimeField};
+use p256::elliptic_curve::{sec1::ToSec1Point, PrimeField};
 use p256::{FieldBytes, ProjectivePoint, Scalar};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -99,7 +99,7 @@ fn wide_reduce(wide: &[u8; 64]) -> Scalar {
     let reduced = U512::from_be_slice(wide).rem(&order);
     // reduced < n < 2^256, so the low 32 bytes carry the whole value.
     let reduced_bytes: [u8; 64] = reduced.to_be_byte_array().into();
-    let repr: FieldBytes = *FieldBytes::from_slice(&reduced_bytes[32..]);
+    let repr = FieldBytes::try_from(&reduced_bytes[32..]).expect("32-byte slice");
     // Input is already reduced; the repr is in range by construction.
     Scalar::from_repr(repr).unwrap()
 }
@@ -132,7 +132,7 @@ fn decode_point(bytes: &[u8]) -> Result<ProjectivePoint, Spake2Error> {
 fn encode_point(point: &ProjectivePoint) -> Vec<u8> {
     point
         .to_affine()
-        .to_encoded_point(false)
+        .to_sec1_point(false)
         .as_bytes()
         .to_vec()
 }
