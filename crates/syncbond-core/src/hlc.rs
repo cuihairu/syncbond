@@ -78,7 +78,9 @@ impl HybridClock {
             self.pt = wall;
             self.ct = 0;
         } else {
-            self.ct += 1;
+            // A remote stamp can drive ct to u64::MAX; saturating here keeps a
+            // subsequent local issue from overflowing the counter.
+            self.ct = self.ct.saturating_add(1);
         }
         HlcStamp {
             pt: self.pt,
@@ -142,5 +144,22 @@ mod tests {
         let stamp = clock.receive(&remote).expect("max ct must not overflow");
         assert_eq!(stamp.ct, u64::MAX);
         assert_eq!(stamp.pt, 10_000);
+    }
+
+    /// A malicious remote stamp at u64::MAX must not make a later local
+    /// `issue` overflow the counter: saturating keeps monotonic uniqueness.
+    #[test]
+    fn issue_after_saturated_receive_does_not_overflow() {
+        let mut clock = HybridClock::with_clock("node-a", 1_000, Box::new(|| 10_000));
+        let remote = HlcStamp {
+            pt: 10_000,
+            ct: u64::MAX,
+            id: "node-b".into(),
+        };
+        clock.receive(&remote).expect("receive succeeds");
+        // Same wall ms: issue() takes the ct += 1 branch; it must saturate.
+        let local = clock.issue();
+        assert_eq!(local.pt, 10_000);
+        assert_eq!(local.ct, u64::MAX);
     }
 }
