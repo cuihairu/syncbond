@@ -2,8 +2,34 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use syncbond_core::relay::{apply_pull_response, FileRelayStore, PullRequest, RelayStore};
 use syncbond_core::replication::Replicator;
+
+/// Serializes tests that mutate the process-global current directory. CWD is
+/// shared by every test binary's threads, so any test that chdirs must hold
+/// this lock for the duration of the CWD change, and other CWD-dependent
+/// tests must take it too.
+static CWD_LOCK: Mutex<()> = Mutex::new(());
+
+/// Restores the process CWD on drop, even if the guarded body panics.
+struct CwdGuard {
+    original: PathBuf,
+}
+
+impl CwdGuard {
+    fn enter(dir: &std::path::Path) -> Self {
+        let original = env::current_dir().expect("read current dir");
+        env::set_current_dir(dir).expect("chdir into temp dir");
+        CwdGuard { original }
+    }
+}
+
+impl Drop for CwdGuard {
+    fn drop(&mut self) {
+        env::set_current_dir(&self.original).expect("restore current dir");
+    }
+}
 
 fn temporary_path() -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -52,6 +78,7 @@ fn durable_relay_resumes_across_server_restart_without_duplicates() {
 #[test]
 fn durable_relay_accepts_bare_relative_path() {
     // Regression test for parent() == Some("") on a bare relative path.
+    let _guard = CWD_LOCK.lock().unwrap();
     let unique_suffix = format!(
         "syncbond-relay-bare-{}-{}.json",
         std::process::id(),
@@ -60,10 +87,9 @@ fn durable_relay_accepts_bare_relative_path() {
             .unwrap()
             .as_nanos()
     );
-    let cwd = env::current_dir().unwrap();
     let temp = env::temp_dir().join(&unique_suffix);
     fs::create_dir_all(&temp).unwrap();
-    env::set_current_dir(&temp).unwrap();
+    let _cwd = CwdGuard::enter(&temp);
 
     let result = std::panic::catch_unwind(|| {
         let mut writer = Replicator::new("writer");
@@ -71,7 +97,6 @@ fn durable_relay_accepts_bare_relative_path() {
         let operation = writer.put("key", b"first".to_vec()).unwrap();
         store.append("channel", &operation).unwrap();
     });
-    env::set_current_dir(cwd).unwrap();
     fs::remove_file(temp.join("state.json")).unwrap();
     fs::remove_dir(temp).unwrap();
     result.unwrap();
