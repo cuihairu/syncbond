@@ -13,6 +13,10 @@ use std::time::Instant;
 pub const CODE_ALPHABET: &[u8] = b"23456789ABCDEFGHJKMNPQRSTUVWXYZ";
 pub const CODE_LENGTH: usize = 6;
 pub const DEFAULT_TTL_MS: u64 = 120_000;
+/// Rejection-sampling threshold: the largest multiple of the alphabet size
+/// (31) below 256, so every symbol is exactly equally likely. Bytes >= this
+/// value are dropped and resampled.
+pub const REJECTION_THRESHOLD: u8 = 248;
 pub const DEFAULT_MAX_ATTEMPTS: u32 = 3;
 
 #[derive(Debug, Clone)]
@@ -53,14 +57,14 @@ struct IssuedCode {
 pub fn generate_code() -> String {
     // Rejection sampling to avoid modulo bias: 256 % 31 != 0, so a plain
     // `% 31` would give the first 8 symbols a slightly higher probability.
-    // Drop bytes >= 248 (the largest multiple of 31 below 256) and retry,
-    // leaving each of the 31 symbols exactly 1/31.
+    // Drop bytes >= REJECTION_THRESHOLD and retry, leaving each symbol exactly
+    // 1/31.
     let mut out = String::with_capacity(CODE_LENGTH);
     while out.len() < CODE_LENGTH {
         let mut byte = [0u8; 1];
         OsRng.fill_bytes(&mut byte);
         let b = byte[0];
-        if b < 248 {
+        if b < REJECTION_THRESHOLD {
             out.push(CODE_ALPHABET[b as usize % CODE_ALPHABET.len()] as char);
         }
     }
@@ -176,8 +180,11 @@ mod tests {
     fn rejection_threshold_is_multiple_of_alphabet() {
         // 256 % 31 != 0, so any threshold below 256 must be a multiple of 31
         // to keep every symbol equally likely.
-        assert_eq!(248 % CODE_ALPHABET.len(), 0);
+        assert_eq!(REJECTION_THRESHOLD as usize % CODE_ALPHABET.len(), 0);
         assert!(256 % CODE_ALPHABET.len() != 0);
+        // The threshold must be the largest multiple of 31 below 256.
+        assert_eq!(REJECTION_THRESHOLD as usize / CODE_ALPHABET.len(), 8);
+        assert!((REJECTION_THRESHOLD as usize + 1) % CODE_ALPHABET.len() != 0);
     }
 
     /// The alphabet must contain no ambiguous characters (no 0/O/1/I/L).
