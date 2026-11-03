@@ -85,7 +85,10 @@ impl MemoryTransport {
 
 impl Transport for MemoryTransport {
     fn send(&self, frame: &[u8]) -> Result<(), TransportError> {
-        let mut peer = self.peer_outbox.lock().unwrap();
+        let mut peer = self
+            .peer_outbox
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if peer.closed {
             return Err(TransportError::Closed);
         }
@@ -115,7 +118,10 @@ impl Transport for MemoryTransport {
     }
 
     fn try_recv(&self) -> Result<Vec<u8>, TransportError> {
-        let mut inbox = self.inbox.lock().unwrap();
+        let mut inbox = self
+            .inbox
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(frame) = inbox.queue.pop_front() {
             return Ok(frame);
         }
@@ -137,5 +143,35 @@ mod tests {
         assert_eq!(a.try_recv(), Err(TransportError::Empty));
         MemoryTransport::close_pair(&a, &b);
         assert_eq!(a.try_recv(), Err(TransportError::Closed));
+    }
+
+    /// A panicking thread holding a transport lock must not permanently
+    /// poison `send`/`try_recv`: the poisoned guard is recovered just like
+    /// `recv` already does, keeping all three methods consistent.
+    #[test]
+    fn send_and_try_recv_recover_poisoned_lock() {
+        let (a, b) = MemoryTransport::pair();
+        // Poison a's inbox and peer_outbox by panicking while holding them.
+        let panic_inbox = {
+            let inbox = a.inbox.clone();
+            std::thread::spawn(move || {
+                let _guard = inbox.lock().unwrap();
+                panic!("poison inbox");
+            })
+        };
+        panic_inbox.join().expect_err("thread must panic");
+        let panic_outbox = {
+            let outbox = a.peer_outbox.clone();
+            std::thread::spawn(move || {
+                let _guard = outbox.lock().unwrap();
+                panic!("poison outbox");
+            })
+        };
+        panic_outbox.join().expect_err("thread must panic");
+
+        // `send` writes to the (now poisoned) peer_outbox; it must recover.
+        a.send(b"hello").expect("send must recover poisoned lock");
+        // `try_recv` reads from the (now poisoned) inbox; it must recover.
+        assert_eq!(b.try_recv(), Ok(b"hello".to_vec()));
     }
 }
