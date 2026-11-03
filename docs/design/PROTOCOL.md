@@ -18,7 +18,7 @@ Chosen: **SPAKE2, RFC 9382**, ciphersuite `SPAKE2-P256-SHA256-HKDF-HMAC` (RFC 93
 
 ### Password → scalar (w)
 
-`w = OS2IP(scrypt("syncbond/w1/v1" || code, N=2^14, r=8, p=1, 64)) mod n` — 64 output bytes avoid mod bias (NIST SP 800-56Ar3 suggestion); scrypt is the RFC-recommended MHF. Honest limit: a short code has bounded entropy, so the code must be single-use, short-lived and uniformly random (see §3); SPAKE2 protects the exchange, the policy bounds online guessing, and recorded transcripts only permit offline guessing at the code's entropy (≈29.4 bits for 6 characters — the reason TTL and single-use are mandatory).
+`w = OS2IP(scrypt("syncbond/w1/v1" || code, N=2^14, r=8, p=1, 64)) mod n` — 64 output bytes avoid mod bias (NIST SP 800-56Ar3 suggestion); scrypt is the RFC-recommended MHF. Honest limit: a short code has bounded entropy, so the code must be single-use, short-lived and uniformly random (see §3); SPAKE2 protects the exchange, the policy bounds online guessing, and recorded transcripts only permit offline guessing at the code's entropy (≈29.7 bits for 6 characters — the reason TTL and single-use are mandatory).
 
 ### Handshake flow and identity binding
 
@@ -44,13 +44,13 @@ A (initiator, pair())                    B (responder, accept())
 
 ## 2. Pairing code policy (guess limiting)
 
-Alphabet: 30 unambiguous symbols (`23456789ABCDEFGHJKMNPQRSTUVWXYZ`, no 0/O/1/I/L), length 6 → ≈29.4 bits of alphabet entropy (30^6 = 729,000,000). Defaults (`crates/syncbond-core/src/codes.rs`):
+Alphabet: 31 unambiguous symbols (`23456789ABCDEFGHJKMNPQRSTUVWXYZ`, no 0/O/1/I/L), length 6 → ≈29.7 bits of alphabet entropy (31^6 = 887,503,681). Defaults (`crates/syncbond-core/src/codes.rs`):
 
 | Rule | Value | Rationale |
 |---|---|---|
 | Single use | a consumed code can never pair again | replay of a paired code is worthless |
 | TTL | 120 s default (application-settable) | bounds the online-guessing window |
-| Failed attempts | max 3 per code window, then locked | with 30^6 codes, 3 guesses per 120 s window makes online guessing negligible |
+| Failed attempts | max 3 per code window, then locked | with 31^6 codes, 3 guesses per 120 s window makes online guessing negligible |
 | Format check | pre-exchange, both sides | rejects garbage before any crypto work |
 
 An online attacker gets ≤3 tries per 2 minutes against ≈10^9 codes: expected time to success is centuries. The offline-guessing risk from a recorded transcript is bounded by code entropy, which is why §3's rules are mandatory, not optional.
