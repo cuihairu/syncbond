@@ -279,6 +279,20 @@ pub fn b64url_decode(text: &str) -> Result<Vec<u8>, String> {
     if !matches!(rem, 0 | 2 | 3) {
         return Err("invalid base64url length".into());
     }
+    // Reject non-canonical padding: when the final chunk is 2 or 3 symbols,
+    // the unused low bits of its last symbol must be zero. Ignoring them would
+    // accept distinct encodings for the same bytes (non-canonical base64url).
+    if rem == 2 {
+        let last = rev(input[input.len() - 1]).ok_or("invalid base64url character")?;
+        if last & 0x0f != 0 {
+            return Err("non-canonical base64url padding".into());
+        }
+    } else if rem == 3 {
+        let last = rev(input[input.len() - 1]).ok_or("invalid base64url character")?;
+        if last & 0x03 != 0 {
+            return Err("non-canonical base64url padding".into());
+        }
+    }
     let mut out = Vec::with_capacity(input.len() / 4 * 3 + 3);
     for chunk in input.chunks(4) {
         let mut n: u32 = 0;
@@ -310,5 +324,18 @@ mod tests {
             let encoded = b64url_encode(&data);
             assert_eq!(b64url_decode(&encoded).unwrap(), data, "len={len}");
         }
+    }
+
+    #[test]
+    fn non_canonical_padding_is_rejected() {
+        // "_w" is the canonical single-byte 0xff; "_x" differs only in the
+        // low 4 bits of the last symbol, which must be zero.
+        assert!(b64url_decode("_x").is_err());
+        // "AAB" is a 3-symbol group whose last symbol has a non-zero low 2
+        // bits; canonical form for two zero bytes is "AAA".
+        assert!(b64url_decode("AAB").is_err());
+        // Canonical forms still decode.
+        assert_eq!(b64url_decode("_w").unwrap(), vec![0xff]);
+        assert_eq!(b64url_decode("AAA").unwrap(), vec![0, 0]);
     }
 }

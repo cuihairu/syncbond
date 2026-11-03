@@ -86,7 +86,7 @@ P3：
 - [x] `transport::recv` 锁中毒时 panic，改为中毒恢复（证据：`recv` 的 `lock()` 与 `condvar.wait()` 均改 `unwrap_or_else(|poisoned| poisoned.into_inner())` 中毒恢复；`transport.rs:91`）
 - [x] `relay::persist` 写后未 fsync，崩溃可能丢续传状态（证据：`persist` 改 `File::create+write_all+sync_all` 后 rename，再对父目录 `sync_all` 保证 rename 持久；`relay.rs:123`）
 - [x] `scalar_from_hex` 奇长十六进制串 panic（证据：`hex_to_bytes`/`scalar_from_hex` 改返回 `Result<_, String>`，奇长十六进制显式 `Err` 不再越界 panic，内部调用改 `expect`，测试向量调用改 `expect`；新增 `odd_length_hex_is_rejected_instead_of_panicking` 测试；`pairing_spake2.rs:53`）
-- [ ] `b64url_decode` 接受非规范填充，应拒绝（`crypto.rs`）
+- [x] `b64url_decode` 接受非规范填充，应拒绝（证据：`rem==2` 时校验末符号低 4 位为 0、`rem==3` 时校验低 2 位为 0，非规范填充显式 `Err`；新增 `non_canonical_padding_is_rejected` 测试；`crypto.rs`）
 - [ ] `sb_last_error` 成功路径返回悬垂非空指针（0x1）：文档标注或返回空（`syncbond-ffi`）
 - [ ] `MergeStrategy::delete` 在 OR-Set/PN-Counter 下的语义未文档化（`conflict.rs`）
 
