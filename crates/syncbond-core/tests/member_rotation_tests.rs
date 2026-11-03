@@ -189,6 +189,40 @@ fn concurrent_open_accepts_each_unique_envelope_once() {
 }
 
 #[test]
+fn concurrent_open_same_envelope_accepts_exactly_once() {
+    use std::sync::Arc;
+    use std::thread;
+
+    let identities = identities();
+    let ring = Arc::new(ring(&identities[0], &identities));
+    let envelope = ring.seal(b"contended");
+
+    // Many threads race to open the *same* id: exactly one must succeed and
+    // every other must observe a Replay. This is what Mutex-based dedup must
+    // guarantee; unique-id parallelism does not exercise it.
+    let handles: Vec<_> = (0..32)
+        .map(|_| {
+            let ring = ring.clone();
+            let envelope = envelope.clone();
+            thread::spawn(move || ring.open(&envelope))
+        })
+        .collect();
+
+    let mut successes = 0usize;
+    for handle in handles {
+        match handle.join().expect("open thread") {
+            Ok(plaintext) => {
+                assert_eq!(plaintext, b"contended");
+                successes += 1;
+            }
+            Err(MemberCryptoError::Crypto(syncbond_core::CryptoError::Replay(_))) => {}
+            Err(other) => panic!("unexpected open error: {other:?}"),
+        }
+    }
+    assert_eq!(successes, 1, "exactly one concurrent open must succeed");
+}
+
+#[test]
 fn replay_rejected_then_fresh_id_still_opens() {
     let identities = identities();
     let ring = ring(&identities[0], &identities);
