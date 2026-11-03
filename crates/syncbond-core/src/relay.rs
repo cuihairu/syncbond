@@ -143,15 +143,14 @@ impl FileRelayStore {
         }
         std::fs::rename(&temp_path, &self.path)
             .map_err(|error| RelayError::Encoding(error.to_string()))?;
-        // fsync the containing directory so the rename itself is durable.
-        // A bare relative path (e.g. "state.json") has no containing directory
-        // to sync: parent() yields Some(""), which File::open cannot open, so
-        // skip the directory fsync for it rather than failing the save.
-        if let Some(parent) = self.path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            std::fs::File::open(parent)
-                .and_then(|dir| dir.sync_all())
-                .map_err(|error| RelayError::Encoding(error.to_string()))?;
-        }
+        // fsync the containing directory so the rename itself is durable. A
+        // bare relative path (e.g. "state.json") has parent "" which File::open
+        // cannot open; map it to "." so the directory is still synced and the
+        // rename durability guarantee holds for every path shape.
+        let dir = self.path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| std::path::Path::new("."));
+        std::fs::File::open(dir)
+            .and_then(|d| d.sync_all())
+            .map_err(|error| RelayError::Encoding(error.to_string()))?;
         Ok(())
     }
 }
