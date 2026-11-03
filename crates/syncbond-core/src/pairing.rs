@@ -87,6 +87,12 @@ impl PairingSession {
             &serde_json::to_vec(&envelope)
                 .map_err(|e| PairingError::Protocol(format!("envelope encoding: {e}")))?,
         );
+        if frame.len() > MAX_FRAME_BYTES {
+            return Err(PairingError::Protocol(format!(
+                "frame too large: {} bytes (max {MAX_FRAME_BYTES})",
+                frame.len()
+            )));
+        }
         self.transport.send(&frame)?;
         Ok(())
     }

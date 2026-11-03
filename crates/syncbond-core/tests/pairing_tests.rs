@@ -86,6 +86,46 @@ fn oversized_app_frames_are_rejected() {
 }
 
 #[test]
+fn seal_and_send_rejects_oversized_payload_before_sending() {
+    let (ta, tb) = MemoryTransport::pair();
+    let identity_a = DeviceIdentity::generate();
+    let identity_b = DeviceIdentity::generate();
+    let (sa, sb) = std::thread::scope(|s| {
+        let ha = s.spawn({
+            let ta = ta.clone();
+            move || pair("K7Q2M4", &identity_a, ta as Arc<dyn Transport>)
+        });
+        let hb = s.spawn({
+            let tb = tb.clone();
+            move || accept("K7Q2M4", &identity_b, tb as Arc<dyn Transport>)
+        });
+        (
+            ha.join()
+                .expect("initiator thread")
+                .expect("initiator paired"),
+            hb.join()
+                .expect("responder thread")
+                .expect("responder paired"),
+        )
+    });
+
+    // A payload that would push the encoded envelope past the frame cap must
+    // be refused locally rather than emitted and rejected by the peer.
+    let oversized = vec![0u8; syncbond_core::pairing::MAX_FRAME_BYTES];
+    let error = sa
+        .seal_and_send(&oversized)
+        .expect_err("oversized payload must be refused locally");
+    assert!(
+        matches!(error, PairingError::Protocol(ref message) if message.contains("frame too large")),
+        "expected frame-too-large protocol error, got {error:?}"
+    );
+
+    // Nothing must have reached the peer; a normal small message still works.
+    sa.seal_and_send(b"ok").expect("small payload sends");
+    assert_eq!(sb.recv_and_open().expect("peer opens"), b"ok");
+}
+
+#[test]
 fn oversized_handshake_frames_are_rejected() {
     let (ta, tb) = MemoryTransport::pair();
     let identity_b = DeviceIdentity::generate();
