@@ -1,7 +1,7 @@
 //! Pairing code issuance and the guess-limiting policy.
 //!
-//! Codes are 6 characters from a 30-symbol unambiguous alphabet (no 0/O/1/I/L)
-//! ≈ 29.4 bits of entropy (30^6). Policy defaults: single use, 120 s TTL, at most 3
+//! Codes are 6 characters from a 31-symbol unambiguous alphabet (no 0/O/1/I/L)
+//! ≈ 30.7 bits of entropy (31^6). Policy defaults: single use, 120 s TTL, at most 3
 //! failed attempts per code window. See docs/design/PROTOCOL.md for the
 //! online-guessing analysis.
 
@@ -9,7 +9,7 @@ use rand_core::{OsRng, RngCore};
 use std::collections::HashMap;
 use std::time::Instant;
 
-/// Unambiguous alphabet: 30 symbols ≈ 4.907 bits per character.
+/// Unambiguous alphabet: 31 symbols ≈ 4.954 bits per character.
 pub const CODE_ALPHABET: &[u8] = b"23456789ABCDEFGHJKMNPQRSTUVWXYZ";
 pub const CODE_LENGTH: usize = 6;
 pub const DEFAULT_TTL_MS: u64 = 120_000;
@@ -51,16 +51,16 @@ struct IssuedCode {
 }
 
 pub fn generate_code() -> String {
-    // Rejection sampling to avoid modulo bias: 256 % 30 != 0, so a plain
-    // `% 30` would give the first 16 symbols a slightly higher probability.
-    // Drop bytes >= 240 (the largest multiple of 30 below 256) and retry,
-    // leaving each of the 30 symbols exactly 1/30.
+    // Rejection sampling to avoid modulo bias: 256 % 31 != 0, so a plain
+    // `% 31` would give the first 8 symbols a slightly higher probability.
+    // Drop bytes >= 248 (the largest multiple of 31 below 256) and retry,
+    // leaving each of the 31 symbols exactly 1/31.
     let mut out = String::with_capacity(CODE_LENGTH);
     while out.len() < CODE_LENGTH {
         let mut byte = [0u8; 1];
         OsRng.fill_bytes(&mut byte);
         let b = byte[0];
-        if b < 240 {
+        if b < 248 {
             out.push(CODE_ALPHABET[b as usize % CODE_ALPHABET.len()] as char);
         }
     }
@@ -161,6 +161,39 @@ impl PairingCodeBoard {
         match self.issued.get(code) {
             Some(entry) => !entry.used && (self.now)() <= entry.expires_at,
             None => false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    /// The rejection threshold must be an exact multiple of the alphabet size,
+    /// otherwise the modulo bias the sampler is meant to remove persists.
+    #[test]
+    fn rejection_threshold_is_multiple_of_alphabet() {
+        // 256 % 31 != 0, so any threshold below 256 must be a multiple of 31
+        // to keep every symbol equally likely.
+        assert_eq!(248 % CODE_ALPHABET.len(), 0);
+        assert!(256 % CODE_ALPHABET.len() != 0);
+    }
+
+    /// The alphabet must contain no ambiguous characters (no 0/O/1/I/L).
+    #[test]
+    fn alphabet_is_unambiguous_and_31_symbols() {
+        assert_eq!(CODE_ALPHABET.len(), 31);
+        for &c in CODE_ALPHABET {
+            assert!(
+                !matches!(c, b'0' | b'O' | b'1' | b'I' | b'L'),
+                "ambiguous {c}"
+            );
+        }
+        // No duplicates.
+        let mut seen = HashMap::new();
+        for &c in CODE_ALPHABET {
+            assert!(seen.insert(c, ()).is_none(), "duplicate {c}");
         }
     }
 }
