@@ -76,7 +76,10 @@ impl MemoryTransport {
 
     pub fn close_pair(a: &MemoryTransport, b: &MemoryTransport) {
         for inbox in [&a.inbox, &b.inbox] {
-            inbox.lock().unwrap().closed = true;
+            inbox
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .closed = true;
         }
         a.inbox_signal.notify_all();
         b.inbox_signal.notify_all();
@@ -173,5 +176,25 @@ mod tests {
         a.send(b"hello").expect("send must recover poisoned lock");
         // `try_recv` reads from the (now poisoned) inbox; it must recover.
         assert_eq!(b.try_recv(), Ok(b"hello".to_vec()));
+    }
+
+    /// `close_pair` locks each inbox; a poisoned guard must be recovered just
+    /// like `send`/`try_recv`/`recv`, so closing never panics on a poisoned
+    /// transport left by a panicking thread.
+    #[test]
+    fn close_pair_recovers_poisoned_lock() {
+        let (a, b) = MemoryTransport::pair();
+        let panic_inbox = {
+            let inbox = a.inbox.clone();
+            std::thread::spawn(move || {
+                let _guard = inbox.lock().unwrap();
+                panic!("poison inbox");
+            })
+        };
+        panic_inbox.join().expect_err("thread must panic");
+        // close_pair must not panic even though a.inbox is poisoned.
+        MemoryTransport::close_pair(&a, &b);
+        assert_eq!(a.try_recv(), Err(TransportError::Closed));
+        assert_eq!(b.try_recv(), Err(TransportError::Closed));
     }
 }
