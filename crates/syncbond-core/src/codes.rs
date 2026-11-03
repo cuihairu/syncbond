@@ -203,4 +203,39 @@ mod tests {
             assert!(seen.insert(c, ()).is_none(), "duplicate {c}");
         }
     }
+
+    /// `generate_code` must reach every symbol and distribute characters
+    /// uniformly. A large sample keeps the statistical test stable: with
+    /// 310k draws each symbol is expected ~10k times, so the standard
+    /// deviation is ~100 (1%) and a 10% tolerance is a very safe margin.
+    /// This guards against reintroducing modulo bias or an off-by-one in the
+    /// rejection-sampling index, which the arithmetic check alone cannot.
+    #[test]
+    fn generate_code_reaches_every_symbol_uniformly() {
+        const SAMPLES: usize = 310_000;
+        let mut counts = [0usize; 31];
+        let mut code_len_ok = true;
+        let mut all_in_alphabet = true;
+        for _ in 0..SAMPLES / CODE_LENGTH {
+            let code = generate_code();
+            code_len_ok &= code.len() == CODE_LENGTH;
+            for ch in code.bytes() {
+                match CODE_ALPHABET.iter().position(|&c| c == ch) {
+                    Some(idx) => counts[idx] += 1,
+                    None => all_in_alphabet = false,
+                }
+            }
+        }
+        assert!(code_len_ok, "every code must be CODE_LENGTH chars");
+        assert!(all_in_alphabet, "every char must be in the alphabet");
+        let expected = SAMPLES as f64 / 31.0;
+        for (idx, &count) in counts.iter().enumerate() {
+            let count = count as f64;
+            assert!(
+                (count - expected).abs() <= expected * 0.10,
+                "symbol {} count {count} deviates from expected {expected}",
+                CODE_ALPHABET[idx] as char
+            );
+        }
+    }
 }
