@@ -48,3 +48,31 @@ fn durable_relay_resumes_across_server_restart_without_duplicates() {
 
     fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn durable_relay_accepts_bare_relative_path() {
+    // Regression test for parent() == Some("") on a bare relative path.
+    let unique_suffix = format!(
+        "syncbond-relay-bare-{}-{}.json",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let cwd = env::current_dir().unwrap();
+    let temp = env::temp_dir().join(&unique_suffix);
+    fs::create_dir_all(&temp).unwrap();
+    env::set_current_dir(&temp).unwrap();
+
+    let result = std::panic::catch_unwind(|| {
+        let mut writer = Replicator::new("writer");
+        let store = FileRelayStore::open("state.json").unwrap();
+        let operation = writer.put("key", b"first".to_vec()).unwrap();
+        store.append("channel", &operation).unwrap();
+    });
+    env::set_current_dir(cwd).unwrap();
+    fs::remove_file(temp.join("state.json")).unwrap();
+    fs::remove_dir(temp).unwrap();
+    result.unwrap();
+}
