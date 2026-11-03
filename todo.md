@@ -128,7 +128,7 @@ P3：
 
 覆盖范围：逐提交逐文件审毕（codes.rs、hlc.rs、pairing.rs、relay.rs、transport.rs、member_rotation_tests.rs、pairing_tests.rs、relay_persistence_tests.rs）；`cargo test -p syncbond-core --lib`（15 绿）及三集成测试二进制（member_rotation 12、pairing 13、relay_persistence 2）全绿。已记录于上文各轮的发现在此轮 diff 内未见复发（codes 阈值 248/is_accepting 归一、transport send/try_recv 中毒恢复、issue 饱和、relay 裸路径、并发同 id open、seal_and_send 发送侧守卫均已按证据闭合）。以下为本轮发现：
 
-- [ ] 审核发现：codes.rs 模块注释「≈ 30.7 bits of entropy (31^6)」数值错误——log2(31^6)=log2(887,503,681)=29.725，应为 ≈29.7 bits；与同文件「4.954 bits/字符 ×6 = 29.72」自相矛盾，PROTOCOL.md:21 亦为 29.4 口径（crates/syncbond-core/src/codes.rs:4）
+- [x] 审核发现：codes.rs 模块注释「≈ 30.7 bits of entropy (31^6)」数值错误——log2(31^6)=log2(887,503,681)=29.725，应为 ≈29.7 bits；与同文件「4.954 bits/字符 ×6 = 29.72」自相矛盾，PROTOCOL.md:21 亦为 29.4 口径（crates/syncbond-core/src/codes.rs:4）（证据：crates/syncbond-core/src/codes.rs:4 改为 ≈29.7 bits；cargo test -p syncbond-core 82 全绿）
 - [ ] 审核发现：提交 97ba6e2 将 codes.rs 注释「30 符号→31 符号」并修正阈值，但 docs/design/PROTOCOL.md:21/47/53 仍「30 unambiguous symbols / ≈29.4 bits / 30^6 = 729,000,000」——codes.rs:5 明确以该文档为 online-guessing 分析出处，文档与实现口径脱节；且 :47 所列字母串 `23456789…WXYZ` 实为 31 字符却称 30 符号，内部自相矛盾；修复未传播（docs/design/PROTOCOL.md:21、47、53）
 - [ ] 审核发现：`rejection_threshold_is_multiple_of_alphabet` 测试硬编码 248，与 `generate_code` 的阈值 248 各自独立、无共享常量——若实现改回有偏值（如 240）该测试仍绿，未真正守卫阈值与模偏差；应提取共享常量或统计 `generate_code` 输出分布（crates/syncbond-core/src/codes.rs:63、179）
 - [ ] 审核发现：`issue()` 改 `saturating_add(1)` 只保单调不减、不保唯一——`receive` 吸收恶意/异常远端 `(pt≈now, ct=u64::MAX)` 后，同一 wall-ms 内连续两次 `issue()` 返回相同 `(pt, u64::MAX, id)` 戳，破坏 `HlcStamp`「totally ordered and unique」不变量（hlc.rs:14）；新测试仅 issue 一次未覆盖重复戳，注释「saturating keeps monotonic uniqueness」失实（crates/syncbond-core/src/hlc.rs:81-83、150）
