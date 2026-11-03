@@ -105,5 +105,12 @@ pub fn last_error_code() -> i32 {
 /// Pointer into the thread-local buffer; valid until the next call on this
 /// thread (the header documents this).
 pub fn last_error_ptr() -> *const std::ffi::c_char {
-    LAST_ERROR.with(|slot| slot.borrow().as_ptr() as *const std::ffi::c_char)
+    LAST_ERROR.with(|slot| {
+        let slot = slot.borrow();
+        if slot.is_empty() {
+            std::ptr::null()
+        } else {
+            slot.as_ptr() as *const std::ffi::c_char
+        }
+    })
 }
