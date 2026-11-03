@@ -35,6 +35,19 @@ pub struct HybridClock {
     now_ms: Box<dyn Fn() -> u64 + Send + Sync>,
 }
 
+/// Advance a (pt, ct) pair by one logical step. When the counter saturates at
+/// u64::MAX (e.g. after absorbing a malicious remote stamp), carry into
+/// physical time so the resulting stamp is strictly greater in the (pt, ct)
+/// lexicographic order. This keeps every issued stamp totally ordered and
+/// unique even under counter saturation.
+fn advance(pt: u64, ct: u64) -> (u64, u64) {
+    if ct == u64::MAX {
+        (pt.saturating_add(1), 0)
+    } else {
+        (pt, ct + 1)
+    }
+}
+
 impl std::fmt::Debug for HybridClock {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HybridClock")
@@ -78,9 +91,11 @@ impl HybridClock {
             self.pt = wall;
             self.ct = 0;
         } else {
-            // A remote stamp can drive ct to u64::MAX; saturating here keeps a
-            // subsequent local issue from overflowing the counter.
-            self.ct = self.ct.saturating_add(1);
+            // A remote stamp can drive ct to u64::MAX; carry into pt so the
+            // stamp remains strictly greater than everything issued before.
+            let (pt, ct) = advance(self.pt, self.ct);
+            self.pt = pt;
+            self.ct = ct;
         }
         HlcStamp {
             pt: self.pt,
@@ -104,14 +119,14 @@ impl HybridClock {
             });
         }
         let pt = self.pt.max(wall).max(remote.pt);
-        let ct = if pt == self.pt && pt == remote.pt {
-            self.ct.max(remote.ct).saturating_add(1)
+        let (pt, ct) = if pt == self.pt && pt == remote.pt {
+            advance(pt, self.ct.max(remote.ct))
         } else if pt == remote.pt {
-            remote.ct.saturating_add(1)
+            advance(pt, remote.ct)
         } else if pt == self.pt {
-            self.ct.saturating_add(1)
+            advance(pt, self.ct)
         } else {
-            0
+            (pt, 0)
         };
         self.pt = pt;
         self.ct = ct;
@@ -134,7 +149,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn receive_saturates_at_max_counter() {
+    fn receive_carries_at_max_counter() {
         let mut clock = HybridClock::with_clock("node-a", 1_000, Box::new(|| 10_000));
         let remote = HlcStamp {
             pt: 10_000,
@@ -142,14 +157,15 @@ mod tests {
             id: "node-b".into(),
         };
         let stamp = clock.receive(&remote).expect("max ct must not overflow");
-        assert_eq!(stamp.ct, u64::MAX);
-        assert_eq!(stamp.pt, 10_000);
+        assert_eq!(stamp.ct, 0);
+        assert_eq!(stamp.pt, 10_001);
     }
 
     /// A malicious remote stamp at u64::MAX must not make a later local
-    /// `issue` overflow the counter: saturating keeps monotonic uniqueness.
+    /// `issue` overflow or repeat a stamp: carry into pt keeps every issued
+    /// stamp strictly increasing and unique.
     #[test]
-    fn issue_after_saturated_receive_does_not_overflow() {
+    fn issue_after_saturated_receive_stays_unique() {
         let mut clock = HybridClock::with_clock("node-a", 1_000, Box::new(|| 10_000));
         let remote = HlcStamp {
             pt: 10_000,
@@ -157,9 +173,13 @@ mod tests {
             id: "node-b".into(),
         };
         clock.receive(&remote).expect("receive succeeds");
-        // Same wall ms: issue() takes the ct += 1 branch; it must saturate.
-        let local = clock.issue();
-        assert_eq!(local.pt, 10_000);
-        assert_eq!(local.ct, u64::MAX);
+        // Receive already carried into (pt+1, ct=0); the first issue bumps ct,
+        // the second continues. All stamps must be distinct and increasing.
+        let first = clock.issue();
+        let second = clock.issue();
+        assert_ne!(first, second);
+        assert_eq!(compare_stamps(&first, &second), std::cmp::Ordering::Less);
+        assert_eq!(first.pt, 10_001);
+        assert_eq!(first.ct, 1);
     }
 }
