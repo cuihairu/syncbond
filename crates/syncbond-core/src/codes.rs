@@ -158,7 +158,7 @@ impl PairingCodeBoard {
     }
 
     pub fn is_accepting(&self, code: &str) -> bool {
-        match self.issued.get(code) {
+        match self.issued.get(&code.to_ascii_uppercase()) {
             Some(entry) => !entry.used && (self.now)() <= entry.expires_at,
             None => false,
         }

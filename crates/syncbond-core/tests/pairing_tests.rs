@@ -170,6 +170,7 @@ fn lowercase_code_matches_stored_uppercase() {
     let lower = code.to_lowercase();
     // validate_format accepts lower case; consume/register_failure must too.
     assert!(PairingCodeBoard::validate_format(&lower).is_ok());
+    assert!(board.is_accepting(&lower));
     assert_eq!(board.consume(&lower), Ok(()));
     assert!(!board.is_accepting(&lower));
 }
