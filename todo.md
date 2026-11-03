@@ -118,3 +118,8 @@ P3：
 - [x] 审核发现：`relay::persist` 新增目录 fsync `File::open(parent)`（relay.rs:148），但当 `self.path` 为裸相对路径（如 `"state.json"`）时 `parent()` 返回 `Some("")`，`File::open("")` 报 NotFound，`append` 整体失败——e11824f 前该路径可正常落盘（`create_dir_all("")` 为 no-op），属回归；测试仅用 `env::temp_dir().join(...)`（父目录 /tmp），未覆盖裸路径；另 `File::open` 打开目录在 Windows 失败（可移植性）（证据：`parent()` 改用 `.filter(|p| !p.as_os_str().is_empty())`，裸相对路径跳过目录 fsync；新增 `durable_relay_accepts_bare_relative_path` 测试（无修复时确报 NotFound，修复后通过）；cargo test 80 全绿；commit b658a99）
 - [x] 审核发现：`concurrent_open_accepts_each_unique_envelope_once`（member_rotation_tests.rs:166）让 32 线程各开一个**不同** id 信封，未让两线程竞争**同一** id（应恰一次成功、另一次 Replay），故 Mutex 对「同 id 去重」的并发正确性未验证——仅覆盖不同 id 并行可开（证据：新增 `concurrent_open_same_envelope_accepts_exactly_once`——32 线程竞争同一 id，断言恰一次成功、其余均 Replay（连跑 5 次稳定）；cargo test 81 全绿；commit 4a51021）
 - [x] 审核发现：`sync_over` 发送侧无帧大小守卫——`seal_and_send(encode(&oplog))` 将整段 oplog 打包为一帧，oplog 超过 `MAX_FRAME_BYTES`（16 MiB）时本端无检查即发出、对端 `recv_and_open` 必拒「frame too large」，功能级失败且错误信息误导（对端视角），无分块/发送侧上限检查；帧上限仅收侧守卫（证据：`seal_and_send` 组帧后加 `frame.len() > MAX_FRAME_BYTES` 即拒（发送侧本地报错，不再发给对端）；新增 `seal_and_send_rejects_oversized_payload_before_sending` 测试（无守卫时对端视角失败，有守卫后本地拒绝且小载荷仍可收发）；cargo test 82 全绿；commit 5d6399d）
+
+## 漏洞扫描遗留（2026-11-03 全舰队扫描，源 scratch/vuln-scan-*.md）
+
+- [ ] VULN-SYNCB-001 [中危·RUSTSEC-2026-0387] crypto-bigint 0.5.5→0.7.6+【跨大版本需改代码】：由 elliptic-curve 0.13/p256 或 rsa 0.9 锁定；验收：cargo audit 该 ID 清零 + cargo test 绿
+- [ ] VULN-SYNCB-002 [高危·GHSA-587h-7wmj-h5pm 路径穿越] vite 5.4.21→6.4.4【跨大版本（override 强制 5→6）·补跑任务】：pnpm-workspace.yaml 的 `vite@<6.4.4: 6.4.4` override 在扫描窗口被并发进程回退 3 次；本任务复核 override 已不在、lock 仍为 vite@5.4.21；验收：override 落盘 + pnpm audit --audit-level=high 中 vite 不再命中 + pnpm -r test 绿（9/9）
