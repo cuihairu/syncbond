@@ -88,7 +88,7 @@ P3：
 - [x] `scalar_from_hex` 奇长十六进制串 panic（证据：`hex_to_bytes`/`scalar_from_hex` 改返回 `Result<_, String>`，奇长十六进制显式 `Err` 不再越界 panic，内部调用改 `expect`，测试向量调用改 `expect`；新增 `odd_length_hex_is_rejected_instead_of_panicking` 测试；`pairing_spake2.rs:53`）
 - [x] `b64url_decode` 接受非规范填充，应拒绝（证据：`rem==2` 时校验末符号低 4 位为 0、`rem==3` 时校验低 2 位为 0，非规范填充显式 `Err`；新增 `non_canonical_padding_is_rejected` 测试；`crypto.rs`）
 - [x] `sb_last_error` 成功路径返回悬垂非空指针（0x1）：文档标注或返回空（证据：`last_error_ptr` 在 `Vec` 为空时返回 `std::ptr::null()`，成功路径不再返回悬垂非空指针；napi/wasm 侧已有 null 检查；`syncbond-ffi`）
-- [ ] `MergeStrategy::delete` 在 OR-Set/PN-Counter 下的语义未文档化（`conflict.rs`）
+- [x] `MergeStrategy::delete` 在 OR-Set/PN-Counter 下的语义未文档化（证据：`merge.md` 新增「`deleted` flag semantics per strategy」——仅 `LwwHlc` 将 `deleted:true` 转为因果墓碑；OR-Set/PN-Counter 的 merge 硬编码 `deleted:false` 忽略该标志，删除须经 payload 语义表达（OR-Set 退役 tag），PN-Counter 无内建删除；`conflict.rs`）
 
 ## 审核发现（2026-11-03 复核，处置中）
 

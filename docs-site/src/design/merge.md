@@ -40,6 +40,18 @@ Causally ordered merges are unambiguous and monotone; only concurrent writes rea
 | `OrSetStrategy` | OR-Set over a canonical JSON doc (adds = element → tags, removes = retired tags) | favorites/tags: concurrent add wins over an unobserved remove |
 | `PnCounterStrategy` | two G-Counters (inc/dec), per-node max merge | counters that must not lose increments offline |
 
+### `deleted` flag semantics per strategy
+
+The `Record.deleted` flag is honored only by `LwwHlc`, which turns it into a
+causal tombstone (`Replicator::delete` writes `deleted: true`). Under
+`OrSetStrategy` and `PnCounterStrategy` the `deleted` flag is **ignored**: the
+merge result is always `deleted: false`, and a `Replicator::delete` call is
+therefore not a tombstone for those strategies. Applications that need removal
+under OR-Set must express it through the payload (retire the element's tag),
+and PN-Counter has no delete at all — removal is modelled by decrementing (or
+by switching the key to an `LwwHlc` tombstone). Do not rely on `deleted: true`
+to remove a value under a non-`LwwHlc` strategy.
+
 ### LwwHlc rules (the default)
 
 1. Causally ordered: the descendant wins. An old device reconnecting with a stale edit cannot resurrect a deleted record — the tombstone's witness dominates (test: `old_device_reconnect_cannot_resurrect_a_delete`).
