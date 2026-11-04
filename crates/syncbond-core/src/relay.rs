@@ -147,7 +147,11 @@ impl FileRelayStore {
         // bare relative path (e.g. "state.json") has parent "" which File::open
         // cannot open; map it to "." so the directory is still synced and the
         // rename durability guarantee holds for every path shape.
-        let dir = self.path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| std::path::Path::new("."));
+        let dir = self
+            .path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."));
         std::fs::File::open(dir)
             .and_then(|d| d.sync_all())
             .map_err(|error| RelayError::Encoding(error.to_string()))?;

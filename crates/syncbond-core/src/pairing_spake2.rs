@@ -130,11 +130,7 @@ fn decode_point(bytes: &[u8]) -> Result<ProjectivePoint, Spake2Error> {
 }
 
 fn encode_point(point: &ProjectivePoint) -> Vec<u8> {
-    point
-        .to_affine()
-        .to_sec1_point(false)
-        .as_bytes()
-        .to_vec()
+    point.to_affine().to_sec1_point(false).as_bytes().to_vec()
 }
 
 fn length_prefix(bytes: &[u8]) -> Vec<u8> {
