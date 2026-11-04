@@ -80,7 +80,11 @@ impl PairingSession {
     /// Encrypt and send an application payload over the session channel.
     pub fn seal_and_send(&self, plaintext: &[u8]) -> Result<(), PairingError> {
         self.assert_live()?;
-        if plaintext.len() > MAX_PLAINTEXT_HINT_BYTES {
+        // Reject at/above the cap before sealing or allocating: base64url
+        // expansion plus metadata guarantee a plaintext this large can never
+        // fit in a MAX_FRAME_BYTES frame, so the exact post-encode check below
+        // would reject it anyway after paying the full seal + JSON cost.
+        if plaintext.len() >= MAX_PLAINTEXT_HINT_BYTES {
             return Err(PairingError::Protocol(format!(
                 "frame too large: plaintext {} bytes exceeds max frame {MAX_FRAME_BYTES}",
                 plaintext.len()

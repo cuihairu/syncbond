@@ -39,10 +39,20 @@ pub struct HybridClock {
 /// u64::MAX (e.g. after absorbing a malicious remote stamp), carry into
 /// physical time so the resulting stamp is strictly greater in the (pt, ct)
 /// lexicographic order. This keeps every issued stamp totally ordered and
-/// unique even under counter saturation.
+/// unique even under counter saturation, except at the absolute boundary
+/// pt == ct == u64::MAX where no strictly greater stamp is representable and
+/// the pair saturates in place (never regressing in the ordering).
 fn advance(pt: u64, ct: u64) -> (u64, u64) {
     if ct == u64::MAX {
-        (pt.saturating_add(1), 0)
+        if pt == u64::MAX {
+            // Both fields are at the absolute maximum: no strictly greater
+            // stamp is representable, so saturate in place rather than rolling
+            // ct back to 0, which would regress in the (pt, ct) lexicographic
+            // order and break the monotonic ordering invariant.
+            (pt, ct)
+        } else {
+            (pt + 1, 0)
+        }
     } else {
         (pt, ct + 1)
     }
@@ -181,5 +191,40 @@ mod tests {
         assert_eq!(compare_stamps(&first, &second), std::cmp::Ordering::Less);
         assert_eq!(first.pt, 10_001);
         assert_eq!(first.ct, 1);
+    }
+
+    #[test]
+    fn advance_saturates_at_absolute_max() {
+        assert_eq!(advance(u64::MAX - 1, u64::MAX), (u64::MAX, 0));
+        assert_eq!(advance(u64::MAX, u64::MAX), (u64::MAX, u64::MAX));
+        assert_eq!(advance(10, 10), (10, 11));
+    }
+
+    /// A remote stamp already at the absolute maximum must not roll the
+    /// counter back to 0, which would produce a stamp smaller than everything
+    /// issued before and break the monotonic ordering invariant.
+    #[test]
+    fn advance_at_absolute_max_never_regresses() {
+        let mut clock = HybridClock::with_clock("node-a", 1_000, Box::new(|| u64::MAX));
+        let first = clock.issue();
+        assert_eq!((first.pt, first.ct), (u64::MAX, 0));
+
+        let remote = HlcStamp {
+            pt: u64::MAX,
+            ct: u64::MAX,
+            id: "node-b".into(),
+        };
+        let received = clock.receive(&remote).expect("max receive succeeds");
+        assert_eq!((received.pt, received.ct), (u64::MAX, u64::MAX));
+        assert_eq!(compare_stamps(&first, &received), std::cmp::Ordering::Less);
+
+        // Further local issues at the same wall ms must never produce a stamp
+        // smaller than the previous one (monotonic non-regression).
+        let mut prev = received;
+        for _ in 0..3 {
+            let next = clock.issue();
+            assert_ne!(compare_stamps(&next, &prev), std::cmp::Ordering::Less);
+            prev = next;
+        }
     }
 }

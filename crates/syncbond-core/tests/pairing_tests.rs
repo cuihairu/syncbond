@@ -129,6 +129,82 @@ fn seal_and_send_rejects_oversized_payload_before_sending() {
 }
 
 #[test]
+fn seal_and_send_rejects_payload_at_cap_before_sealing() {
+    let (ta, tb) = MemoryTransport::pair();
+    let identity_a = DeviceIdentity::generate();
+    let identity_b = DeviceIdentity::generate();
+    let (sa, _sb) = std::thread::scope(|s| {
+        let ha = s.spawn({
+            let ta = ta.clone();
+            move || pair("K7Q2M4", &identity_a, ta as Arc<dyn Transport>)
+        });
+        let hb = s.spawn({
+            let tb = tb.clone();
+            move || accept("K7Q2M4", &identity_b, tb as Arc<dyn Transport>)
+        });
+        (
+            ha.join()
+                .expect("initiator thread")
+                .expect("initiator paired"),
+            hb.join()
+                .expect("responder thread")
+                .expect("responder paired"),
+        )
+    });
+
+    // A plaintext exactly at the cap can never fit in a MAX_FRAME_BYTES frame
+    // (base64url expansion + metadata), so the pre-encryption hint must reject
+    // it before any sealing or allocation. This guards the at-cap boundary
+    // that the strict-greater-than precheck previously missed.
+    let at_cap = vec![0u8; syncbond_core::pairing::MAX_FRAME_BYTES];
+    let error = sa
+        .seal_and_send(&at_cap)
+        .expect_err("at-cap payload must be refused before sealing");
+    assert!(
+        matches!(error, PairingError::Protocol(ref message) if message.contains("plaintext") && message.contains("exceeds")),
+        "expected pre-encode rejection, got {error:?}"
+    );
+}
+
+#[test]
+fn seal_and_send_postencode_rejects_payload_under_hint() {
+    let (ta, tb) = MemoryTransport::pair();
+    let identity_a = DeviceIdentity::generate();
+    let identity_b = DeviceIdentity::generate();
+    let (sa, _sb) = std::thread::scope(|s| {
+        let ha = s.spawn({
+            let ta = ta.clone();
+            move || pair("K7Q2M4", &identity_a, ta as Arc<dyn Transport>)
+        });
+        let hb = s.spawn({
+            let tb = tb.clone();
+            move || accept("K7Q2M4", &identity_b, tb as Arc<dyn Transport>)
+        });
+        (
+            ha.join()
+                .expect("initiator thread")
+                .expect("initiator paired"),
+            hb.join()
+                .expect("responder thread")
+                .expect("responder paired"),
+        )
+    });
+
+    // A plaintext below the pre-encode hint (16 MiB) but large enough that
+    // base64url expansion pushes the encoded frame past MAX_FRAME_BYTES must
+    // still be rejected by the exact post-encode check. This reaches the only
+    // branch that catches the ~12-16 MiB payloads.
+    let under_hint = vec![0u8; 13 * 1024 * 1024];
+    let error = sa
+        .seal_and_send(&under_hint)
+        .expect_err("post-encode oversized payload must be refused");
+    assert!(
+        matches!(error, PairingError::Protocol(ref message) if message.contains("frame too large") && message.contains("(max")),
+        "expected post-encode rejection, got {error:?}"
+    );
+}
+
+#[test]
 fn oversized_handshake_frames_are_rejected() {
     let (ta, tb) = MemoryTransport::pair();
     let identity_b = DeviceIdentity::generate();
