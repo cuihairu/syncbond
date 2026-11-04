@@ -41,20 +41,31 @@ pub trait MergeStrategy: Send + Sync {
 | `OrSetStrategy` | 基于规范化 JSON 文档的 OR-Set（观察移除集合）（添加 = 元素 → 标签，移除 = 退役标签） | 收藏/标签：未观察到的移除之上并发添加获胜 |
 | `PnCounterStrategy` | 两个 G-Counter（inc/dec），按节点取最大值合并 | 离线时不能丢失增量的计数器 |
 
+### 各策略下的 `deleted` 标志语义
+
+`Record.deleted` 标志只有 `LwwHlc` 采纳——它把删除变成因果墓碑（`Replicator::delete` 写入 `deleted: true`）。在 `OrSetStrategy` 与 `PnCounterStrategy` 下 `deleted` 标志被**忽略**：合并结果恒为 `deleted: false`，对这些策略调用 `Replicator::delete` 不产生墓碑。需要在 OR-Set 下表达移除的应用须经 payload 表达（退役元素的标签）；PN-Counter 根本没有删除——移除以递减建模（或把该键切换为 `LwwHlc` 墓碑）。不要依赖 `deleted: true` 在非 `LwwHlc` 策略下移除值。
+
 ### LwwHlc 规则（默认策略）
 
 1. 有因果序：后代获胜。携带过期编辑重连的旧设备无法复活已删除的记录——墓碑的 witness 占优（测试：`old_device_reconnect_cannot_resurrect_a_delete`）。
 2. 并发写入：两者都保留。戳较高的成为主版本；落败者追加到 `conflicts`（按戳去重），交由应用裁决（测试：`example_2_note_documents_with_offline_conflict`）。
 3. 时钟超前（run-ahead）：若传入戳声称的墙钟时间比本地超前超过 `max_skew_ms`（默认 5 分钟），则无论因果性如何都按并发处理——损坏的设备时钟不能静默覆盖本地状态；超前的写入被保留并标记（测试：`large_clock_skew_does_not_silently_overwrite`）。本地 HLC 还会拒绝采纳超前的远端戳（`HybridClock::receive`）。
 
-## 墓碑垃圾回收（设计，尚未实现）
+## 墓碑垃圾回收（已实现）
 
-只有当**两个**条件同时满足时，才允许丢弃墓碑：
+`Replicator::gc_tombstones(now_ms, older_than_ms)` 只有当**两个**条件同时满足时才收墓碑：
 
-1. **时间**：`now - tombstone.stamp.pt > retention`（默认提案：30 天），且
-2. **因果支配**：每个已知副本对该键的 witness 都支配墓碑的戳——即不存在仍能投递"本应由墓碑杀死的写入"的存活对端。操作上这需要副本向量心跳，它将随 relay（P2）一起到来；在此之前 GC 仅以 `snapshot` 压实加基于时间的剪除形式暴露，完整的基于支配的 GC 是待决决策（todo.md）。
+1. **时间**：`now_ms - tombstone.stamp.pt >= older_than_ms`，且
+2. **因果支配**：每个已知副本对该键的 witness 都支配墓碑的戳。副本器从 op witness 累积的 witness 表**就是**副本向量——不需要单独的心跳协议，它随 relay 同步一起走。没有证据的副本只是阻塞收簇，直到再次听到它的消息。
 
-在不满足条件 2 的情况下丢弃墓碑，正是本模型要防止的复活 bug。
+被收簇的墓碑**并没有被删除**。它被压实成一条 barrier 条目（`gc_barriers`，剥掉 payload 与保留冲突，保留戳与 witness），该键的 oplog 历史塌缩为唯一的墓碑 op。barrier 正是保证所在：GC 后重投的删除前写入会被 barrier 拒绝而不是复活该删除（`stale_put_cannot_resurrect_a_collected_delete`）。保留的墓碑 op 让新副本仍能得知删除，因此压实形态对每个被删键只花 O(1)，且从不降级任何对端的视图。
+
+两个值得注意的推论：
+
+- 被垃圾回收后的状态可安全重启：barrier 属于 `SyncState`（`#[serde(default)]`，GC 之前的快照原样加载），重放复现压实形态（`gc_compacts_the_oplog_and_survives_a_restart`）。
+- 压实过的对端与未压实的对端收敛；墓碑在走，payload 不走（`compacted_peer_converges_with_an_uncompacted_peer`）。
+
+只看时间阈值的降级模式**刻意不是**稳定的应用选项：它豁免证据要求，可能从仍携带删除前历史的对端重新物化已收簇的键。Rust 方法标了 `#[doc(hidden)]`，只能经 conformance fixture runner 的 `gc` 步骤（`mode: "time_only"`）或显式选择加入的 Rust 下游触达；C ABI 与稳定语言绑定只暴露支配检查模式。默认关闭，也不作为应用选项写档。
 
 ## 收敛性论证
 
