@@ -181,10 +181,10 @@ mod tests {
         // 256 % 31 != 0, so any threshold below 256 must be a multiple of 31
         // to keep every symbol equally likely.
         assert_eq!(REJECTION_THRESHOLD as usize % CODE_ALPHABET.len(), 0);
-        assert!(256 % CODE_ALPHABET.len() != 0);
+        assert!(!256usize.is_multiple_of(CODE_ALPHABET.len()));
         // The threshold must be the largest multiple of 31 below 256.
         assert_eq!(REJECTION_THRESHOLD as usize / CODE_ALPHABET.len(), 8);
-        assert!((REJECTION_THRESHOLD as usize + 1) % CODE_ALPHABET.len() != 0);
+        assert!(!(REJECTION_THRESHOLD as usize + 1).is_multiple_of(CODE_ALPHABET.len()));
     }
 
     /// The alphabet must contain no ambiguous characters (no 0/O/1/I/L).
