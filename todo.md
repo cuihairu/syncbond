@@ -35,8 +35,8 @@
 
 ## P3 — 发布（阻断项未清不动）
 
-- [ ] 最终品牌名——BLOCKED：用户输入（候选由用户核验；crates.io 五个包名已实测未占用；定名后开启改名工作线）
-- [ ] npm 发布——BLOCKED：用户输入（维持不发布稳定包；`npm whoami` ENEEDAUTH，`@cuihairu` scope 待用户登录确认；发布令+版本号只能由用户给）
+- [ ] 最终品牌名——BLOCKED：用户输入（候选由用户核验；crates.io 五个包名已实测未占用；定名后开启改名工作线；复核 2026-11-04：仍无用户定名，保留 BLOCKED）
+- [ ] npm 发布——BLOCKED：用户输入（维持不发布稳定包；`npm whoami` ENEEDAUTH，`@cuihairu` scope 待用户登录确认；发布令+版本号只能由用户给；复核 2026-11-04：`npm whoami` 仍 ENEEDAUTH，保留 BLOCKED）
 
 ## 待拍板项（用户决策）
 
