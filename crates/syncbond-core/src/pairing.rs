@@ -38,10 +38,14 @@ pub const SESSION_EPOCH: u64 = 1;
 /// becomes a clean protocol error instead of an unbounded decode.
 pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 /// Conservative plaintext bound used to reject obvious over-sized sends
-/// before encryption. Frame encoding adds metadata, a 16-byte tag, and
-/// base64url expansion, so payloads at or above this may still be rejected
-/// later by the exact `MAX_FRAME_BYTES` check.
-const MAX_PLAINTEXT_HINT_BYTES: usize = MAX_FRAME_BYTES;
+/// before encryption. Frame encoding adds envelope metadata, a 16-byte tag,
+/// and base64url expansion, so for this protocol's fixed id lengths the
+/// largest plaintext that can still fit in a `MAX_FRAME_BYTES` frame is
+/// 12,582,728 bytes (~11.9998 MiB). Any plaintext at or above this hint is
+/// guaranteed to be rejected by the exact `MAX_FRAME_BYTES` check below, so
+/// rejecting here avoids paying the seal + JSON cost for payloads that cannot
+/// possibly fit.
+const MAX_PLAINTEXT_HINT_BYTES: usize = 12 * 1024 * 1024;
 
 #[derive(Debug, Error, PartialEq, Eq, Clone)]
 pub enum PairingError {
@@ -80,10 +84,16 @@ impl PairingSession {
     /// Encrypt and send an application payload over the session channel.
     pub fn seal_and_send(&self, plaintext: &[u8]) -> Result<(), PairingError> {
         self.assert_live()?;
-        // Reject at/above the cap before sealing or allocating: base64url
-        // expansion plus metadata guarantee a plaintext this large can never
-        // fit in a MAX_FRAME_BYTES frame, so the exact post-encode check below
-        // would reject it anyway after paying the full seal + JSON cost.
+        // Reject at/above the hint before sealing or allocating. For this
+        // protocol's fixed id lengths (24-hex group, 16-hex device, 32-hex
+        // message id, b64url nonce/tag) the largest plaintext that can still
+        // fit in a MAX_FRAME_BYTES frame is 12,582,728 bytes (~11.9998 MiB);
+        // a 12 MiB plaintext always expands past the cap. So any plaintext at
+        // or above the 12 MiB hint is guaranteed to be rejected by the exact
+        // post-encode check below anyway, and rejecting here avoids paying the
+        // full seal + JSON cost for payloads that cannot possibly fit. The
+        // narrow band just under the hint (a few hundred bytes) is caught by
+        // the exact post-encode check.
         if plaintext.len() >= MAX_PLAINTEXT_HINT_BYTES {
             return Err(PairingError::Protocol(format!(
                 "frame too large: plaintext {} bytes exceeds max frame {MAX_FRAME_BYTES}",
