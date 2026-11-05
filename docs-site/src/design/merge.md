@@ -79,8 +79,10 @@ when **both** conditions hold:
    evidence about: a replica that has never been heard from is simply absent
    from the vector and does not block collection. Collection safety does not
    depend on that absence — the compacted barrier rejects a pre-delete write
-   redelivered later by any replica, so a late replica cannot resurrect the
-   delete.
+   redelivered later that loses to the tombstone in the merge. A concurrent
+   write with a higher stamp from an unheard replica still follows the normal
+   LWW rule and can recreate the key, as it would have before GC
+   (`concurrent_higher_stamp_write_resurrects_a_collected_delete`).
 
 A collected tombstone is **not deleted**. It is compacted into a barrier
 entry (`gc_barriers`, payload and retained conflicts stripped, stamp and

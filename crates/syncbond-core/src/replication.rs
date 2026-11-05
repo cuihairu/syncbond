@@ -317,13 +317,17 @@ impl Replicator {
     /// A collected tombstone is not deleted: it is compacted into a
     /// `gc_barriers` entry (payload and conflicts stripped) that keeps the
     /// causal barrier, so a pre-delete write redelivered later is rejected
-    /// instead of resurrecting the delete. The key's oplog history is
-    /// collapsed to its single tombstone op, so a fresh replica still learns
-    /// about the delete and the barrier keeps costing O(1) per deleted key.
+    /// instead of resurrecting the delete *when it loses to the tombstone in
+    /// the merge*. A concurrent write with a higher stamp from a replica that
+    /// never heard of the delete still follows the normal LWW rule and can
+    /// recreate the key, as it would have before GC. The key's oplog history
+    /// is collapsed to its single tombstone op, so a fresh replica still
+    /// learns about the delete and the barrier keeps costing O(1) per key.
     ///
     /// The dominance check reads the replica vector built from op witnesses
     /// (the heartbeat that arrives with relay sync): a replica whose evidence
-    /// is missing simply blocks collection until it is heard from again.
+    /// we lack is absent from the vector and does not block collection, but
+    /// its later concurrent higher-stamp writes are still governed by LWW.
     pub fn gc_tombstones(&mut self, now_ms: u64, older_than_ms: u64) -> GcReport {
         self.gc_tombstones_with_mode(now_ms, older_than_ms, GcMode::Dominance)
     }

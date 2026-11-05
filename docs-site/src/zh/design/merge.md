@@ -58,7 +58,7 @@ pub trait MergeStrategy: Send + Sync {
 `Replicator::gc_tombstones(now_ms, older_than_ms)` 只有当**两个**条件同时满足时才收墓碑：
 
 1. **时间**：`now_ms - tombstone.stamp.pt >= older_than_ms`，且
-2. **因果支配**：每个已知副本对该键的 witness 都支配墓碑的戳。副本器从 op witness 累积的 witness 表**就是**副本向量——不需要单独的心跳协议，它随 relay 同步一起走。支配检查只覆盖我们有证据的副本：从未听到过的副本只是不在向量中，并不阻塞收簇。收簇安全不依赖该缺席——压实后的 barrier 会拒绝任何副本稍后重投的删除前写入，因此迟到副本无法复活该删除。
+2. **因果支配**：每个已知副本对该键的 witness 都支配墓碑的戳。副本器从 op witness 累积的 witness 表**就是**副本向量——不需要单独的心跳协议，它随 relay 同步一起走。支配检查只覆盖我们有证据的副本：从未听到过的副本只是不在向量中，并不阻塞收簇。收簇安全不依赖该缺席——压实后的 barrier 会拒绝合并中输给墓碑的稍后重投删除前写入；从未听到副本的并发高戳写入仍按既有 LWW 规则胜出并可重建该键，与 GC 前行为一致（`concurrent_higher_stamp_write_resurrects_a_collected_delete`）。
 
 被收簇的墓碑**并没有被删除**。它被压实成一条 barrier 条目（`gc_barriers`，剥掉 payload 与保留冲突，保留戳与 witness），该键的 oplog 历史塌缩为唯一的墓碑 op。barrier 正是保证所在：GC 后重投的删除前写入会被 barrier 拒绝而不是复活该删除（`stale_put_cannot_resurrect_a_collected_delete`）。保留的墓碑 op 让新副本仍能得知删除，因此压实形态对每个被删键只花 O(1)，且从不降级任何对端的视图。
 

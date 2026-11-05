@@ -182,19 +182,52 @@ fn gc_does_not_require_evidence_from_never_heard_replicas() {
     // is simply absent from that vector and does not block collection; the
     // compacted barrier still rejects a pre-delete write redelivered later.
     let mut a = node("node-a");
-    let created = a.put("k", b"value".to_vec()).unwrap();
+    a.put("k", b"value".to_vec()).unwrap();
     a.delete("k").unwrap();
 
-    // No other replica has ever been heard from: the vector holds only
-    // node-a's own stamp, so dominance trivially holds.
+    // node-b writes the key before the delete but is never heard from by
+    // node-a, so the vector holds only node-a's own stamp: dominance trivially
+    // holds and collection does not wait on the absent replica.
+    let mut b = node("node-b");
+    let stale = b.put("k", b"pre-delete".to_vec()).unwrap();
+
     let report = a.gc_tombstones(1_000, 0);
     assert_eq!(report.scanned, 1);
     assert_eq!(report.collected, vec!["k".to_string()]);
     assert!(a.get("k").is_none());
     assert!(a.gc_barriers().contains_key("k"));
 
-    // The barrier rejects the pre-delete write when a late peer redelivers it.
-    assert!(!a.apply_remote(&created).unwrap());
+    // Redelivering node-b's pre-delete write must hit the ingest/barrier path
+    // (its op_id is not in a's seen set), where it loses to the compacted
+    // tombstone and is rejected instead of resurrecting the delete.
+    assert!(!a.apply_remote(&stale).unwrap());
     assert!(a.get("k").is_none());
     assert!(a.gc_barriers().contains_key("k"));
+}
+
+#[test]
+fn concurrent_higher_stamp_write_resurrects_a_collected_delete() {
+    // The barrier rejects a pre-delete write that loses to the tombstone in
+    // the merge (causally dominated / older stamp). A write from a replica
+    // that has never heard of the delete and carries a higher HLC stamp
+    // (still within max_skew) wins the concurrent merge, exactly as it would
+    // have before GC; the barrier is then removed and the key is live again.
+    // This is not a correctness regression: LWW concurrent high-stamp writes
+    // are supposed to win. The docs must not claim an absolute "late replica
+    // cannot resurrect" guarantee.
+    let mut a = node("node-a");
+    a.put("k", b"value".to_vec()).unwrap();
+    a.delete("k").unwrap();
+    a.gc_tombstones(1_000, 0);
+    assert!(a.gc_barriers().contains_key("k"));
+
+    // node-b never heard of the delete and has a clock 1ms ahead (within the
+    // 5-minute max_skew), so its concurrent write carries a higher stamp.
+    let mut b = Replicator::with_fixed_clock("node-b", Arc::new(LwwHlc), 1_001);
+    let late = b.put("k", b"recreated".to_vec()).unwrap();
+
+    assert!(a.apply_remote(&late).unwrap());
+    assert_eq!(a.get("k").unwrap().payload, b"recreated");
+    assert!(!a.get("k").unwrap().deleted);
+    assert!(!a.gc_barriers().contains_key("k"), "barrier is removed");
 }
