@@ -100,15 +100,30 @@ fn stale_put_cannot_resurrect_a_collected_delete() {
     let (mut a, _b, stale) = tombstoned_with_evidence();
     a.gc_tombstones(1_000, 0);
 
+    // Before a restart the aggregator already absorbed the pre-delete write,
+    // so its op_id is in the seen set and redelivery is deduplicated rather
+    // than reaching the merge.
     assert!(
         !a.apply_remote(&stale).unwrap(),
         "the pre-delete write must be rejected"
     );
     assert!(a.get("k").is_none(), "no resurrection");
-    // Redelivery is rejected the same way, not lost in a confusing state.
-    assert!(!a.apply_remote(&stale).unwrap());
-    assert!(a.get("k").is_none());
     assert!(a.gc_barriers().contains_key("k"));
+
+    // After a restart only the persisted oplog repopulates the seen set, so
+    // the same causally-before write is no longer seen. Its redelivery must
+    // hit the ingest/barrier merge and be rejected by the compacted
+    // tombstone, not resurrect the delete.
+    let identity = DeviceIdentity::generate();
+    let state = a.snapshot_state(&identity, "group-1", 1);
+    let loaded = decode_state(&encode_state(&state).unwrap()).unwrap();
+    let mut restored = Replicator::from_state(&loaded, Arc::new(LwwHlc)).unwrap();
+    assert!(
+        !restored.apply_remote(&stale).unwrap(),
+        "causally-before write must hit the barrier and be rejected"
+    );
+    assert!(restored.get("k").is_none(), "no resurrection after restart");
+    assert!(restored.gc_barriers().contains_key("k"));
 }
 
 #[test]
