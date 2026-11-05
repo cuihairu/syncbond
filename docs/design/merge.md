@@ -87,11 +87,15 @@ when **both** conditions hold:
 A collected tombstone is **not deleted**. It is compacted into a barrier
 entry (`gc_barriers`, payload and retained conflicts stripped, stamp and
 witness kept) and the key's oplog history collapses to its single tombstone
-op. The barrier is what keeps the guarantee: a pre-delete write redelivered
-after GC is rejected by the barrier instead of resurrecting the delete
-(`stale_put_cannot_resurrect_a_collected_delete`). The retained tombstone op
-means a fresh replica still learns about the delete, so the compacted form
-costs O(1) per deleted key and never downgrades a peer's view.
+op. The barrier keeps the guarantee for the writes it decides: a pre-delete
+write redelivered after GC that loses to the tombstone in the merge is
+rejected by the barrier instead of resurrecting the delete
+(`stale_put_cannot_resurrect_a_collected_delete`). A concurrent write with a
+higher stamp from an unheard replica still wins under the normal LWW rule and
+can recreate the key, as it would have before GC
+(`concurrent_higher_stamp_write_resurrects_a_collected_delete`). The retained
+tombstone op means a fresh replica still learns about the delete, so the
+compacted form costs O(1) per deleted key and never downgrades a peer's view.
 
 Two consequences worth noting:
 

@@ -185,8 +185,12 @@ fn gc_does_not_require_evidence_from_never_heard_replicas() {
     a.put("k", b"value".to_vec()).unwrap();
     a.delete("k").unwrap();
 
-    // node-b writes the key before the delete but is never heard from by
-    // node-a, so the vector holds only node-a's own stamp: dominance trivially
+    // node-b is created after a.delete and never heard of it, so its write is
+    // concurrent with (not causally before) the delete. It is rejected here
+    // only because its stamp is lower (its first op, ct=0, versus the delete's
+    // ct=1); the causally-before case is covered by
+    // `stale_put_cannot_resurrect_a_collected_delete`. Because node-b is never
+    // heard from, the vector holds only node-a's own stamp: dominance trivially
     // holds and collection does not wait on the absent replica.
     let mut b = node("node-b");
     let stale = b.put("k", b"pre-delete".to_vec()).unwrap();
@@ -197,9 +201,9 @@ fn gc_does_not_require_evidence_from_never_heard_replicas() {
     assert!(a.get("k").is_none());
     assert!(a.gc_barriers().contains_key("k"));
 
-    // Redelivering node-b's pre-delete write must hit the ingest/barrier path
+    // Redelivering node-b's concurrent write must hit the ingest/barrier path
     // (its op_id is not in a's seen set), where it loses to the compacted
-    // tombstone and is rejected instead of resurrecting the delete.
+    // tombstone on stamp and is rejected instead of resurrecting the delete.
     assert!(!a.apply_remote(&stale).unwrap());
     assert!(a.get("k").is_none());
     assert!(a.gc_barriers().contains_key("k"));
