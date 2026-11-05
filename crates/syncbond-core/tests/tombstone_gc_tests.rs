@@ -174,3 +174,27 @@ fn gc_is_idempotent() {
     assert_eq!(a.gc_tombstones(1_000, 0).collected.len(), 1);
     assert_eq!(a.gc_tombstones(1_000, 0).collected.len(), 0);
 }
+
+#[test]
+fn gc_does_not_require_evidence_from_never_heard_replicas() {
+    // The dominance check covers only replicas the aggregator has evidence
+    // about (the op-witness vector). A replica that has never been heard from
+    // is simply absent from that vector and does not block collection; the
+    // compacted barrier still rejects a pre-delete write redelivered later.
+    let mut a = node("node-a");
+    let created = a.put("k", b"value".to_vec()).unwrap();
+    a.delete("k").unwrap();
+
+    // No other replica has ever been heard from: the vector holds only
+    // node-a's own stamp, so dominance trivially holds.
+    let report = a.gc_tombstones(1_000, 0);
+    assert_eq!(report.scanned, 1);
+    assert_eq!(report.collected, vec!["k".to_string()]);
+    assert!(a.get("k").is_none());
+    assert!(a.gc_barriers().contains_key("k"));
+
+    // The barrier rejects the pre-delete write when a late peer redelivers it.
+    assert!(!a.apply_remote(&created).unwrap());
+    assert!(a.get("k").is_none());
+    assert!(a.gc_barriers().contains_key("k"));
+}

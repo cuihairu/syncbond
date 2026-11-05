@@ -367,3 +367,39 @@ fn malformed_strategy_payloads_error_instead_of_panicking() {
         "valid write survives the rejected op"
     );
 }
+
+#[test]
+fn delete_under_orset_and_pncounter_returns_merge_error() {
+    // `Replicator::delete` writes an empty payload with `deleted: true`. The
+    // OR-Set and PN-Counter strategies decode the payload as JSON, so the
+    // empty document is not valid and the delete fails with an explicit
+    // `MergeError` instead of silently succeeding as a non-tombstone no-op.
+    let mut orset = Replicator::with_strategy("node", Arc::new(OrSetStrategy));
+    orset
+        .put("favorites", OrSetStrategy::encode(&OrSetDoc::default()))
+        .unwrap();
+    assert!(
+        orset.delete("favorites").is_err(),
+        "OR-Set delete with empty payload must return MergeError"
+    );
+    assert!(
+        orset.get("favorites").is_some(),
+        "the rejected delete must leave the record untouched"
+    );
+
+    let mut counter = Replicator::with_strategy("node", Arc::new(PnCounterStrategy));
+    counter
+        .put(
+            "counter",
+            PnCounterStrategy::encode(&PnCounterDoc::default()),
+        )
+        .unwrap();
+    assert!(
+        counter.delete("counter").is_err(),
+        "PN-Counter delete with empty payload must return MergeError"
+    );
+    assert!(
+        counter.get("counter").is_some(),
+        "the rejected delete must leave the record untouched"
+    );
+}

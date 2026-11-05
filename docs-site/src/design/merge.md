@@ -52,6 +52,14 @@ and PN-Counter has no delete at all — removal is modelled by decrementing (or
 by switching the key to an `LwwHlc` tombstone). Do not rely on `deleted: true`
 to remove a value under a non-`LwwHlc` strategy.
 
+Note that calling `Replicator::delete` under `OrSetStrategy` or
+`PnCounterStrategy` does **not** succeed as a no-op: the delete operation
+carries an empty payload, which those strategies' `merge` decodes as JSON and
+therefore rejects with `MergeError` (the empty document is not valid OR-Set /
+PN-Counter JSON). The call fails and leaves the record untouched — the
+application must instead express removal through the payload (retire an
+OR-Set element's tag, or decrement a PN-Counter).
+
 ### LwwHlc rules (the default)
 
 1. Causally ordered: the descendant wins. An old device reconnecting with a stale edit cannot resurrect a deleted record — the tombstone's witness dominates (test: `old_device_reconnect_cannot_resurrect_a_delete`).
@@ -67,8 +75,12 @@ when **both** conditions hold:
 2. **Causal dominance**: every known replica's witness dominates the
    tombstone's stamp. The witness map the replicator accumulates from op
    witnesses *is* the replica vector — no separate heartbeat protocol, it
-   travels with relay sync. A replica we have no evidence about simply blocks
-   collection until it is heard from again.
+   travels with relay sync. The dominance check covers only replicas we have
+   evidence about: a replica that has never been heard from is simply absent
+   from the vector and does not block collection. Collection safety does not
+   depend on that absence — the compacted barrier rejects a pre-delete write
+   redelivered later by any replica, so a late replica cannot resurrect the
+   delete.
 
 A collected tombstone is **not deleted**. It is compacted into a barrier
 entry (`gc_barriers`, payload and retained conflicts stripped, stamp and

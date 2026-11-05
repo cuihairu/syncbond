@@ -45,6 +45,8 @@ pub trait MergeStrategy: Send + Sync {
 
 `Record.deleted` 标志只有 `LwwHlc` 采纳——它把删除变成因果墓碑（`Replicator::delete` 写入 `deleted: true`）。在 `OrSetStrategy` 与 `PnCounterStrategy` 下 `deleted` 标志被**忽略**：合并结果恒为 `deleted: false`，对这些策略调用 `Replicator::delete` 不产生墓碑。需要在 OR-Set 下表达移除的应用须经 payload 表达（退役元素的标签）；PN-Counter 根本没有删除——移除以递减建模（或把该键切换为 `LwwHlc` 墓碑）。不要依赖 `deleted: true` 在非 `LwwHlc` 策略下移除值。
 
+注意：在 `OrSetStrategy` 或 `PnCounterStrategy` 下调用 `Replicator::delete` **不会**作为空操作成功——删除操作携带空 payload，这两个策略的 `merge` 会将其当作 JSON 解码，因此以 `MergeError` 拒绝（空文档不是合法的 OR-Set / PN-Counter JSON）。调用失败且记录保持不变——应用必须改经 payload 表达移除（退役 OR-Set 元素的标签，或递减 PN-Counter）。
+
 ### LwwHlc 规则（默认策略）
 
 1. 有因果序：后代获胜。携带过期编辑重连的旧设备无法复活已删除的记录——墓碑的 witness 占优（测试：`old_device_reconnect_cannot_resurrect_a_delete`）。
@@ -56,7 +58,7 @@ pub trait MergeStrategy: Send + Sync {
 `Replicator::gc_tombstones(now_ms, older_than_ms)` 只有当**两个**条件同时满足时才收墓碑：
 
 1. **时间**：`now_ms - tombstone.stamp.pt >= older_than_ms`，且
-2. **因果支配**：每个已知副本对该键的 witness 都支配墓碑的戳。副本器从 op witness 累积的 witness 表**就是**副本向量——不需要单独的心跳协议，它随 relay 同步一起走。没有证据的副本只是阻塞收簇，直到再次听到它的消息。
+2. **因果支配**：每个已知副本对该键的 witness 都支配墓碑的戳。副本器从 op witness 累积的 witness 表**就是**副本向量——不需要单独的心跳协议，它随 relay 同步一起走。支配检查只覆盖我们有证据的副本：从未听到过的副本只是不在向量中，并不阻塞收簇。收簇安全不依赖该缺席——压实后的 barrier 会拒绝任何副本稍后重投的删除前写入，因此迟到副本无法复活该删除。
 
 被收簇的墓碑**并没有被删除**。它被压实成一条 barrier 条目（`gc_barriers`，剥掉 payload 与保留冲突，保留戳与 witness），该键的 oplog 历史塌缩为唯一的墓碑 op。barrier 正是保证所在：GC 后重投的删除前写入会被 barrier 拒绝而不是复活该删除（`stale_put_cannot_resurrect_a_collected_delete`）。保留的墓碑 op 让新副本仍能得知删除，因此压实形态对每个被删键只花 O(1)，且从不降级任何对端的视图。
 
