@@ -5,7 +5,7 @@
 <p align="center"><a href="https://cuihairu.github.io/syncbond/"><img src="https://img.shields.io/badge/docs-blue" alt="docs"></a> [![Status](https://img.shields.io/badge/status-in%20development-orange)](https://github.com/cuihairu/syncbond/releases) [![CI](https://github.com/cuihairu/syncbond/actions/workflows/ci.yml/badge.svg)](https://github.com/cuihairu/syncbond/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Rust core](https://img.shields.io/badge/core-Rust-000000?logo=rust&logoColor=white)](crates/syncbond-core) [![TypeScript bindings](https://img.shields.io/badge/bindings-TypeScript-3178C6?logo=typescript&logoColor=white)](packages/ts-bindings) [![Pairing: SPAKE2 RFC9382](https://img.shields.io/badge/pairing-SPAKE2%20RFC9382-2c6e63)](docs/design/PROTOCOL.md)</p>
 
 
-> **syncbond is the final product name** (confirmed 2026-11-05; crates.io names `syncbond` / `-core` / `-ffi` / `-python` / `-wasm` / `-napi` are all unoccupied and reserved for this project).
+> **syncbond is the final product name** (confirmed 2026-11-05; crates.io names `syncbond` / `-core` / `-ffi` / `-python` / `-wasm` / `-napi` were all unoccupied as of the last check, but crates.io assigns names first-come-first-served, so that check does not guarantee they remain available).
 
 # syncbond
 
