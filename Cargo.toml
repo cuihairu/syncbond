@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/syncbond-cli",
     "crates/syncbond-core",
     "crates/syncbond-ffi",
     "crates/syncbond-napi",

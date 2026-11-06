@@ -27,7 +27,41 @@ Cryptography is assembled on maintained, audited components — RustCrypto `p256
 
 ## Current status
 
-The Rust core is implemented and exercised by the workspace test suite (currently 75+ tests), including all four RFC 9382 Appendix B vectors and three unrelated example applications (generic KV, note documents, arbitrary binary records) running on the same core. Bindings for C, C++, Python, Go, Java, C#, TypeScript (napi), and browser WASM all run the same cross-language conformance fixture byte-for-byte.
+Pre-release development snapshot: nothing is published to any package registry.
+
+- **Rust core** (`crates/syncbond-core`) is implemented and exercised by the workspace test suite (currently 75+ tests), including all four RFC 9382 Appendix B vectors.
+- **Runnable demos** (`crates/syncbond-cli`): two CLI examples run the real paths end to end — see [Quickstart](#quickstart-two-runnable-demos). `syncbond-pair` pairs two terminals over TCP (pairing-code entry → SPAKE2 → encrypted messages → oplog sync → snapshot save/reload). `syncbond-relay` syncs a KV document between two device processes through a file relay store and resumes from its persisted cursor after a restart.
+- **Transport reality**: the core ships an in-memory loopback and a durable file relay store; the demos add a minimal length-prefixed TCP transport. There is no production network transport (WebSocket/LAN/P2P) in the repository — transports are application-provided behind the `Transport` trait, and LAN (mDNS) discovery sits behind the default-off `lan` feature. The relay channel carries oplog entries as plaintext; envelopes protect pairing sessions, not the relay store.
+- **Bindings**: the C ABI plus C++, Go, Java, C#, Python, TypeScript (napi), and browser WASM bindings exist in the repository and run the same cross-language conformance fixture in CI; none are published to any registry.
+
+## Quickstart: two runnable demos
+
+Requires a stable Rust toolchain.
+
+Demo 1 — SPAKE2 pairing with encrypted messages, oplog sync, and a storage round-trip (two terminals):
+
+```sh
+# Terminal A: shows the pairing code, then waits
+cargo run -p syncbond-cli --example syncbond-pair -- --role a --addr 127.0.0.1:47560
+
+# Terminal B: type the code shown in terminal A, then chat
+cargo run -p syncbond-cli --example syncbond-pair -- --role b --addr 127.0.0.1:47560
+```
+
+Demo 2 — KV sync through a file relay, resuming across restarts (each command is one device process; run them one at a time — the file relay store is not safe for concurrent writers):
+
+```sh
+cargo run -p syncbond-cli --example syncbond-relay -- --role a put theme dark
+cargo run -p syncbond-cli --example syncbond-relay -- --role a put font_size 14
+cargo run -p syncbond-cli --example syncbond-relay -- --role a sync       # relay cursor 0 → 2
+cargo run -p syncbond-cli --example syncbond-relay -- --role b sync       # pulls the two ops
+cargo run -p syncbond-cli --example syncbond-relay -- --role b put greeting hello
+cargo run -p syncbond-cli --example syncbond-relay -- --role a sync       # resumes from cursor 2, pulls only the new op
+cargo run -p syncbond-cli --example syncbond-relay -- --role a show
+cargo run -p syncbond-cli --example syncbond-relay -- --role b show
+```
+
+The key/value records displayed by the two `show` commands match — both sides converged. State lives in `./syncbond-relay-demo/`; delete the directory to start over.
 
 Progress and open decisions: [`todo.md`](todo.md). Protocol contract: [`docs/design/PROTOCOL.md`](docs/design/PROTOCOL.md). Merge design: [`docs/design/merge.md`](docs/design/merge.md). Language decision: [`docs/design/language.md`](docs/design/language.md). Requirements baseline: [`docs/requirements.md`](docs/requirements.md). Landscape survey: [`docs/research/survey-2026-10-21.md`](docs/research/survey-2026-10-21.md).
 
@@ -35,6 +69,7 @@ Progress and open decisions: [`todo.md`](todo.md). Protocol contract: [`docs/des
 
 ```
 crates/syncbond-core/   the Rust core (pairing, crypto, replication, conflict, storage, transport)
+crates/syncbond-cli/    runnable demos (syncbond-pair, syncbond-relay)
 crates/syncbond-ffi/    the C ABI (cdylib + headers), plus the C++/Go/Java/C# bindings and conformance fixtures
 crates/syncbond-napi/   Node.js TypeScript bindings (napi-rs over the C ABI)
 crates/syncbond-wasm/   browser WASM bindings (wasm-bindgen over the core)

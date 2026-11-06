@@ -1199,6 +1199,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "syncbond-cli"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "syncbond-core",
+]
+
+[[package]]
 name = "syncbond-core"
 version = "0.1.0"
 dependencies = [
