@@ -5,7 +5,7 @@
 <p align="center"><a href="https://cuihairu.github.io/syncbond/zh/"><img src="https://img.shields.io/badge/%E6%96%87%E6%A1%A3-blue" alt="docs"></a> [![Status](https://img.shields.io/badge/status-in%20development-orange)](https://github.com/cuihairu/syncbond/releases) [![CI](https://github.com/cuihairu/syncbond/actions/workflows/ci.yml/badge.svg)](https://github.com/cuihairu/syncbond/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Rust 内核](https://img.shields.io/badge/内核-Rust-000000?logo=rust&logoColor=white)](crates/syncbond-core) [![TypeScript 绑定](https://img.shields.io/badge/绑定-TypeScript-3178C6?logo=typescript&logoColor=white)](packages/ts-bindings) [![配对: SPAKE2 RFC9382](https://img.shields.io/badge/配对-SPAKE2%20RFC9382-2c6e63)](docs/zh/design/PROTOCOL.md)</p>
 
 
-> **syncbond 为正式产品名**（2026-11-05 拍板；crates.io 上 `syncbond` / `-core` / `-ffi` / `-python` / `-wasm` / `-napi` 六个名字在最近一次查询时均未占用，但 crates.io 按先到先得分配，该查询不保证这些名字仍可用）.
+> **syncbond 为正式产品名**（2026-11-05 拍板；crates.io 上 `syncbond` / `-core` / `-ffi` / `-python` / `-wasm` / `-napi` 六个名字在最近一次查询时均未占用，但 crates.io 按先到先得分配，该查询不保证这些名字仍可用）。
 
 # syncbond
 
