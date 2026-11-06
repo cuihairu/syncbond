@@ -8,7 +8,10 @@
 pub mod persist;
 pub mod tcp_transport;
 
-pub use persist::{load_device, save_device, FileStorage, PersistedDevice};
+pub use persist::{
+    load_device, load_pair_state, save_device, save_pair_state, FileStorage, PersistedDevice,
+    PersistedPairState,
+};
 pub use tcp_transport::TcpTransport;
 
 /// Parse `--flag value` style arguments. Unknown flags and missing values

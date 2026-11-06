@@ -106,6 +106,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    // Persist first, then publish: if the process dies between the two
+    // steps, the next run re-publishes the same local oplog from disk and
+    // the relay's op-id deduplication is harmless. The previous order
+    // (publish first, save second) let a crash roll the cursor back to an
+    // already-published op id; the next local write reused that id and was
+    // silently dropped by the relay.
+    let mut should_publish = false;
     match action.as_str() {
         "put" => {
             let pairs = pairs_from(&action_args)?;
@@ -116,10 +123,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let op = device.replicator.put(&key, value.clone().into_bytes())?;
                 println!("put {key}=\"{value}\" (op {})", op.op_id);
             }
-            push(&relay, &device.replicator)?;
+            should_publish = true;
         }
         "sync" => {
-            push(&relay, &device.replicator)?;
+            should_publish = true;
             let pull = relay.pull_after(CHANNEL, device.pull_cursor)?;
             let applied = apply_pull_response(&mut device.replicator, &pull)?;
             println!(
@@ -166,6 +173,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             state: device.state.clone(),
         },
     )?;
+    if should_publish {
+        push(&relay, &device.replicator)?;
+    }
     println!(
         "state saved to {}; next invocation resumes from here",
         state_path.display()

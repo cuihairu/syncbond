@@ -34,34 +34,33 @@ impl FrameReader {
     }
 
     /// Pop one complete frame from the buffered bytes, if any. An advertised
-    /// length above the cap clears the buffer and yields an empty frame,
-    /// which the callers surface as a hard transport error.
-    fn extract_frame(&mut self) -> Option<Vec<u8>> {
+    /// length above the cap is a hard transport error (the peer is broken),
+    /// reported directly rather than through an ambiguous sentinel, so a
+    /// legitimate zero-length frame (length 0) is still returned as an empty
+    /// payload instead of being misread as the oversize error.
+    fn extract_frame(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
         if self.buffer.len() < 4 {
-            return None;
+            return Ok(None);
         }
         let length_bytes: Vec<u8> = self.buffer.iter().take(4).copied().collect();
         let length = u32::from_le_bytes(length_bytes.try_into().expect("4 bytes")) as usize;
         if length > MAX_FRAME_BYTES {
             self.buffer.clear();
-            return Some(Vec::new());
+            return Err(TransportError::Send(
+                "advertised frame length exceeds the demo cap".into(),
+            ));
         }
         if self.buffer.len() < 4 + length {
-            return None;
+            return Ok(None);
         }
         self.buffer.drain(..4);
-        Some(self.buffer.drain(..length).collect())
+        Ok(Some(self.buffer.drain(..length).collect()))
     }
 
     /// Blocking read of one full frame; keeps partial data across calls.
     fn read_frame(&mut self) -> Result<Vec<u8>, TransportError> {
         loop {
-            if let Some(frame) = self.extract_frame() {
-                if frame.is_empty() && self.buffer.is_empty() {
-                    return Err(TransportError::Send(
-                        "advertised frame length exceeds the demo cap".into(),
-                    ));
-                }
+            if let Some(frame) = self.extract_frame()? {
                 return Ok(frame);
             }
             let mut chunk = [0u8; 8192];
@@ -80,12 +79,7 @@ impl FrameReader {
     /// `Empty` until a complete frame is available.
     fn try_read_frame(&mut self) -> Result<Vec<u8>, TransportError> {
         loop {
-            if let Some(frame) = self.extract_frame() {
-                if frame.is_empty() && self.buffer.is_empty() {
-                    return Err(TransportError::Send(
-                        "advertised frame length exceeds the demo cap".into(),
-                    ));
-                }
+            if let Some(frame) = self.extract_frame()? {
                 return Ok(frame);
             }
             let mut chunk = [0u8; 8192];
@@ -109,6 +103,11 @@ impl FrameReader {
 pub struct TcpTransport {
     writer: Mutex<TcpStream>,
     reader: Mutex<FrameReader>,
+    /// Serializes `send` and `try_recv`: `try_recv` toggles the nonblocking
+    /// mode of the socket shared (via the clone) with the writer, and that
+    /// toggle must never overlap a write, or `send` would see WouldBlock.
+    /// `recv` never touches the mode, so it does not need this lock.
+    io_lock: Mutex<()>,
 }
 
 impl TcpTransport {
@@ -132,6 +131,7 @@ impl TcpTransport {
         Self {
             writer: Mutex::new(stream),
             reader: Mutex::new(FrameReader::new(reader)),
+            io_lock: Mutex::new(()),
         }
     }
 }
@@ -145,6 +145,10 @@ impl Transport for TcpTransport {
             )));
         }
         let length = (frame.len() as u32).to_le_bytes();
+        let _io = self
+            .io_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut writer = self
             .writer
             .lock()
@@ -165,16 +169,95 @@ impl Transport for TcpTransport {
     }
 
     fn try_recv(&self) -> Result<Vec<u8>, TransportError> {
+        let _io = self
+            .io_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut reader = self
             .reader
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        reader
+        // The socket is shared with the writer through the clone, so the
+        // nonblocking toggle must be restored even on an early return (or a
+        // panic) before the writer can run again. `_io` is released only
+        // after this guard drops, keeping the toggle out of any concurrent
+        // `send`. The guard owns a *clone* of the socket (the mode flag is
+        // shared across clones of the same open file description), so it
+        // does not borrow `reader` and can outlive the read.
+        let probe = reader
             .stream
-            .set_nonblocking(true)
+            .try_clone()
             .map_err(|error| TransportError::Send(error.to_string()))?;
-        let result = reader.try_read_frame();
-        let _ = reader.stream.set_nonblocking(false);
-        result
+        let _nonblocking = Nonblocking::new(probe);
+        reader.try_read_frame()
+    }
+}
+
+/// RAII guard that puts a socket clone into nonblocking mode and restores
+/// blocking mode on drop, so a `try_recv` can never leave the shared socket
+/// nonblocking for a later `send`.
+struct Nonblocking {
+    stream: TcpStream,
+}
+
+impl Nonblocking {
+    fn new(stream: TcpStream) -> Self {
+        let _ = stream.set_nonblocking(true);
+        Self { stream }
+    }
+}
+
+impl Drop for Nonblocking {
+    fn drop(&mut self) {
+        let _ = self.stream.set_nonblocking(false);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    fn transport_pair() -> (TcpTransport, TcpTransport) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let client = TcpStream::connect(addr).expect("connect");
+        let (server, _) = listener.accept().expect("accept");
+        (TcpTransport::wrap(server), TcpTransport::wrap(client))
+    }
+
+    #[test]
+    fn zero_length_frame_round_trips() {
+        let (a, b) = transport_pair();
+        a.send(b"").expect("send empty frame");
+        assert_eq!(b.recv().expect("recv empty frame"), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn try_recv_empty_then_send_still_works() {
+        let (a, b) = transport_pair();
+        // Nothing queued yet: try_recv must report Empty, not Closed.
+        assert_eq!(a.try_recv(), Err(TransportError::Empty));
+        // The nonblocking toggle must be restored, so a send on the cloned
+        // writer still succeeds (blocking mode).
+        a.send(b"after-empty").expect("send after try_recv");
+        assert_eq!(b.recv().expect("recv"), b"after-empty".to_vec());
+    }
+
+    #[test]
+    fn oversize_advertised_frame_is_an_error_not_an_empty_frame() {
+        let (a, b) = transport_pair();
+        // Write a raw oversized length header (MAX_FRAME_BYTES + 1) followed
+        // by no payload, then assert the receiver errors rather than
+        // delivering an empty frame.
+        let mut stream = a.writer.lock().unwrap();
+        let length = (MAX_FRAME_BYTES as u32 + 1).to_le_bytes();
+        stream.write_all(&length).expect("write oversize header");
+        stream.flush().expect("flush");
+        drop(stream);
+        assert!(matches!(
+            b.recv(),
+            Err(TransportError::Send(msg)) if msg.contains("exceeds the demo cap")
+        ));
     }
 }

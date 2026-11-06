@@ -24,7 +24,10 @@
 use std::collections::VecDeque;
 use std::net::TcpListener;
 use std::sync::Arc;
-use syncbond_cli::{optional_flag, prompt, require_flag, FileStorage, TcpTransport};
+use syncbond_cli::{
+    load_pair_state, optional_flag, prompt, require_flag, save_pair_state, FileStorage,
+    PersistedPairState, TcpTransport,
+};
 use syncbond_core::codes::generate_code;
 use syncbond_core::conflict::LwwHlc;
 use syncbond_core::identity::DeviceIdentity;
@@ -113,23 +116,32 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         println!("  {key} = {}", String::from_utf8_lossy(&record.payload));
     }
 
-    // Storage phase: snapshot (plus the received ops, which live only in the
-    // record map), save, reload, replay, verify both records.
+    // Storage phase: snapshot plus the received ops (which live only in the
+    // record map and never in the local oplog), saved together, then
+    // reloaded from file alone and replayed so both sides survive a restart.
     let state_path =
         std::path::Path::new(&state_dir).join(format!("syncbond-pair-state-{role}.json"));
     let storage = FileStorage::open(&state_path);
     let snapshot = replicator.snapshot_state(&identity, &session.group_id, pairing::SESSION_EPOCH);
     storage.save(&encode_state(&snapshot)?)?;
+    save_pair_state(
+        &state_path,
+        &PersistedPairState {
+            state: snapshot.clone(),
+            received: received.clone(),
+        },
+    )?;
+    let persisted = load_pair_state(&state_path)?.expect("pair state just saved");
     let mut restored = Replicator::from_state(
-        &decode_state(&storage.load()?.expect("snapshot just saved"))?,
+        &decode_state(&encode_state(&persisted.state)?)?,
         Arc::new(LwwHlc),
     )?;
-    for op in &received {
+    for op in &persisted.received {
         restored.apply_remote(op)?;
     }
     println!(
         "storage: snapshot + {} received ops saved to {} and reloaded; {} live records survive the round-trip:",
-        received.len(),
+        persisted.received.len(),
         state_path.display(),
         restored.live_keys().len()
     );
