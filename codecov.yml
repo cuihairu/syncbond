@@ -1,0 +1,10 @@
+# Codecov configuration.
+#
+# crates/syncbond-wasm holds wasm-bindgen export glue: its functions are only
+# reachable from a JavaScript host inside a wasm32 runtime, so host-side
+# llvm-cov runs (the `coverage` CI job) can never execute those lines. The
+# crate is validated by the wasm32-unknown-unknown build in the `bindings-ts`
+# job instead of host line coverage, so it is excluded from the codecov
+# denominator rather than counted as permanently uncovered.
+ignore:
+  - "crates/syncbond-wasm"
