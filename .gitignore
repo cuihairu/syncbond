@@ -17,3 +17,6 @@ packages/ts-bindings/src/wasm-gen/
 # python test/build artifacts
 __pycache__/
 *.pyc
+
+# rust coverage artifacts
+*.profraw
