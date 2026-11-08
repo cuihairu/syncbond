@@ -56,7 +56,14 @@ fn constructor_rejects_empty_and_duplicate_membership() {
         Err(MemberCryptoError::InvalidMembership)
     ));
     assert!(matches!(
-        MemberKeyRing::with_epoch("group", "stranger", ids.iter().map(|i| i.device_id.clone()), ids.iter().map(|i| (i.device_id.clone(), i.public_key)), 1, [0; 32]),
+        MemberKeyRing::with_epoch(
+            "group",
+            "stranger",
+            ids.iter().map(|i| i.device_id.clone()),
+            ids.iter().map(|i| (i.device_id.clone(), i.public_key)),
+            1,
+            [0; 32]
+        ),
         Err(MemberCryptoError::InvalidMembership)
     ));
     // Duplicate membership must be rejected by the distinct-count check.
@@ -81,15 +88,13 @@ fn constructor_rejects_mismatched_member_key() {
         "group",
         &ids[0].device_id,
         ids.iter().map(|i| i.device_id.clone()),
-        ids.iter()
-            .enumerate()
-            .map(|(index, i)| {
-                if index == 0 {
-                    (i.device_id.clone(), wrong)
-                } else {
-                    (i.device_id.clone(), i.public_key)
-                }
-            }),
+        ids.iter().enumerate().map(|(index, i)| {
+            if index == 0 {
+                (i.device_id.clone(), wrong)
+            } else {
+                (i.device_id.clone(), i.public_key)
+            }
+        }),
         1,
         [0; 32],
     );

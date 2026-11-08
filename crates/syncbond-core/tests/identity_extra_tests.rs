@@ -1,8 +1,8 @@
 //! Extra identity coverage: transcript binding, malformed key material, and
 //! hex serialization paths.
 
-use syncbond_core::identity::{DeviceIdentity, IdentityError};
 use syncbond_core::identity::PublicIdentity;
+use syncbond_core::identity::{DeviceIdentity, IdentityError};
 
 #[test]
 fn transcript_binding_rejects_wrong_role_and_tampered() {
@@ -11,7 +11,10 @@ fn transcript_binding_rejects_wrong_role_and_tampered() {
     let transcript = b"transcript";
     let sig = a.sign_transcript("initiator", transcript);
     let pub_a: PublicIdentity = (&a).into();
-    assert_eq!(pub_a.verify_transcript("initiator", transcript, &sig), Ok(()));
+    assert_eq!(
+        pub_a.verify_transcript("initiator", transcript, &sig),
+        Ok(())
+    );
     assert!(matches!(
         pub_a.verify_transcript("responder", transcript, &sig),
         Err(IdentityError::BadSignature)
@@ -42,7 +45,10 @@ fn identity_rejects_bad_secret_and_verify_failures() {
     let bad = ed25519_dalek::Signature::from_bytes(&[0u8; 64]);
     assert!(a.verify(b"msg", &bad).is_err());
     // PublicIdentity with a bad key must reject transcript verification.
-    let pub_bad = PublicIdentity { device_id: "x".into(), public_key: [0u8; 32] };
+    let pub_bad = PublicIdentity {
+        device_id: "x".into(),
+        public_key: [0u8; 32],
+    };
     assert!(pub_bad.verify_transcript("initiator", b"t", &sig).is_err());
 }
 

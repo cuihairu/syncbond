@@ -1,10 +1,14 @@
-use syncbond_core::storage::SyncStorage;
 use std::path::PathBuf;
+use syncbond_core::storage::SyncStorage;
 
 struct Mem;
 impl SyncStorage for Mem {
-    fn save(&self, _s: &[u8]) -> Result<(), syncbond_core::storage::StorageError> { Ok(()) }
-    fn load(&self) -> Result<Option<Vec<u8>>, syncbond_core::storage::StorageError> { Ok(None) }
+    fn save(&self, _s: &[u8]) -> Result<(), syncbond_core::storage::StorageError> {
+        Ok(())
+    }
+    fn load(&self) -> Result<Option<Vec<u8>>, syncbond_core::storage::StorageError> {
+        Ok(None)
+    }
 }
 
 #[test]

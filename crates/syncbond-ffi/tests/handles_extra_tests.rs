@@ -2,11 +2,13 @@
 //! strategy selection, decode_b64url errors, dump helpers, and the error
 //! mapping from crypto failures.
 
-use syncbond_ffi::error::FfiError;
-use syncbond_ffi::handles::{decode_b64url, dump_node, dump_record, Identity, Keyring, PairResult, Replicator, Session};
 use syncbond_core::crypto::CryptoError;
 use syncbond_core::replication::Replicator as CoreReplicator;
 use syncbond_core::transport::TransportError;
+use syncbond_ffi::error::FfiError;
+use syncbond_ffi::handles::{
+    decode_b64url, dump_node, dump_record, Identity, Keyring, PairResult, Replicator, Session,
+};
 
 #[test]
 fn explicit_pair_code_and_error_mappings() {
@@ -41,7 +43,11 @@ fn strategy_selector_covers_all_codes() {
 
 #[test]
 fn dump_helpers_render_records_and_nodes() {
-    let mut rep = CoreReplicator::with_fixed_clock("node", std::sync::Arc::new(syncbond_core::conflict::LwwHlc), 1_000);
+    let mut rep = CoreReplicator::with_fixed_clock(
+        "node",
+        std::sync::Arc::new(syncbond_core::conflict::LwwHlc),
+        1_000,
+    );
     rep.put("k", b"v".to_vec()).unwrap();
     let node = dump_node(&rep);
     assert!(node.get("records").is_some());
