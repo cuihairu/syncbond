@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use syncbond_core::discovery::{
-    pair_with_candidate, CandidateConnector, DiscoveryCandidate, DiscoveryError,
-    DiscoverySession, MockDiscoveryProvider, ServiceRecord, CAPABILITY_PAIRING, PROTOCOL_VERSION,
+    pair_with_candidate, CandidateConnector, DiscoveryCandidate, DiscoveryError, DiscoverySession,
+    MockDiscoveryProvider, ServiceRecord, CAPABILITY_PAIRING, PROTOCOL_VERSION,
 };
 use syncbond_core::identity::DeviceIdentity;
 use syncbond_core::transport::{Transport, TransportError};
@@ -25,7 +25,10 @@ fn candidate() -> DiscoveryCandidate {
 
 struct FailConnector;
 impl CandidateConnector for FailConnector {
-    fn connect(&self, _candidate: &DiscoveryCandidate) -> Result<Arc<dyn Transport>, TransportError> {
+    fn connect(
+        &self,
+        _candidate: &DiscoveryCandidate,
+    ) -> Result<Arc<dyn Transport>, TransportError> {
         Err(TransportError::Closed)
     }
 }
@@ -35,14 +38,26 @@ fn service_record_validation_covers_each_rule() {
     let mut service = ServiceRecord::new("phone", 48000);
     service.validate().unwrap();
     service.device_name.clear();
-    assert!(matches!(service.validate(), Err(DiscoveryError::InvalidRecord(_))));
+    assert!(matches!(
+        service.validate(),
+        Err(DiscoveryError::InvalidRecord(_))
+    ));
     service.device_name = "x".repeat(256);
-    assert!(matches!(service.validate(), Err(DiscoveryError::InvalidRecord(_))));
+    assert!(matches!(
+        service.validate(),
+        Err(DiscoveryError::InvalidRecord(_))
+    ));
     let service = ServiceRecord::new("phone", 0);
-    assert!(matches!(service.validate(), Err(DiscoveryError::InvalidRecord(_))));
+    assert!(matches!(
+        service.validate(),
+        Err(DiscoveryError::InvalidRecord(_))
+    ));
     let mut service = ServiceRecord::new("phone", 1);
     service.capabilities = vec!["x".repeat(256)];
-    assert!(matches!(service.validate(), Err(DiscoveryError::InvalidRecord(_))));
+    assert!(matches!(
+        service.validate(),
+        Err(DiscoveryError::InvalidRecord(_))
+    ));
     assert_eq!(service.capabilities, vec!["x".repeat(256)]);
     service.capabilities.clear();
     service.capabilities.push(CAPABILITY_PAIRING.into());
@@ -54,7 +69,7 @@ fn candidate_pairability_and_address_selection() {
     let c = candidate();
     assert!(c.is_pairable());
     assert_eq!(c.host(), Some("10.0.0.2".parse().unwrap()));
-    assert_eq!(c.socket_addr().unwrap().port(), 48000 | 0);
+    assert_eq!(c.socket_addr().unwrap().port(), 48000);
     assert!(c.socket_addr().is_some());
 
     let mut bad = candidate();

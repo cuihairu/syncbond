@@ -136,3 +136,34 @@ pub fn pair_memory(code: Option<String>) -> Result<NativePairingResult> {
         code: generated,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pair_memory_generates_code_and_exposes_both_sessions() {
+        let result = pair_memory(None).expect("library-generated code pairing");
+        assert!(
+            result.code().len() >= 6,
+            "generated code: {}",
+            result.code()
+        );
+
+        let initiator = result.initiator_session().expect("initiator session");
+        let responder = result.responder_session().expect("responder session");
+        assert_eq!(initiator.group_id().unwrap(), responder.group_id().unwrap());
+        assert!(!initiator.peer_device_id().unwrap().is_empty());
+        assert!(!initiator.invalidated());
+
+        initiator.invalidate();
+        assert!(initiator.invalidated());
+        assert!(!responder.invalidated(), "only the calling end invalidates");
+    }
+
+    #[test]
+    fn pair_memory_accepts_explicit_code() {
+        let result = pair_memory(Some("K7Q2M4".to_string())).expect("explicit code pairing");
+        assert_eq!(result.code(), "K7Q2M4");
+    }
+}

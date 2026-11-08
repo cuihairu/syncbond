@@ -290,3 +290,65 @@ pub fn conformance_run(fixture_json: String) -> Result<String> {
     let c_fixture = cstr(&fixture_json)?;
     unsafe { take_string(abi::sb_conformance_run(c_fixture.as_ptr())) }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn helpers_round_trip_and_reject_bad_input() {
+        assert_eq!(cstr("plain").unwrap().to_str().unwrap(), "plain");
+        let err = cstr("bad\0nul").unwrap_err();
+        assert!(format!("{err}").contains("embedded NUL"));
+
+        check(abi::sb_protocol_version() as i32).unwrap();
+    }
+
+    #[test]
+    fn native_identity_exposes_id_and_key() {
+        let identity = NativeIdentity::generate().unwrap();
+        assert!(!identity.device_id().unwrap().is_empty());
+        let key = identity.public_key().unwrap();
+        assert_eq!(key.len(), 32);
+    }
+
+    #[test]
+    fn native_replicator_put_get_delete_round_trip() {
+        let replicator = NativeReplicator::new("napi-test-node".to_string()).unwrap();
+        assert_eq!(replicator.node_id().unwrap(), "napi-test-node");
+
+        replicator
+            .put("key-a".to_string(), Buffer::from(vec![1, 2, 3]))
+            .unwrap();
+        replicator
+            .put("key-b".to_string(), Buffer::from(vec![4]))
+            .unwrap();
+        assert_eq!(replicator.record_count(), 2);
+
+        let value = replicator.get("key-a".to_string()).unwrap().unwrap();
+        assert_eq!(value.len(), 3);
+        assert_eq!((value[0], value[1], value[2]), (1, 2, 3));
+
+        assert_eq!(
+            replicator.keys().unwrap(),
+            vec!["key-a".to_string(), "key-b".to_string()]
+        );
+
+        replicator.delete("key-a".to_string()).unwrap();
+        assert!(replicator.get("key-a".to_string()).unwrap().is_none());
+        // record_count is the total record set including tombstones.
+        assert_eq!(replicator.record_count(), 2);
+        assert_eq!(replicator.keys().unwrap(), vec!["key-b".to_string()]);
+    }
+
+    #[test]
+    fn protocol_and_abi_versions_flow_through() {
+        assert_eq!(protocol_version(), abi::sb_protocol_version() as u32);
+        assert_eq!(abi_version(), abi::sb_abi_version() as u32);
+    }
+
+    #[test]
+    fn conformance_run_rejects_malformed_fixture() {
+        assert!(conformance_run("not json".to_string()).is_err());
+    }
+}

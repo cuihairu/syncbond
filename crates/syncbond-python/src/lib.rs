@@ -363,6 +363,169 @@ fn err_none() -> i32 {
     SB_ERR_NONE
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identity_round_trip_and_rejects_bad_key() {
+        Python::initialize();
+        Python::attach(|py| {
+            let identity = Identity::new();
+            assert!(!identity.device_id().is_empty());
+            let secret = identity.secret_key(py);
+            assert_eq!(secret.len().unwrap(), 64);
+
+            let restored = Identity::import(secret.as_bytes()).unwrap();
+            assert_eq!(restored.device_id(), identity.device_id());
+            assert_eq!(restored.public_key(py).len().unwrap(), 32);
+
+            if let Err(err) = Identity::import(&[0u8; 10]) {
+                assert!(err.to_string().contains("identity import"));
+            } else {
+                panic!("short key import must fail");
+            }
+        });
+    }
+
+    #[test]
+    fn pair_memory_exposes_sessions_and_explicit_code() {
+        Python::initialize();
+        let generated = pair_memory(None).unwrap();
+        assert!(generated.code().len() >= 6);
+        assert!(!generated.initiator().group_id().is_empty());
+        assert_eq!(
+            generated.initiator().group_id(),
+            generated.responder().group_id()
+        );
+        assert!(!generated.initiator().peer_device_id().is_empty());
+        assert!(!generated.initiator().invalidated());
+
+        let explicit = pair_memory(Some("K7Q2M4")).unwrap();
+        assert_eq!(explicit.code(), "K7Q2M4");
+    }
+
+    #[test]
+    fn session_send_recv_round_trip_and_invalidate() {
+        Python::initialize();
+        let pair = pair_memory(None).unwrap();
+        let initiator = pair.initiator();
+        let responder = pair.responder();
+
+        let worker = std::thread::spawn(move || responder.recv().unwrap());
+        initiator.send(b"ping").unwrap();
+        assert_eq!(worker.join().unwrap(), b"ping");
+
+        assert!(!initiator.invalidated());
+        initiator.invalidate();
+        assert!(initiator.invalidated());
+    }
+
+    #[test]
+    fn replicator_put_get_delete_and_json_views() {
+        Python::initialize();
+        let replicator = Replicator::new("py-node", 0, 0).unwrap();
+        assert_eq!(replicator.node_id(), "py-node");
+        assert_eq!(replicator.record_count(), 0);
+
+        replicator.put("key-a", &[1, 2, 3]).unwrap();
+        replicator.put("key-b", &[4]).unwrap();
+        assert_eq!(replicator.record_count(), 2);
+        assert_eq!(replicator.oplog_len(), 2);
+        assert_eq!(replicator.get("key-a"), Some(vec![1, 2, 3]));
+        assert_eq!(replicator.get("missing"), None);
+
+        let keys = replicator.live_keys_json();
+        assert!(keys.contains("key-a") && keys.contains("key-b"), "{keys}");
+
+        let op = replicator.op_json(0).unwrap();
+        assert!(op.contains("key-a"), "{op}");
+        assert!(replicator.op_json(99).is_err());
+
+        // Re-applying the wire form of our own op is a duplicate.
+        let wire_op = replicator.op_json(0).unwrap();
+        assert!(
+            !replicator.apply_remote_json(&wire_op).unwrap(),
+            "{wire_op}"
+        );
+        assert!(replicator.apply_remote_json("not json").is_err());
+        assert!(replicator.records_json().contains("key-a"));
+        assert!(replicator.gc_barriers_json().contains('{'));
+
+        replicator.delete("key-a").unwrap();
+        assert_eq!(replicator.get("key-a"), None);
+        assert_eq!(
+            replicator.gc_tombstones(u64::MAX, 0).unwrap(),
+            1,
+            "gc now clears the fresh tombstone"
+        );
+    }
+
+    #[test]
+    fn sync_pair_exchanges_oplogs_both_directions() {
+        Python::initialize();
+        let pair = pair_memory(None).unwrap();
+        let left = Replicator::new("left", 0, 0).unwrap();
+        let right = Replicator::new("right", 0, 0).unwrap();
+        left.put("shared", &[7]).unwrap();
+
+        let (left_ops, right_ops) =
+            Python::attach(|py| sync_pair(py, &left, &pair.initiator(), &right, &pair.responder()))
+                .unwrap();
+        // The initiator pushes its one op; the responder starts with an
+        // empty oplog, so it sends nothing back.
+        assert_eq!((left_ops, right_ops), (1, 0));
+        assert_eq!(right.get("shared"), Some(vec![7]));
+    }
+
+    #[test]
+    fn keyring_seal_open_rotate_and_validation() {
+        Python::initialize();
+        let keyring = Keyring::new("group", None, None).unwrap();
+        assert_eq!(keyring.epoch(), 1);
+
+        let envelope = keyring.seal("device", b"hello");
+        assert_eq!(
+            keyring.open(&envelope).unwrap(),
+            b"hello".to_vec(),
+            "first open succeeds"
+        );
+        assert!(keyring.open(&envelope).is_err(), "replay is rejected");
+
+        let (next_epoch, key) = keyring.rotate();
+        assert_eq!(next_epoch, 2);
+        assert_eq!(key.len(), 32);
+        assert_eq!(
+            Keyring::new("group", Some(next_epoch), Some(&key))
+                .unwrap()
+                .epoch(),
+            2
+        );
+
+        if let Err(err) = Keyring::new("group", Some(1), None) {
+            assert!(err.to_string().contains("both epoch and key"));
+        } else {
+            panic!("half-specified keyring must fail");
+        }
+        assert!(
+            Python::attach(|_| Keyring::new("group", Some(1), Some(&[0u8; 5])).is_err()),
+            "short key import must be rejected"
+        );
+    }
+
+    #[test]
+    fn conformance_and_error_helpers() {
+        Python::initialize();
+        assert_eq!(err_none(), 0);
+        assert_eq!(last_error_code(), 0);
+        assert_eq!(last_error(), None);
+
+        assert!(conformance_run("not json").is_err());
+        assert_ne!(last_error_code(), 0, "failure records an ABI error code");
+        assert!(last_error().is_some());
+    }
+}
+
 #[pymodule]
 fn syncbond(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<Identity>()?;
