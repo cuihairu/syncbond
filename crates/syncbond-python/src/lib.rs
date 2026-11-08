@@ -524,6 +524,69 @@ mod tests {
         assert_ne!(last_error_code(), 0, "failure records an ABI error code");
         assert!(last_error().is_some());
     }
+
+    #[test]
+    fn empty_error_text_reads_as_none() {
+        syncbond_ffi::error::set_last_error(Some(syncbond_ffi::error::FfiError::new(-1, "")));
+        assert_eq!(last_error(), None, "an empty error text is no error text");
+        syncbond_ffi::error::set_last_error(None);
+    }
+
+    /// `sync` blocks in one direction, so the responder half runs on a
+    /// worker thread, exactly like `sync_pair` does internally.
+    #[test]
+    fn direct_sync_blocks_until_both_halves_finish() {
+        Python::initialize();
+        let pair = pair_memory(None).unwrap();
+        let left = Replicator::new("direct-left", 0, 0).unwrap();
+        let right = Replicator::new("direct-right", 0, 0).unwrap();
+        left.put("k", &[1]).unwrap();
+
+        let right_view = Replicator {
+            inner: Arc::clone(&right.inner),
+        };
+        let responder = pair.responder();
+        let worker = std::thread::spawn(move || right_view.sync(&responder, false).unwrap());
+
+        let initiator = pair.initiator();
+        let left_sent = left.sync(&initiator, true).unwrap();
+        let right_sent = worker.join().unwrap();
+
+        assert_eq!((left_sent, right_sent), (1, 0));
+        assert_eq!(right.get("k"), Some(vec![1]));
+    }
+
+    #[test]
+    fn module_registration_exposes_the_public_surface() {
+        Python::initialize();
+        Python::attach(|py| {
+            let module = pyo3::types::PyModule::new(py, "syncbond").expect("module");
+            syncbond(&module).expect("registration");
+            for name in [
+                "Identity",
+                "Session",
+                "Replicator",
+                "Pair",
+                "Keyring",
+                "Error",
+                "sync_pair",
+                "pair_memory",
+                "conformance_run",
+                "last_error_code",
+                "last_error",
+                "err_none",
+                "LWW_HLC",
+                "OR_SET",
+                "PN_COUNTER",
+            ] {
+                assert!(module.getattr(name).is_ok(), "{name} must be registered");
+            }
+            assert_eq!(
+                module.getattr("OR_SET").unwrap().extract::<u32>().unwrap(),
+                syncbond_ffi::error::SB_STRATEGY_OR_SET
+            );
+        });
+    }
 }
 
 #[pymodule]

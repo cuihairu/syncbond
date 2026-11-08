@@ -91,3 +91,68 @@ fn key_epoch_scenario_validation_is_covered() {
         "needs at least one survivor",
     );
 }
+
+#[test]
+fn unknown_strategy_and_non_array_steps_are_rejected() {
+    expect_input_error(
+        r#"{"version":1,"scenarios":[{"type":"replication","name":"r","strategy":"crdt","nodes":{"a":1000},"steps":[]}]}"#,
+        "unknown strategy crdt",
+    );
+    expect_input_error(
+        r#"{"version":1,"scenarios":[{"type":"replication","name":"r","strategy":"lww","nodes":{"a":1000},"steps":{"a":1}}]}"#,
+        "field steps must be an array",
+    );
+}
+
+#[test]
+fn reject_put_reports_no_error_when_the_write_succeeds() {
+    let report = run(
+        r#"{"version":1,"scenarios":[{"type":"replication","name":"r","strategy":"lww","nodes":{"a":1000},"steps":[{"put":{"node":"a","key":"k","payload":"YQ"}},{"reject_put":{"node":"a","key":"k","payload":"Yg"}}]}]}"#,
+    )
+    .expect("fixture runs");
+    assert!(report.contains(r#""reason":"no error""#), "{report}");
+    assert!(report.contains(r#""ok":false"#), "{report}");
+}
+
+#[test]
+fn check_reports_mismatch_when_the_state_differs() {
+    let report = run(
+        r#"{"version":1,"scenarios":[{"type":"replication","name":"r","strategy":"lww","nodes":{"a":1000},"steps":[{"put":{"node":"a","key":"k","payload":"YQ"}},{"check":{"name":"gone","node":"a","key":"k","state":"absent"}}]}]}"#,
+    )
+    .expect("fixture runs");
+    assert!(report.contains(r#""expected":"absent""#), "{report}");
+    assert!(report.contains(r#""actual":"live""#), "{report}");
+    assert!(report.contains(r#""ok":false"#), "{report}");
+}
+
+#[test]
+fn gc_in_dominance_mode_runs_and_collects_own_tombstones() {
+    let report = run(
+        r#"{"version":1,"scenarios":[{"type":"replication","name":"r","strategy":"lww","nodes":{"a":1000},"steps":[{"put":{"node":"a","key":"k","payload":"YQ"}},{"delete":{"node":"a","key":"k"}},{"gc":{"node":"a","older_than_ms":0,"now_ms":1000}},{"check":{"name":"gone","node":"a","key":"k","state":"absent"}}]}]}"#,
+    )
+    .expect("fixture runs");
+    assert!(report.contains(r#""ok":true"#), "{report}");
+}
+
+#[test]
+fn key_epoch_validation_and_default_plaintext() {
+    let key = "A".repeat(43); // 32 zero bytes in unpadded base64url
+    let missing_survivors = format!(
+        r#"{{"version":1,"scenarios":[{{"type":"key_epoch","name":"k","group":"g","epoch":1,"next_epoch":2,"key":"{key}","next_key":"{key}","removed":["r1"]}}]}}"#
+    );
+    expect_input_error(&missing_survivors, "missing survivors");
+
+    let missing_removed = format!(
+        r#"{{"version":1,"scenarios":[{{"type":"key_epoch","name":"k","group":"g","epoch":1,"next_epoch":2,"key":"{key}","next_key":"{key}","survivors":["s1"]}}]}}"#
+    );
+    expect_input_error(&missing_removed, "missing removed");
+
+    // No plaintext and no sender: the defaults must produce a fully passing
+    // rotation scenario (survivors keep only the new key, the removed device
+    // keeps only the old one).
+    let defaults = format!(
+        r#"{{"version":1,"scenarios":[{{"type":"key_epoch","name":"k","group":"g","epoch":1,"next_epoch":2,"key":"{key}","next_key":"{key}","survivors":["s1","s2"],"removed":["r1"]}}]}}"#
+    );
+    let report = run(&defaults).expect("fixture runs");
+    assert!(report.contains(r#""ok":true"#), "{report}");
+}

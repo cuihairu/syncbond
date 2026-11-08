@@ -5,6 +5,10 @@
 use syncbond_core::identity::DeviceIdentity;
 use syncbond_core::member_crypto::{MemberCryptoError, MemberKeyRing};
 
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 fn identities() -> [DeviceIdentity; 3] {
     [
         DeviceIdentity::generate(),
@@ -177,5 +181,133 @@ fn apply_rotation_rejects_replay_and_unknown_epoch() {
     assert!(matches!(
         ring.apply_rotation(&dist),
         Err(MemberCryptoError::RotationReplay { .. })
+    ));
+}
+
+#[test]
+fn new_starts_a_solo_ring_and_ghost_key_map_is_rejected() {
+    let solo = MemberKeyRing::new("group", "solo-device").unwrap();
+    assert_eq!(solo.device_id(), "solo-device");
+    assert_eq!(solo.group_id(), "group");
+    assert_eq!(solo.current_epoch(), 1);
+    assert_eq!(solo.member_ids(), vec!["solo-device"]);
+    assert!(solo.is_member("solo-device"));
+
+    // Two members, two keys — but one key is registered under a foreign id,
+    // so the id/key binding count check must reject the whole ring.
+    let ids = identities();
+    assert!(matches!(
+        MemberKeyRing::with_epoch(
+            "group",
+            &ids[0].device_id,
+            [ids[0].device_id.clone(), ids[1].device_id.clone()],
+            [
+                (ids[0].device_id.clone(), ids[0].public_key),
+                ("ghost".to_string(), ids[1].public_key),
+            ],
+            1,
+            [0x42; 32],
+        ),
+        Err(MemberCryptoError::InvalidMembership)
+    ));
+}
+
+#[test]
+fn wrong_protocol_version_is_rejected_before_anything_else() {
+    let ids = identities();
+    let ring = ring(&ids[0], &ids);
+    let zeros: Vec<u8> = vec![0; 32];
+    let rotation = serde_json::json!({
+        "protocol_version": 99u16,
+        "group_id": "group",
+        "removed_device_id": ids[2].device_id,
+        "epoch": 2u64,
+        "key": zeros,
+        "member_ids": [ids[0].device_id, ids[1].device_id],
+        "source_device_id": ids[0].device_id,
+        "source_public_key": hex(&ids[0].public_key),
+        "signature": "00".repeat(64),
+        "mac": "00".repeat(32),
+    });
+    assert!(matches!(
+        ring.verify_rotation(rotation.to_string().as_bytes()),
+        Err(MemberCryptoError::EpochNotNext {
+            got: 99,
+            expected: 1
+        })
+    ));
+}
+
+#[test]
+fn key_substitution_is_detected_as_source_key_mismatch() {
+    let ids = identities();
+    let ring = ring(&ids[0], &ids);
+    let mut distribution: serde_json::Value =
+        serde_json::from_slice(&valid_distribution(&ids[0], &ids)).unwrap();
+    // Swap the claimed source key for another member's real key: the
+    // id/key binding must catch the substitution before signature checks.
+    distribution["source_public_key"] = serde_json::Value::String(hex(&ids[1].public_key));
+    assert!(matches!(
+        ring.verify_rotation(distribution.to_string().as_bytes()),
+        Err(MemberCryptoError::SourceKeyMismatch { got }) if got == ids[0].device_id
+    ));
+}
+
+#[test]
+fn removed_member_rejects_a_validly_signed_rotation_targeting_it() {
+    let ids = identities();
+    let mut leader = ring(&ids[0], &ids);
+    let distribution = leader
+        .rotate_for_removal(ids[1].device_id.clone(), &ids[0])
+        .unwrap()
+        .distribution;
+
+    // The removed device still holds the pre-rotation membership, so every
+    // check up to the target-set test passes: it must refuse to apply a
+    // rotation whose new member set no longer contains itself.
+    let victim = ring(&ids[1], &ids);
+    assert!(matches!(
+        victim.verify_rotation(&distribution),
+        Err(MemberCryptoError::RotationTargetNotMember { got }) if got == ids[1].device_id
+    ));
+}
+
+#[test]
+fn wrong_pre_rotation_key_fails_distribution_authentication() {
+    let ids = identities();
+    let mut leader = ring(&ids[0], &ids);
+    let distribution = leader
+        .rotate_for_removal(ids[2].device_id.clone(), &ids[0])
+        .unwrap()
+        .distribution;
+
+    // Same membership and keys, but the verifier's pre-rotation group key
+    // differs from the leader's: the signature passes, the group-key MAC
+    // must not.
+    let verifier = MemberKeyRing::with_epoch(
+        "group",
+        &ids[1].device_id,
+        ids.iter().map(|i| i.device_id.clone()),
+        ids.iter().map(|i| (i.device_id.clone(), i.public_key)),
+        1,
+        [0x43; 32],
+    )
+    .unwrap();
+    assert!(matches!(
+        verifier.verify_rotation(&distribution),
+        Err(MemberCryptoError::AuthenticationFailed)
+    ));
+}
+
+#[test]
+fn odd_length_mac_hex_is_an_encoding_error() {
+    let ids = identities();
+    let ring = ring(&ids[0], &ids);
+    let mut distribution: serde_json::Value =
+        serde_json::from_slice(&valid_distribution(&ids[0], &ids)).unwrap();
+    distribution["mac"] = serde_json::Value::String("abc".to_string());
+    assert!(matches!(
+        ring.verify_rotation(distribution.to_string().as_bytes()),
+        Err(MemberCryptoError::Encoding(_))
     ));
 }

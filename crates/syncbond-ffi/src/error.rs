@@ -114,3 +114,32 @@ pub fn last_error_ptr() -> *const std::ffi::c_char {
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use syncbond_core::replication::ReplicationError;
+
+    #[test]
+    fn helpers_map_stable_codes() {
+        assert_eq!(FfiError::protocol("bad").code, SB_ERR_PROTOCOL);
+        assert_eq!(FfiError::internal("boom").code, SB_ERR_INTERNAL);
+        assert_eq!(
+            FfiError::crypto(&CryptoError::CrossGroup {
+                got: "a".into(),
+                expected: "b".into(),
+            })
+            .code,
+            SB_ERR_CROSS_GROUP
+        );
+        // Non-crypto replication failures map onto the protocol code.
+        assert_eq!(
+            FfiError::from(ReplicationError::Encoding("bad json".into())).code,
+            SB_ERR_PROTOCOL
+        );
+        assert_eq!(
+            FfiError::from(ReplicationError::SessionInvalidated).code,
+            SB_ERR_PROTOCOL
+        );
+    }
+}

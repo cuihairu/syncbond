@@ -5,7 +5,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use syncbond_core::conflict::{LwwHlc, OrSetDoc, OrSetStrategy, PnCounterDoc, PnCounterStrategy};
+use syncbond_core::conflict::{
+    LwwHlc, OrSetDoc, OrSetStrategy, PnCounterDoc, PnCounterStrategy, Record,
+};
 use syncbond_core::hlc::HlcStamp;
 use syncbond_core::identity::DeviceIdentity;
 use syncbond_core::relay::{apply_pull_response, MemoryRelayStore, PullRequest, RelayStore};
@@ -401,5 +403,33 @@ fn delete_under_orset_and_pncounter_returns_merge_error() {
     assert!(
         counter.get("counter").is_some(),
         "the rejected delete must leave the record untouched"
+    );
+}
+
+#[test]
+fn record_new_maps_fields_and_starts_without_conflicts() {
+    let stamp = HlcStamp {
+        pt: 7,
+        ct: 2,
+        id: "node-a".into(),
+    };
+    let mut witness = HashMap::new();
+    witness.insert("peer".to_string(), stamp.clone());
+
+    let record = Record::new(
+        "key",
+        b"payload".to_vec(),
+        false,
+        stamp.clone(),
+        witness.clone(),
+    );
+    assert_eq!(record.key, "key");
+    assert_eq!(record.payload, b"payload".to_vec());
+    assert!(!record.deleted);
+    assert_eq!(record.stamp, stamp);
+    assert_eq!(record.witness, witness);
+    assert!(
+        record.conflicts.is_empty(),
+        "a fresh record retains no concurrent versions yet"
     );
 }

@@ -166,4 +166,12 @@ mod tests {
         let result = pair_memory(Some("K7Q2M4".to_string())).expect("explicit code pairing");
         assert_eq!(result.code(), "K7Q2M4");
     }
+
+    #[test]
+    fn pair_memory_rejects_codes_below_the_minimum_length() {
+        assert!(
+            pair_memory(Some("abc".to_string())).is_err(),
+            "a 3-character code must not start a pairing"
+        );
+    }
 }

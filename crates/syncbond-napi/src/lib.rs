@@ -351,4 +351,58 @@ mod tests {
     fn conformance_run_rejects_malformed_fixture() {
         assert!(conformance_run("not json".to_string()).is_err());
     }
+
+    /// The async sync task must perform a real full-duplex exchange over a
+    /// real paired session; both halves block, so the responder runs on a
+    /// worker thread exactly like the libuv task pair in production.
+    #[test]
+    fn sync_task_exchanges_oplogs_over_a_real_session() {
+        let pair = pairing::pair_memory(None).expect("pairing");
+        let initiator = pair.initiator_session().expect("initiator session");
+        let responder = pair.responder_session().expect("responder session");
+
+        let left = NativeReplicator::new("napi-sync-left".to_string()).expect("replicator");
+        let right = NativeReplicator::new("napi-sync-right".to_string()).expect("replicator");
+        left.put("key".to_string(), Buffer::from(vec![9]))
+            .expect("put");
+
+        let mut right_task = SyncOverTask {
+            replicator: Arc::clone(&right.inner),
+            session: responder.arc_clone(),
+            send_first: false,
+        };
+        let worker = std::thread::spawn(move || right_task.compute().expect("responder sync"));
+
+        let mut left_task = SyncOverTask {
+            replicator: Arc::clone(&left.inner),
+            session: initiator.arc_clone(),
+            send_first: true,
+        };
+        assert_eq!(left_task.compute().expect("initiator sync"), 1);
+        assert_eq!(worker.join().expect("responder thread"), 0);
+
+        let value = right
+            .get("key".to_string())
+            .expect("get")
+            .expect("key must be live after sync");
+        assert_eq!(value.len(), 1);
+        assert_eq!(value[0], 9);
+    }
+
+    #[test]
+    fn constructor_and_error_helpers_surface_abi_failures() {
+        // Read the unset slot first: later assertions record a thread-local
+        // error that would otherwise be reported instead.
+        check(0).expect("zero result code is success");
+        let err = unsafe { take_string(std::ptr::null()) }.unwrap_err();
+        assert!(
+            format!("{err}").contains("code 0"),
+            "unset last error reads as code 0: {err}"
+        );
+        assert!(
+            NativeReplicator::new(String::new()).is_err(),
+            "empty node id is an ABI input error"
+        );
+        assert!(check(-2).is_err(), "negative result codes map to errors");
+    }
 }

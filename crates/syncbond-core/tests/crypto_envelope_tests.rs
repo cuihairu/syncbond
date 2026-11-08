@@ -8,6 +8,13 @@ const KEY: [u8; 32] = [7; 32];
 const GROUP: &str = "group-abc";
 const DEVICE: &str = "device-1";
 
+/// Symbols outside the base64url alphabet must be rejected, not skipped.
+#[test]
+fn b64url_decode_rejects_invalid_characters() {
+    assert!(syncbond_core::crypto::b64url_decode("a~c").is_err());
+    assert!(syncbond_core::crypto::b64url_decode("ab*c").is_err());
+}
+
 fn open_with(key: &[u8; 32], env: &EncryptedEnvelope, epoch: u64) -> Result<Vec<u8>, CryptoError> {
     let mut seen = HashSet::new();
     open(

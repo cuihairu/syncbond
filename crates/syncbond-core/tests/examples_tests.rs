@@ -154,3 +154,50 @@ fn example_3_arbitrary_binary_records() {
     assert_eq!(b.get("thumb:0002").unwrap().payload, blob2);
     assert_eq!(b.record_count(), 2);
 }
+
+#[test]
+fn sync_stats_track_exchanged_op_counts() {
+    let mut a = Replicator::new("stats-a");
+    let mut b = Replicator::new("stats-b");
+    a.put("shared", b"x".to_vec()).unwrap();
+
+    let (ta, tb) = MemoryTransport::pair();
+    let ia = DeviceIdentity::generate();
+    let ib = DeviceIdentity::generate();
+    std::thread::scope(|s| {
+        let rep_b = &mut b;
+        let ib_ref = &ib;
+        let tb = tb.clone();
+        let responder = s.spawn(move || {
+            let session = syncbond_core::pairing::accept(
+                "K7Q2M4",
+                ib_ref,
+                tb as Arc<dyn syncbond_core::Transport>,
+            )
+            .expect("responder pairing");
+            let stats = rep_b.sync_over(&session, false).expect("responder sync");
+            (
+                stats,
+                rep_b.get("shared").map(|record| record.payload.clone()),
+            )
+        });
+        let session_a =
+            syncbond_core::pairing::pair("K7Q2M4", &ia, ta as Arc<dyn syncbond_core::Transport>)
+                .expect("initiator pairing");
+        let stats_a = a.sync_over(&session_a, true).expect("initiator sync");
+        let (stats_b, payload_b) = responder.join().expect("responder thread");
+
+        assert_eq!(stats_a.sent_ops, 1);
+        assert_eq!(stats_a.received_ops, 0);
+        assert_eq!(
+            stats_a.total_exchanged(),
+            stats_a.sent_ops + stats_a.received_ops
+        );
+        assert_eq!(stats_b.received_ops, 1);
+        assert_eq!(
+            stats_b.total_exchanged(),
+            stats_b.sent_ops + stats_b.received_ops
+        );
+        assert_eq!(payload_b.unwrap(), b"x".to_vec());
+    });
+}

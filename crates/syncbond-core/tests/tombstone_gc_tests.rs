@@ -238,3 +238,53 @@ fn concurrent_higher_stamp_write_resurrects_a_collected_delete() {
     assert!(!a.get("k").unwrap().deleted);
     assert!(!a.gc_barriers().contains_key("k"), "barrier is removed");
 }
+
+#[test]
+fn a_newer_tombstone_over_a_collected_key_refreshes_the_barrier() {
+    let mut a = node("node-a");
+    let mut b = Replicator::with_fixed_clock("node-b", Arc::new(LwwHlc), 9_000);
+    a.put("k", b"value".to_vec()).unwrap();
+    a.delete("k").unwrap();
+    let report = a.gc_tombstones_time_only(1_000, 0);
+    assert_eq!(report.collected, vec!["k".to_string()]);
+
+    // b never saw the delete; its later put+delete carries higher stamps and
+    // must re-tombstone the key, refreshing the barrier with the newer
+    // compacted tombstone instead of reopening the collected history.
+    b.put("k", b"later".to_vec()).unwrap();
+    let late_tombstone = b.delete("k").unwrap();
+    assert!(
+        a.apply_remote(&late_tombstone).unwrap(),
+        "the newer tombstone applies"
+    );
+    assert!(a.get("k").is_none());
+    assert!(
+        a.gc_barriers().contains_key("k"),
+        "barrier refreshed with the newer tombstone"
+    );
+    assert!(
+        a.oplog().iter().any(|op| op.key == "k"),
+        "the refresh op is re-recorded for peers"
+    );
+}
+
+#[test]
+fn restart_replays_a_fresh_write_recorded_before_the_barrier_was_removed() {
+    let identity = DeviceIdentity::generate();
+    let (mut a, _b, _stale) = tombstoned_with_evidence();
+    let report = a.gc_tombstones(1_000, 0);
+    assert_eq!(report.collected, vec!["k".to_string()]);
+
+    // Crash window: the fresh write lands in the persisted oplog before the
+    // barrier is torn down locally, so the snapshot legitimately holds both.
+    let mut state = a.snapshot_state(&identity, "group", 1);
+    let revived = a.put("k", b"live again".to_vec()).unwrap();
+    state.oplog.push(revived);
+
+    let restored = Replicator::from_state(&state, Arc::new(LwwHlc)).unwrap();
+    assert_eq!(restored.get("k").unwrap().payload, b"live again".to_vec());
+    assert!(
+        !restored.gc_barriers().contains_key("k"),
+        "the replay tears the barrier down"
+    );
+}

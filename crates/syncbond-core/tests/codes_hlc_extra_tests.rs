@@ -144,3 +144,53 @@ fn hlc_absolute_saturation_never_regresses() {
     assert_eq!(next.pt, u64::MAX);
     assert_eq!(next.ct, u64::MAX);
 }
+
+#[test]
+fn board_reports_accepting_only_for_live_issued_codes() {
+    let mut board = PairingCodeBoard::new(PairingPolicy::default());
+    assert!(
+        !board.is_accepting("ZZZZZZ"),
+        "a code that was never issued is never accepting"
+    );
+    let code = board.issue();
+    assert!(
+        board.is_accepting(&code),
+        "a fresh issued code is accepting"
+    );
+}
+
+#[test]
+fn debug_renders_the_clock_state() {
+    let mut clock = HybridClock::with_clock("dbg-node", 1_000, Box::new(|| 10_000));
+    clock.issue();
+    let text = format!("{clock:?}");
+    assert!(text.contains("dbg-node"), "{text}");
+    assert!(text.contains("max_skew_ms: 1000"), "{text}");
+    assert!(text.contains("pt: 10000"), "{text}");
+}
+
+#[test]
+fn receive_covers_local_ahead_and_wall_ahead_arms() {
+    // Local clock ahead of the remote stamp: only the local counter advances.
+    let mut local = HybridClock::with_clock("node-a", 1_000, Box::new(|| 10_000));
+    local.issue();
+    let stamp = local
+        .receive(&HlcStamp {
+            pt: 5_000,
+            ct: 500,
+            id: "node-b".into(),
+        })
+        .unwrap();
+    assert_eq!((stamp.pt, stamp.ct), (10_000, 1));
+
+    // Wall time ahead of both clocks: the counter restarts at the new wall.
+    let mut fresh = HybridClock::with_clock("node-c", 1_000, Box::new(|| 20_000));
+    let stamp = fresh
+        .receive(&HlcStamp {
+            pt: 1_000,
+            ct: 900,
+            id: "node-b".into(),
+        })
+        .unwrap();
+    assert_eq!((stamp.pt, stamp.ct), (20_000, 0));
+}

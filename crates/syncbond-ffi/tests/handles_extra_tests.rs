@@ -85,3 +85,21 @@ fn keyring_import_rejects_short_key() {
     let result = Keyring::import("g", 1, &[0u8; 8]);
     assert!(result.is_err());
 }
+
+#[test]
+fn empty_keys_are_rejected_before_the_core() {
+    let mut rep = Replicator::new("node", 0).unwrap();
+    let put_err = rep.put("", b"v").expect_err("empty key must fail");
+    assert!(
+        put_err.message.contains("key must not be empty"),
+        "{}",
+        put_err.message
+    );
+    let delete_err = rep.delete("").expect_err("empty key must fail");
+    assert!(
+        delete_err.message.contains("key must not be empty"),
+        "{}",
+        delete_err.message
+    );
+    assert_eq!(rep.record_count(), 0);
+}

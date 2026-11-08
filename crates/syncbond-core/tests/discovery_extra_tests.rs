@@ -10,6 +10,17 @@ use syncbond_core::discovery::{
     MockDiscoveryProvider, ServiceRecord, CAPABILITY_PAIRING, PROTOCOL_VERSION,
 };
 use syncbond_core::identity::DeviceIdentity;
+use syncbond_core::Discovery;
+
+/// The `Default` impl must yield the same usable empty provider as `new`.
+#[test]
+fn default_mock_provider_starts_empty() {
+    let provider = MockDiscoveryProvider::default();
+    assert!(provider
+        .browse(Duration::from_millis(1))
+        .expect("browse")
+        .is_empty());
+}
 use syncbond_core::transport::{Transport, TransportError};
 
 fn candidate() -> DiscoveryCandidate {

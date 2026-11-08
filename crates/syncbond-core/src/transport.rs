@@ -197,4 +197,15 @@ mod tests {
         assert_eq!(a.try_recv(), Err(TransportError::Closed));
         assert_eq!(b.try_recv(), Err(TransportError::Closed));
     }
+
+    /// After a close, sends are refused outright and a blocking `recv` on an
+    /// empty inbox reports `Closed` instead of waiting forever.
+    #[test]
+    fn closed_transport_rejects_send_and_recv() {
+        let (a, b) = MemoryTransport::pair();
+        MemoryTransport::close_pair(&a, &b);
+        assert_eq!(a.send(b"x"), Err(TransportError::Closed));
+        assert_eq!(b.send(b"x"), Err(TransportError::Closed));
+        assert_eq!(a.recv(), Err(TransportError::Closed));
+    }
 }

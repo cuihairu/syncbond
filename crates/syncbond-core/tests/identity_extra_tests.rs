@@ -4,6 +4,15 @@
 use syncbond_core::identity::PublicIdentity;
 use syncbond_core::identity::{DeviceIdentity, IdentityError};
 
+/// Hex key fields must reject odd-length input instead of truncating.
+#[test]
+fn public_identity_rejects_odd_length_hex() {
+    let err =
+        serde_json::from_str::<PublicIdentity>(r#"{"device_id":"device","public_key":"abc"}"#)
+            .expect_err("odd hex must be rejected");
+    assert!(err.to_string().contains("odd hex length"), "{err}");
+}
+
 #[test]
 fn transcript_binding_rejects_wrong_role_and_tampered() {
     let a = DeviceIdentity::generate();

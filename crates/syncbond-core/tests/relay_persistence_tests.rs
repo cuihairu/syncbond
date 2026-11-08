@@ -101,3 +101,29 @@ fn durable_relay_accepts_bare_relative_path() {
     fs::remove_dir(temp).unwrap();
     result.unwrap();
 }
+
+#[test]
+fn open_on_a_directory_is_an_error() {
+    let dir = env::temp_dir().join(format!("syncbond-relay-dir-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    assert!(
+        FileRelayStore::open(&dir).is_err(),
+        "a directory is not a relay log"
+    );
+}
+
+#[test]
+fn persist_reports_error_when_a_parent_component_is_a_file() {
+    let root = env::temp_dir().join(format!("syncbond-relay-block-{}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    let mut writer = Replicator::new("writer");
+    // Open is fine: the log file simply does not exist yet.
+    let store = FileRelayStore::open(root.join("sub").join("relay.json")).unwrap();
+    // Now plant a regular file where persist would create its directory.
+    fs::write(root.join("sub"), b"blocker").unwrap();
+    let operation = writer.put("key", b"v".to_vec()).unwrap();
+    assert!(
+        store.append("channel", &operation).is_err(),
+        "persist must report the unwritable directory"
+    );
+}
