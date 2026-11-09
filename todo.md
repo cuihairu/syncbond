@@ -36,7 +36,7 @@
 ## P3 — 发布（阻断项未清不动）
 
 - [x] 最终品牌名——**已定**：沿用 syncbond 为正式名（2026-11-05 用户拍板，不再改名；改名工作线取消，无需执行；crates.io 六名截至检查时未占用（按先到先得分配，本检查不保证取得），README 中英「临时名」口径已改为正式名）
-- [ ] npm 发布——BLOCKED：用户输入（维持不发布稳定包；`npm whoami` ENEEDAUTH，`@cuihairu` scope 待用户登录确认；发布令+版本号只能由用户给；复核 2026-11-04：`npm whoami` 仍 ENEEDAUTH，保留 BLOCKED；复核 2026-11-05：`npm whoami` 仍 ENEEDAUTH，保留 BLOCKED；复核 2026-11-06：`npm whoami` 仍 ENEEDAUTH，保留 BLOCKED）
+- [ ] npm 发布——BLOCKED：用户输入（维持不发布稳定包；`npm whoami` ENEEDAUTH，`@cuihairu` scope 待用户登录确认；发布令+版本号只能由用户给；复核 2026-11-04：`npm whoami` 仍 ENEEDAUTH，保留 BLOCKED；复核 2026-11-05：`npm whoami` 仍 ENEEDAUTH，保留 BLOCKED；复核 2026-11-06：`npm whoami` 仍 ENEEDAUTH，保留 BLOCKED；复核 2026-11-09：`npm whoami` 仍 ENEEDAUTH，保留 BLOCKED）
 
 ## 待拍板项（用户决策）
 
