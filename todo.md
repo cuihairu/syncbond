@@ -36,7 +36,7 @@
 ## P3 — 发布（阻断项未清不动）
 
 - [x] 最终品牌名——**已定**：沿用 syncbond 为正式名（2026-11-05 用户拍板，不再改名；改名工作线取消，无需执行；crates.io 六名截至检查时未占用（按先到先得分配，本检查不保证取得），README 中英「临时名」口径已改为正式名）
-- [ ] npm 发布——BLOCKED：用户输入（维持不发布稳定包；`npm whoami` ENEEDAUTH，`@cuihairu` scope 待用户登录确认；发布令+版本号只能由用户给；复核 2026-11-04：`npm whoami` 仍 ENEEDAUTH，保留 BLOCKED；复核 2026-11-05：`npm whoami` 仍 ENEEDAUTH，保留 BLOCKED；复核 2026-11-06：`npm whoami` 仍 ENEEDAUTH，保留 BLOCKED；复核 2026-11-09：`npm whoami` 仍 ENEEDAUTH，保留 BLOCKED）
+- [ ] npm 发布——BLOCKED：用户输入（维持不发布稳定包；`npm whoami` ENEEDAUTH，`@cuihairu` scope 待用户登录确认；发布令+版本号只能由用户给；复核 2026-11-04：`npm whoami` 仍 ENEEDAUTH，保留 BLOCKED；复核 2026-11-05：`npm whoami` 仍 ENEEDAUTH，保留 BLOCKED；复核 2026-11-06：`npm whoami` 仍 ENEEDAUTH，保留 BLOCKED；复核 2026-11-09：`npm whoami` 仍 ENEEDAUTH，保留 BLOCKED；复核 2026-11-10：`npm whoami` 仍 ENEEDAUTH，保留 BLOCKED）
 
 ## 待拍板项（用户决策）
 
@@ -181,3 +181,5 @@ P3：
 - [x] wasm 排除理由（如实记录）：crates/syncbond-wasm 全部 99 行均为 wasm-bindgen 胶水，只能在 wasm32 运行时的 JS 宿主内执行；宿主 llvm-cov 物理上无法对其插桩计数（本机为 linux-x86_64，测试跑在 native 目标上）。该代码的正确性由 bindings-ts CI job 中的 `wasm32-unknown-unknown` 构建与 TS 测试验证，属「宿主不可测、CI 有独立验证面」的例外，非未测缺口，故 codecov.yml 显式 ignore 并在此记录。（证据：lcov 中该目录 lines=99 hit=0；CI .github/workflows 中 bindings-ts job 含 wasm32 构建）
 - [x] 本批覆盖的缺口（仅新增测试，未改任何生产代码行为）：pairing 协议帧健壮性（截断/错型/签名翻转/重放/非应用帧，含 SPAKE2 握手途中篡改的 TamperingTransport 模式）；HLC Debug 输出与 receive 的 local-ahead/wall-ahead 分支；replication 的 total_exchanged 统计、GC barrier 刷新、崩溃窗口重放、Record::new 字段映射；member_crypto 安全分支（错误协议版本、源密钥替换检测、被移除成员拒绝针对自己的合法签名轮换、pre-rotation 密钥不同导致 MAC 失败、畸形 MAC hex）；scenario 错误分支（未知 strategy、非数组 steps、GC dominance、密钥 epoch 校验默认值、put 失败回显）；napi/python 进程内 compute/sync 真实会话交换与模块注册面；以及 transport/relay/codes/discovery/crypto/identity/conflict/ffi-error/handles 的零散单分支。（证据：cargo test --workspace --all-targets 全绿；cargo fmt --all -- --check 干净；cargo clippy --workspace --all-targets -- -D warnings 干净）
 - [x] 剩余 66 行未覆盖清单（均为不可达或胶水，如实记录，不做无意义凑数测试）：codes.rs:225,237（panic 路径格式化）；member_crypto.rs:279-280,288-291,307,451（with_epoch 内 device_id_from_public_key 派生校验使替换/垃圾密钥被前置拒绝，公开 API 无法触达）；pairing_spake2.rs:117（random_scalar 重试，概率天文小）、250-252,303,332-334（with_scalars/new_with_scalars 仅 RFC 9382 附录 B 一致性向量用）；relay.rs:127（`if let` 块闭合 `}` 行界伪影，其 map_err 闭包 126 行已被 parent-is-a-file 测试触达）；replication.rs:374,508（merge 前置不变量使分支不可达）；abi.rs:40-43,91,470,617,642,715（catch_unwind panic 回退与 OOM 不可达防御分支）；scenario.rs:279,283（防御分支）；napi lib.rs 21 行与 pairing.rs 6 行（#[napi] 属性展开胶水、AsyncTask Env 门槛路径——进程内测试直接调 compute()，属性包装层需 napi 运行时）；python lib.rs 7 行（#[pymethods] 展开胶水）。（证据：/tmp/lcov3.info 逐文件 missed 行清单）
+
+- [x] 审核发现：本轮 diff 未见问题（c748ae0f..HEAD）。（验证：区间仅含 94d5b1a——todo.md:39 单行追加「复核 2026-11-09：`npm whoami` 仍 ENEEDAUTH，保留 BLOCKED」，与当日实测一致（`npm whoami` exit 1 ENEEDAUTH，日志 ~/.npm/_logs/2026-11-09T14_07_25_680Z-debug-0.log）；该 commit 仅改 todo.md 一行（1 insertion 1 deletion），信息英文简短无 AI 痕迹，作者 cuihairu <chuihairu@gmail.com>；复核 2026-11-10：`npm whoami` 仍 ENEEDAUTH，todo.md:39 已续记；cargo test --workspace 全绿）
