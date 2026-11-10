@@ -548,4 +548,107 @@ mod tests {
         assert!(seen.contains(&epoch_message_id(result.epoch)));
         assert!(!seen.contains("stale"));
     }
+
+    /// Re-sign and re-MAC a rotation so a forged member set passes the
+    /// signature check; only the membership rule may then reject it. The
+    /// receiver's current key is the pre-rotation MAC key.
+    fn forge(rotation: &Rotation, source: &DeviceIdentity, old_key: &SessionKey) -> Vec<u8> {
+        let mut forged = rotation.clone();
+        forged.signature = source
+            .sign(&rotation_bytes_pre_signature(&forged))
+            .to_bytes();
+        forged.mac = mac(&forged, old_key);
+        serde_json::to_vec(&forged).expect("rotation serializes")
+    }
+
+    fn three_member_rings() -> (
+        DeviceIdentity,
+        DeviceIdentity,
+        DeviceIdentity,
+        MemberKeyRing,
+        MemberKeyRing,
+    ) {
+        let leader_identity = DeviceIdentity::generate();
+        let survivor_identity = DeviceIdentity::generate();
+        let removed_identity = DeviceIdentity::generate();
+        let ring = |identity: &DeviceIdentity| {
+            MemberKeyRing::with_epoch(
+                "g",
+                &identity.device_id,
+                [
+                    leader_identity.device_id.clone(),
+                    survivor_identity.device_id.clone(),
+                    removed_identity.device_id.clone(),
+                ],
+                [
+                    (
+                        leader_identity.device_id.clone(),
+                        leader_identity.public_key,
+                    ),
+                    (
+                        survivor_identity.device_id.clone(),
+                        survivor_identity.public_key,
+                    ),
+                    (
+                        removed_identity.device_id.clone(),
+                        removed_identity.public_key,
+                    ),
+                ],
+                1,
+                [0x42; 32],
+            )
+            .expect("ring")
+        };
+        let leader = ring(&leader_identity);
+        let receiver = ring(&survivor_identity);
+        (
+            leader_identity,
+            survivor_identity,
+            removed_identity,
+            leader,
+            receiver,
+        )
+    }
+
+    #[test]
+    fn forged_member_set_re_including_the_removed_device_is_rejected() {
+        let (leader_identity, _survivor, removed_identity, mut leader, receiver) =
+            three_member_rings();
+        let result = leader
+            .rotate_for_removal(removed_identity.device_id.clone(), &leader_identity)
+            .expect("rotation");
+        let mut rotation: Rotation =
+            serde_json::from_slice(&result.distribution).expect("rotation parses");
+
+        rotation
+            .member_ids
+            .insert(removed_identity.device_id.clone());
+        let forged = forge(&rotation, &leader_identity, receiver.current_key());
+        assert_eq!(
+            receiver.verify_rotation(&forged),
+            Err(MemberCryptoError::InvalidMembership),
+            "the removed device must not be declared a member"
+        );
+        assert_eq!(receiver.current_epoch(), 1, "no state advances on failure");
+    }
+
+    #[test]
+    fn forged_member_set_with_an_empty_removed_id_is_rejected() {
+        let (leader_identity, _survivor, removed_identity, mut leader, receiver) =
+            three_member_rings();
+        let result = leader
+            .rotate_for_removal(removed_identity.device_id.clone(), &leader_identity)
+            .expect("rotation");
+        let mut rotation: Rotation =
+            serde_json::from_slice(&result.distribution).expect("rotation parses");
+
+        rotation.removed_device_id.clear();
+        let forged = forge(&rotation, &leader_identity, receiver.current_key());
+        assert_eq!(
+            receiver.verify_rotation(&forged),
+            Err(MemberCryptoError::InvalidMembership),
+            "an empty removed id is an invalid membership"
+        );
+        assert_eq!(receiver.current_epoch(), 1, "no state advances on failure");
+    }
 }
