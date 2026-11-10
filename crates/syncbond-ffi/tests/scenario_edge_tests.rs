@@ -92,6 +92,31 @@ fn key_epoch_scenario_validation_is_covered() {
     );
 }
 
+fn key_epoch_fixture(survivors: bool, removed: bool) -> String {
+    let mut fixture = String::from(
+        r#"{"version":1,"scenarios":[{"type":"key_epoch","name":"r","group":"g","epoch":1,"next_epoch":2,"key":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","next_key":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA""#,
+    );
+    if survivors {
+        fixture.push_str(r#","survivors":["a"]"#);
+    }
+    if removed {
+        fixture.push_str(r#","removed":["b"]"#);
+    }
+    fixture.push_str(r#","plaintext":"YQ"}]}"#);
+    fixture
+}
+
+#[test]
+fn key_epoch_requires_the_survivors_list() {
+    expect_input_error(&key_epoch_fixture(false, true), "missing survivors");
+    expect_input_error(&key_epoch_fixture(false, false), "missing survivors");
+}
+
+#[test]
+fn key_epoch_requires_the_removed_list() {
+    expect_input_error(&key_epoch_fixture(true, false), "missing removed");
+}
+
 #[test]
 fn unknown_strategy_and_non_array_steps_are_rejected() {
     expect_input_error(
