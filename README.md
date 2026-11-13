@@ -42,7 +42,7 @@ sha256sum -c --ignore-missing SHA256SUMS   # after downloading the assets you wa
 ```
 
 - **C / C++** — `syncbond-nightly-<target>.tar.gz` (Linux x86_64 / aarch64, musl static): `include/syncbond.h` + `libsyncbond_ffi.a`; link the archive and include the header.
-- **Python** — `syncbond_python-*.whl` (Linux x86_64 / aarch64): `pip install <that .whl file>`.
+- **Python** — `syncbond-*.whl` (Linux x86_64 / aarch64): `pip install <that .whl file>`.
 - **Node.js** — `syncbond-nightly-napi-<arch>.tar.gz` (Linux glibc): unpack, then import the contained `binding.js` (loads the sibling prebuilt `index.<platform>.node`).
 - **Browser WASM** — `syncbond-nightly-wasm.tar.gz`: `syncbond_wasm.js` + `syncbond_wasm_bg.wasm` (wasm-pack `web` target).
 

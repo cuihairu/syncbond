@@ -206,11 +206,11 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
-          sha256sum syncbond-nightly-*.tar.gz syncbond_python-*.whl > SHA256SUMS
+          sha256sum syncbond-nightly-*.tar.gz syncbond-*.whl > SHA256SUMS
           cat > notes.md <<NOTES
           Automated nightly prerelease from commit ${GITHUB_SHA}.
           Contents: syncbond-nightly-<target>.tar.gz (C header + musl static lib,
-          Linux x86_64 / aarch64), syncbond_python wheels and N-API prebuilt
+          Linux x86_64 / aarch64), syncbond wheels and N-API prebuilt
           bindings (Linux x86_64 / aarch64, glibc), and the browser WASM package.
           SHA256SUMS verifies the downloaded assets; BUILD_INFO inside each
           archive records the source commit. Every asset was built only after
@@ -222,8 +222,8 @@ jobs:
           NOTES
           if gh release view nightly --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/nightly" -f sha="$GITHUB_SHA" -F force=true
-            gh release upload nightly syncbond-nightly-*.tar.gz syncbond_python-*.whl SHA256SUMS --repo "$GITHUB_REPOSITORY" --clobber
+            gh release upload nightly syncbond-nightly-*.tar.gz syncbond-*.whl SHA256SUMS --repo "$GITHUB_REPOSITORY" --clobber
             gh release edit nightly --repo "$GITHUB_REPOSITORY" --prerelease --title 'Nightly' --notes-file notes.md
           else
-            gh release create nightly syncbond-nightly-*.tar.gz syncbond_python-*.whl SHA256SUMS --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --title 'Nightly' --notes-file notes.md
+            gh release create nightly syncbond-nightly-*.tar.gz syncbond-*.whl SHA256SUMS --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --title 'Nightly' --notes-file notes.md
           fi

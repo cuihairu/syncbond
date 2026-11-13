@@ -42,7 +42,7 @@ sha256sum -c --ignore-missing SHA256SUMS   # 先下载所需资产
 ```
 
 - **C / C++** — `syncbond-nightly-<target>.tar.gz`（Linux x86_64 / aarch64，musl 静态）：`include/syncbond.h` + `libsyncbond_ffi.a`；链接静态库并包含头文件。
-- **Python** — `syncbond_python-*.whl`（Linux x86_64 / aarch64）：`pip install <对应 .whl 文件>`。
+- **Python** — `syncbond-*.whl`（Linux x86_64 / aarch64）：`pip install <对应 .whl 文件>`。
 - **Node.js** — `syncbond-nightly-napi-<arch>.tar.gz`（Linux glibc）：解包后 import 内含的 `binding.js`（自动加载同目录预编译 `index.<platform>.node`）。
 - **浏览器 WASM** — `syncbond-nightly-wasm.tar.gz`：`syncbond_wasm.js` + `syncbond_wasm_bg.wasm`（wasm-pack `web` target）。
 
