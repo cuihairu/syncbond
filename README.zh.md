@@ -31,6 +31,23 @@ Rust 核心已实现，由 workspace 测试套件覆盖（当前 75+ 测试）�
 
 进度与待拍板项：[`todo.md`](todo.md)。协议契约：[`docs/zh/design/PROTOCOL.md`](docs/zh/design/PROTOCOL.md)。合并设计：[`docs/zh/design/merge.md`](docs/zh/design/merge.md)。语言决策：[`docs/zh/design/language.md`](docs/zh/design/language.md)。需求基线：[`docs/zh/requirements.md`](docs/zh/requirements.md)。现状调研：[`docs/zh/research/survey-2026-10-21.md`](docs/zh/research/survey-2026-10-21.md)。
 
+## 每日构建
+
+`main` 有滚动 nightly 预发布（定时触发时要求 48 小时内有新提交，也可手动触发），且仅在 fmt + clippy + 完整 workspace 测试套通过后出包。nightly 只是构建产物分发，**不是稳定版**：版本号正式发布与 npm/crates.io 上架仅由维护者手动执行。
+
+从 [nightly release](https://github.com/cuihairu/syncbond/releases/tag/nightly) 下载，再用 `SHA256SUMS` 校验：
+
+```sh
+sha256sum -c --ignore-missing SHA256SUMS   # 先下载所需资产
+```
+
+- **C / C++** — `syncbond-nightly-<target>.tar.gz`（Linux x86_64 / aarch64，musl 静态）：`include/syncbond.h` + `libsyncbond_ffi.a`；链接静态库并包含头文件。
+- **Python** — `syncbond_python-*.whl`（Linux x86_64 / aarch64）：`pip install <对应 .whl 文件>`。
+- **Node.js** — `syncbond-nightly-napi-<arch>.tar.gz`（Linux glibc）：解包后 import 内含的 `binding.js`（自动加载同目录预编译 `index.<platform>.node`）。
+- **浏览器 WASM** — `syncbond-nightly-wasm.tar.gz`：`syncbond_wasm.js` + `syncbond_wasm_bg.wasm`（wasm-pack `web` target）。
+
+每个压缩包内的 `BUILD_INFO` 记录确切源提交。
+
 ## 目录
 
 ```

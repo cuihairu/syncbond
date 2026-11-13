@@ -31,6 +31,23 @@ The Rust core is implemented and exercised by the workspace test suite (currentl
 
 Progress and open decisions: [`todo.md`](todo.md). Protocol contract: [`docs/design/PROTOCOL.md`](docs/design/PROTOCOL.md). Merge design: [`docs/design/merge.md`](docs/design/merge.md). Language decision: [`docs/design/language.md`](docs/design/language.md). Requirements baseline: [`docs/requirements.md`](docs/requirements.md). Landscape survey: [`docs/research/survey-2026-10-21.md`](docs/research/survey-2026-10-21.md).
 
+## Nightly builds
+
+A rolling nightly prerelease is built from `main` (on schedule when there is a commit newer than 48 hours, or on manual trigger), and only after fmt + clippy + the full workspace test suite pass. Nightlies are build artifacts, **not stable releases**: versioned releases and npm/crates.io publishing are issued manually by the maintainer only.
+
+Download from the [nightly release](https://github.com/cuihairu/syncbond/releases/tag/nightly), then verify against `SHA256SUMS`:
+
+```sh
+sha256sum -c --ignore-missing SHA256SUMS   # after downloading the assets you want
+```
+
+- **C / C++** — `syncbond-nightly-<target>.tar.gz` (Linux x86_64 / aarch64, musl static): `include/syncbond.h` + `libsyncbond_ffi.a`; link the archive and include the header.
+- **Python** — `syncbond_python-*.whl` (Linux x86_64 / aarch64): `pip install <that .whl file>`.
+- **Node.js** — `syncbond-nightly-napi-<arch>.tar.gz` (Linux glibc): unpack, then import the contained `binding.js` (loads the sibling prebuilt `index.<platform>.node`).
+- **Browser WASM** — `syncbond-nightly-wasm.tar.gz`: `syncbond_wasm.js` + `syncbond_wasm_bg.wasm` (wasm-pack `web` target).
+
+`BUILD_INFO` inside each archive records the exact source commit.
+
 ## Layout
 
 ```
