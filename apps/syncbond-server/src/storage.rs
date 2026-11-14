@@ -23,7 +23,7 @@
 #![allow(dead_code)]
 
 use std::fmt;
-use syncbond_relay_protocol::dto::{Envelope, EnvelopeAck, PullEntry};
+use syncbond_relay_protocol::dto::{CredentialScope, Envelope, EnvelopeAck, PullEntry};
 use syncbond_relay_protocol::error::RelayErrorCode;
 
 /// Every storage failure carries the stable relay error code the server
@@ -69,6 +69,29 @@ pub struct PullPage {
     pub has_more: bool,
 }
 
+/// A freshly issued channel credential. The `token` is shown exactly
+/// once — this call is the only moment it exists in the clear anywhere
+/// on the server; afterwards only its SHA-256 digest is stored. The
+/// manual [`fmt::Debug`] keeps that promise even if someone logs it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct IssuedCredential {
+    pub credential_id: String,
+    pub token: String,
+    pub scopes: Vec<CredentialScope>,
+    pub label: Option<String>,
+}
+
+impl fmt::Debug for IssuedCredential {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("IssuedCredential")
+            .field("credential_id", &self.credential_id)
+            .field("token", &"[redacted]")
+            .field("scopes", &self.scopes)
+            .field("label", &self.label)
+            .finish()
+    }
+}
+
 /// Ciphertext-only relay storage. See the module docs for what a backend
 /// may and may not look at.
 pub trait RelayStorage: Send + Sync {
@@ -96,6 +119,29 @@ pub trait RelayStorage: Send + Sync {
         limit: u16,
         max_bytes: u64,
     ) -> Result<PullPage, StorageError>;
+
+    /// Issue a credential for `channel` with `scopes` (relay-protocol.md
+    /// §3.2). Only the token's digest is persisted; the token itself is
+    /// returned here once and then gone.
+    fn issue_credential(
+        &self,
+        channel: &str,
+        scopes: &[CredentialScope],
+        label: Option<&str>,
+    ) -> Result<IssuedCredential, StorageError>;
+
+    /// Check a presented token against the requested `(channel, scope)`.
+    /// Unknown, empty, or revoked tokens are `Unauthorized`; a valid
+    /// credential aimed at another channel, or lacking the requested
+    /// scope, is `Forbidden` — relay-protocol.md §auth and §scope
+    /// checks map those two cases to 401 and 403 respectively, and
+    /// cross-channel access stays 403 rather than 404.
+    fn authorize(
+        &self,
+        channel: &str,
+        token: &str,
+        scope: CredentialScope,
+    ) -> Result<(), StorageError>;
 }
 
 #[cfg(test)]

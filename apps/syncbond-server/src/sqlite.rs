@@ -12,13 +12,15 @@
 //! - a file SQLite cannot read fails the open, and nothing in this module
 //!   ever deletes or rewrites an existing database to "recover".
 //!
-//! Schema v1 covers the DSR-12 acceptance surface — channels, credential
-//! digests, ciphertext envelopes, and the sequence/idempotency indexes:
+//! Schema v2 covers the DSR-12..DSR-16 acceptance surface — channels,
+//! credential digests, ciphertext envelopes, and the sequence/idempotency
+//! indexes:
 //!
 //! - `channels`: registry of created channels (DSR-15 populates it).
 //! - `credentials`: SHA-256 digests only, never the token itself
-//!   (relay-protocol.md §auth). `revoked_at IS NULL` means active
-//!   (DSR-17 wires revocation).
+//!   (relay-protocol.md §auth), plus the public `credential_id` devices
+//!   revoke by and a display `label` (v2, DSR-16). `revoked_at IS NULL`
+//!   means active (DSR-17 wires revocation).
 //! - `envelopes`: one row per committed ciphertext, keyed
 //!   `(channel, seq)`; the `UNIQUE (channel, message_id)` index *is* the
 //!   append idempotency contract of relay-protocol.md §append. `payload`
@@ -46,14 +48,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use rusqlite::{params, Connection, OptionalExtension};
-use syncbond_relay_protocol::dto::{Envelope, EnvelopeAck, PullEntry};
+use sha2::Digest as _;
+use syncbond_relay_protocol::dto::{CredentialScope, Envelope, EnvelopeAck, PullEntry};
 use syncbond_relay_protocol::error::RelayErrorCode;
 
-use crate::storage::{AppendOutcome, PullPage, RelayStorage, StorageError};
+use crate::storage::{AppendOutcome, IssuedCredential, PullPage, RelayStorage, StorageError};
 
 /// Schema version this binary understands. Bump together with a migration
 /// step in [`migrate`]; never lower.
-const SCHEMA_VERSION: i32 = 1;
+const SCHEMA_VERSION: i32 = 2;
 
 const SCHEMA_SQL: &str = "
 CREATE TABLE channels (
@@ -61,11 +64,13 @@ CREATE TABLE channels (
 );
 
 CREATE TABLE credentials (
-    digest     TEXT PRIMARY KEY,
-    scope      TEXT NOT NULL,
-    channel    TEXT,
-    created_at INTEGER NOT NULL,
-    revoked_at INTEGER
+    digest        TEXT PRIMARY KEY,
+    credential_id TEXT NOT NULL UNIQUE,
+    scope         TEXT NOT NULL,
+    channel       TEXT,
+    created_at    INTEGER NOT NULL,
+    revoked_at    INTEGER,
+    label         TEXT
 );
 
 CREATE TABLE envelopes (
@@ -302,6 +307,73 @@ fn generate_channel_id() -> String {
     format!("ch_{}", hex_encode(&bytes))
 }
 
+/// A device credential token: 32 fresh random bytes, hex. Shown to the
+/// caller exactly once at issue time and never stored anywhere.
+fn generate_credential_token() -> String {
+    use rand_core::{OsRng, RngCore};
+    let mut bytes = [0u8; 32];
+    OsRng.fill_bytes(&mut bytes);
+    hex_encode(&bytes)
+}
+
+/// Public credential id (`cred_…`, 8 random bytes in hex) — the handle
+/// devices revoke by; carries no authority of its own.
+fn generate_credential_id() -> String {
+    use rand_core::{OsRng, RngCore};
+    let mut bytes = [0u8; 8];
+    OsRng.fill_bytes(&mut bytes);
+    format!("cred_{}", hex_encode(&bytes))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(bytes);
+    hex_encode(&hasher.finalize())
+}
+
+/// Canonical storage form of a scope set: fixed order, deduplicated,
+/// comma-joined (`"append"`, `"pull"`, `"append,pull"`, …).
+fn scopes_to_str(scopes: &[CredentialScope]) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    if scopes.contains(&CredentialScope::Append) {
+        parts.push("append");
+    }
+    if scopes.contains(&CredentialScope::Pull) {
+        parts.push("pull");
+    }
+    parts.join(",")
+}
+
+fn str_to_scopes(stored: &str) -> Vec<CredentialScope> {
+    let mut scopes = Vec::new();
+    for part in stored.split(',') {
+        match part {
+            "append" => scopes.push(CredentialScope::Append),
+            "pull" => scopes.push(CredentialScope::Pull),
+            _ => {}
+        }
+    }
+    scopes
+}
+
+fn now_unix() -> Result<i64, StorageError> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_secs() as i64)
+        .map_err(|_| internal_error())
+}
+
+/// v1 → v2 (DSR-16): credentials gain `credential_id` (the id devices
+/// revoke by, relay-protocol.md §3.2) and `label`. v1 predates any
+/// deployment, so backfilling the public id with the digest — already
+/// unique and stable — is exact, not lossy.
+const V1_TO_V2_SQL: &str = "
+ALTER TABLE credentials ADD COLUMN credential_id TEXT;
+UPDATE credentials SET credential_id = digest WHERE credential_id IS NULL;
+CREATE UNIQUE INDEX credentials_by_credential_id ON credentials(credential_id);
+ALTER TABLE credentials ADD COLUMN label TEXT;
+";
+
 /// Bring an opened database up to [`SCHEMA_VERSION`]. Version 0 means the
 /// file was created by this call (or is an empty file): build the schema.
 /// Anything above [`SCHEMA_VERSION`] is a hard refusal.
@@ -324,13 +396,32 @@ fn migrate(conn: &Connection, path: &Path) -> Result<(), StoreOpenError> {
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(refuse)?;
     }
-    // Future versions add `if found < N { ... }` steps here, oldest first.
+    // Upgrades run oldest first; each step lands on the next version.
+    if found == 1 {
+        conn.execute_batch(V1_TO_V2_SQL).map_err(refuse)?;
+        conn.pragma_update(None, "user_version", 2)
+            .map_err(refuse)?;
+    }
     Ok(())
 }
 
 /// The one storage failure that carries no more specific relay code.
 fn internal_error() -> StorageError {
     StorageError::new(RelayErrorCode::Internal)
+}
+
+/// Whether `channel` is registered. Reads take no transaction: channel
+/// rows are never deleted, so an ordinary read is authoritative here.
+fn channel_exists(conn: &Connection, channel: &str) -> Result<bool, StorageError> {
+    let found: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM channels WHERE id = ?1",
+            params![channel],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(|_| internal_error())?;
+    Ok(found.is_some())
 }
 
 impl RelayStorage for SqliteRelayStore {
@@ -542,6 +633,99 @@ impl RelayStorage for SqliteRelayStore {
             entries.push(entry);
         }
         Ok(PullPage { entries, has_more })
+    }
+
+    fn issue_credential(
+        &self,
+        channel: &str,
+        scopes: &[CredentialScope],
+        label: Option<&str>,
+    ) -> Result<IssuedCredential, StorageError> {
+        let conn = self.conn.lock().map_err(|_| internal_error())?;
+        if !channel_exists(&conn, channel)? {
+            return Err(StorageError::new(RelayErrorCode::ChannelNotFound));
+        }
+        let created_at = now_unix()?;
+        let scope_str = scopes_to_str(scopes);
+        let scopes = str_to_scopes(&scope_str);
+        for _ in 0..4 {
+            let token = generate_credential_token();
+            let credential_id = generate_credential_id();
+            let digest = sha256_hex(token.as_bytes());
+            let inserted = conn.execute(
+                "INSERT INTO credentials (digest, credential_id, scope, channel, \
+                 created_at, revoked_at, label) VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6)",
+                params![digest, credential_id, scope_str, channel, created_at, label],
+            );
+            match inserted {
+                Ok(_) => {
+                    return Ok(IssuedCredential {
+                        credential_id,
+                        token,
+                        scopes,
+                        label: label.map(str::to_owned),
+                    })
+                }
+                Err(rusqlite::Error::SqliteFailure(ref failure, _))
+                    if failure.code == rusqlite::ffi::ErrorCode::ConstraintViolation =>
+                {
+                    // A digested token or credential id collided with a
+                    // live row: regenerate, never reuse.
+                    continue;
+                }
+                Err(_) => return Err(internal_error()),
+            }
+        }
+        Err(internal_error())
+    }
+
+    fn authorize(
+        &self,
+        channel: &str,
+        token: &str,
+        scope: CredentialScope,
+    ) -> Result<(), StorageError> {
+        if token.is_empty() {
+            // A missing Authorization header reaches here as an empty
+            // token; treat it as absent rather than as a real digest
+            // lookup, which would burn a hash on every unauthenticated
+            // probe.
+            return Err(StorageError::new(RelayErrorCode::Unauthorized));
+        }
+        let conn = self.conn.lock().map_err(|_| internal_error())?;
+        let digest = sha256_hex(token.as_bytes());
+        let row: Option<(String, Option<String>, Option<i64>)> = conn
+            .query_row(
+                "SELECT scope, channel, revoked_at FROM credentials \
+                 WHERE digest = ?1",
+                params![digest],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|_| internal_error())?;
+        let (scope_str, credential_channel, revoked_at) = match row {
+            Some(row) => row,
+            // Unknown token. Deliberately the same code as a revoked one —
+            // distinguishing them would let a device poll for revocation
+            // timing on credentials it was never given.
+            None => return Err(StorageError::new(RelayErrorCode::Unauthorized)),
+        };
+        if revoked_at.is_some() {
+            return Err(StorageError::new(RelayErrorCode::Unauthorized));
+        }
+        if credential_channel.as_deref() != Some(channel) {
+            return Err(StorageError::new(RelayErrorCode::Forbidden));
+        }
+        if !str_to_scopes(&scope_str).contains(&scope) {
+            return Err(StorageError::new(RelayErrorCode::Forbidden));
+        }
+        Ok(())
     }
 }
 
@@ -1094,6 +1278,255 @@ mod tests {
         assert_eq!(store.head(&first).unwrap(), 1);
         let page = store.pull(&first, 0, 16, u64::MAX).unwrap();
         assert_eq!(page.entries[0].envelope.message_id, "msg-1");
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    /// Everything a database can hold, as text: the only sound way to
+    /// assert "the token is not stored anywhere" without trusting a
+    /// column list.
+    fn all_db_text(path: &Path) -> String {
+        let conn = raw_connection(path);
+        let mut out = String::new();
+        for table in ["channels", "credentials", "envelopes"] {
+            let mut stmt = conn.prepare(&format!("SELECT * FROM {table}")).unwrap();
+            let count = stmt.column_names().len();
+            let rows = stmt
+                .query_map([], |row| {
+                    let mut parts = String::new();
+                    for i in 0..count {
+                        if let Ok(s) = row.get::<_, String>(i) {
+                            parts.push_str(&s);
+                        }
+                        if let Ok(n) = row.get::<_, i64>(i) {
+                            parts.push_str(&n.to_string());
+                        }
+                    }
+                    Ok(parts)
+                })
+                .unwrap();
+            for r in rows {
+                out.push_str(&r.unwrap());
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn issue_credential_stores_the_digest_and_not_the_token() {
+        let path = temp_db("issue-digest");
+        let store = SqliteRelayStore::open(&path).unwrap();
+        let channel = store.create_channel().unwrap();
+        let issued = store
+            .issue_credential(
+                &channel,
+                &[CredentialScope::Append, CredentialScope::Pull],
+                Some("phone"),
+            )
+            .unwrap();
+        assert!(issued.credential_id.starts_with("cred_"));
+        assert!(issued.token.len() >= 32);
+        assert_eq!(issued.label.as_deref(), Some("phone"));
+        assert_eq!(issued.scopes.len(), 2);
+        // The digest is the only form of the token the database sees.
+        let dump = all_db_text(&path);
+        assert!(!dump.contains(&issued.token));
+        assert!(dump.contains(&sha256_hex(issued.token.as_bytes())));
+        // Debug of the issued struct is not a leak path either.
+        assert!(!format!("{issued:?}").contains(&issued.token));
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn issue_credential_rejects_unknown_channel() {
+        let path = temp_db("issue-unknown-channel");
+        let store = SqliteRelayStore::open(&path).unwrap();
+        let error = store
+            .issue_credential("no-such-channel", &[CredentialScope::Pull], None)
+            .unwrap_err();
+        assert_eq!(error.code(), RelayErrorCode::ChannelNotFound);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn authorize_rejects_unknown_empty_and_garbage_tokens() {
+        let path = temp_db("authorize-bad");
+        let store = SqliteRelayStore::open(&path).unwrap();
+        let channel = store.create_channel().unwrap();
+        let issued = store
+            .issue_credential(&channel, &[CredentialScope::Pull], None)
+            .unwrap();
+        let good = issued.token;
+        assert_eq!(
+            store
+                .authorize(&channel, "not-a-token", CredentialScope::Pull)
+                .unwrap_err()
+                .code(),
+            RelayErrorCode::Unauthorized
+        );
+        // A missing Authorization header reaches here empty; it must not
+        // be mistaken for a digest hit.
+        assert_eq!(
+            store
+                .authorize(&channel, "", CredentialScope::Pull)
+                .unwrap_err()
+                .code(),
+            RelayErrorCode::Unauthorized
+        );
+        // The real credential for this channel still authorizes.
+        store
+            .authorize(&channel, &good, CredentialScope::Pull)
+            .unwrap();
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn authorize_enforces_scopes_independently() {
+        let path = temp_db("authorize-scope");
+        let store = SqliteRelayStore::open(&path).unwrap();
+        let channel = store.create_channel().unwrap();
+        let append_only = store
+            .issue_credential(&channel, &[CredentialScope::Append], None)
+            .unwrap();
+        store
+            .authorize(&channel, &append_only.token, CredentialScope::Append)
+            .unwrap();
+        assert_eq!(
+            store
+                .authorize(&channel, &append_only.token, CredentialScope::Pull,)
+                .unwrap_err()
+                .code(),
+            RelayErrorCode::Forbidden
+        );
+        let both = store
+            .issue_credential(
+                &channel,
+                &[CredentialScope::Append, CredentialScope::Pull],
+                None,
+            )
+            .unwrap();
+        store
+            .authorize(&channel, &both.token, CredentialScope::Append)
+            .unwrap();
+        store
+            .authorize(&channel, &both.token, CredentialScope::Pull)
+            .unwrap();
+        // Every credential keeps its own scope set, independently.
+        assert_ne!(append_only.credential_id, both.credential_id);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn authorize_cross_channel_is_forbidden_not_not_found() {
+        let path = temp_db("authorize-cross");
+        let store = SqliteRelayStore::open(&path).unwrap();
+        let a = store.create_channel().unwrap();
+        let b = store.create_channel().unwrap();
+        let issued = store
+            .issue_credential(&a, &[CredentialScope::Pull], None)
+            .unwrap();
+        // A valid foreign credential is 403, not a 404 that reveals
+        // whether the channel exists (relay-protocol.md §auth).
+        assert_eq!(
+            store
+                .authorize(&b, &issued.token, CredentialScope::Pull)
+                .unwrap_err()
+                .code(),
+            RelayErrorCode::Forbidden
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn authorize_survives_restart() {
+        let path = temp_db("authorize-restart");
+        let (channel, token) = {
+            let store = SqliteRelayStore::open(&path).unwrap();
+            let channel = store.create_channel().unwrap();
+            let issued = store
+                .issue_credential(&channel, &[CredentialScope::Pull], Some("dev"))
+                .unwrap();
+            (channel, issued.token)
+        };
+        let store = SqliteRelayStore::open(&path).unwrap();
+        store
+            .authorize(&channel, &token, CredentialScope::Pull)
+            .unwrap();
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    /// The credentials table as it shipped in schema v1: no `credential_id`,
+    /// no `label`. Building it by hand is the only way to exercise the
+    /// upgrade on realistic data rather than an empty table.
+    const V1_SCHEMA_SQL: &str = "
+CREATE TABLE channels (
+    id   TEXT PRIMARY KEY
+);
+CREATE TABLE credentials (
+    digest     TEXT PRIMARY KEY,
+    scope      TEXT NOT NULL,
+    channel    TEXT,
+    created_at INTEGER NOT NULL,
+    revoked_at INTEGER
+);
+CREATE TABLE envelopes (
+    channel    TEXT NOT NULL REFERENCES channels(id),
+    seq        INTEGER NOT NULL,
+    message_id TEXT NOT NULL,
+    payload    TEXT NOT NULL,
+    PRIMARY KEY (channel, seq),
+    UNIQUE (channel, message_id)
+);
+";
+
+    fn build_v1_database(path: &Path, channel: &str, token: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(V1_SCHEMA_SQL).unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+        conn.execute("INSERT INTO channels(id) VALUES (?1)", params![channel])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO credentials (digest, scope, channel, created_at, \
+             revoked_at) VALUES (?1, 'pull', ?2, 1700000000, NULL)",
+            params![sha256_hex(token.as_bytes()), channel],
+        )
+        .unwrap();
+        drop(conn);
+    }
+
+    #[test]
+    fn v1_database_upgrades_to_v2_and_keeps_credential_authenticating() {
+        let path = temp_db("v1-upgrade");
+        let channel = "upgraded-chan";
+        let token = "a-token-a-v1-binary-might-have-issued";
+        build_v1_database(&path, channel, token);
+        // The admin file is written the way a deployer would have it;
+        // without it the existing database would refuse to start, which
+        // is correct but not what this test is about.
+        let file = admin_credential_path(&path);
+        std::fs::write(&file, hex_encode(&[7u8; 32])).unwrap();
+
+        let store = SqliteRelayStore::open(&path).unwrap();
+        let version: i32 = store
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        let conn = raw_connection(&path);
+        let backfilled: String = conn
+            .query_row(
+                "SELECT credential_id FROM credentials WHERE digest = ?1",
+                params![sha256_hex(token.as_bytes())],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(backfilled, sha256_hex(token.as_bytes()));
+        // The upgraded row authorizes exactly as it did before.
+        store
+            .authorize(channel, token, CredentialScope::Pull)
+            .unwrap();
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 }
