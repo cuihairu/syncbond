@@ -13,6 +13,7 @@
 //! workspace `Cargo.toml`; core keeps no dependency on any of them.
 
 mod config;
+mod sqlite;
 mod storage;
 
 use std::process::ExitCode;
@@ -39,14 +40,27 @@ fn main() -> ExitCode {
     }
 }
 
-/// Load configuration and exit non-zero on any failure before the server
-/// creates state (DSR-11: invalid configuration never half-starts).
-fn run(config_path: std::path::PathBuf) -> Result<(), ConfigError> {
+/// Anything that can abort startup before the serve loop exists.
+#[derive(Debug, thiserror::Error)]
+enum StartupError {
+    #[error(transparent)]
+    Config(#[from] ConfigError),
+    #[error(transparent)]
+    Store(#[from] sqlite::StoreOpenError),
+}
+
+/// Load configuration, open storage, and exit non-zero on any failure
+/// before the server starts serving (DSR-11: invalid configuration never
+/// half-starts; DSR-12: an unreadable or newer database is a hard stop,
+/// never a wipe).
+fn run(config_path: std::path::PathBuf) -> Result<(), StartupError> {
     let config = Config::load(&config_path)?;
-    // The storage backend is opened in DSR-12; until then a valid config
-    // is the whole deliverable. Keeping the value alive here documents
-    // the assembly order: config first, then storage, then routes.
-    let _config = config;
+    // Assembly order: config first, then storage, then routes (DSR-19+).
+    // The store stays alive for the process lifetime once the serve loop
+    // exists; today open-then-exit is the whole deliverable past config.
+    let db_path = config.data_dir.join("relay.db");
+    let store = sqlite::SqliteRelayStore::open(&db_path)?;
+    let _store = store;
     Ok(())
 }
 

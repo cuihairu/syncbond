@@ -17,8 +17,9 @@
 //! as the default network service's storage and are not wired into this
 //! trait by design.
 //!
-//! Nothing in this crate constructs a backend yet: DSR-12..14 do. This
-//! module is the reviewed interface contract, not dead code.
+//! `SqliteRelayStore` in `sqlite.rs` implements this contract (DSR-12
+//! onward); the HTTP layer that calls it arrives with DSR-19. Until then
+//! most items are exercised by tests only, hence the `allow`.
 #![allow(dead_code)]
 
 use std::fmt;

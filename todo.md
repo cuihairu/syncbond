@@ -60,7 +60,7 @@
 
 ### C. P1 — 服务器存储与访问控制
 
-- [ ] **DSR-12** 实现 SQLite 初始化与版本迁移（依赖 DSR-10、DSR-11；验收：通道、凭证摘要、密文、序号/幂等索引落盘；空库初始化及重复启动成功，损坏/未知版本启动失败且不清空数据）。
+- [x] **DSR-12** 实现 SQLite 初始化与版本迁移（依赖 DSR-10、DSR-11；验收：通道、凭证摘要、密文、序号/幂等索引落盘；空库初始化及重复启动成功，损坏/未知版本启动失败且不清空数据）（证据：apps/syncbond-server/src/sqlite.rs:40-61 SCHEMA v1（channels 注册表 / credentials 仅 SHA-256 摘要+scope+revoked_at / envelopes (channel,seq) 主键 + UNIQUE(channel,message_id) 幂等索引 + payload 原样密文 JSON）；:38 SCHEMA_VERSION=1 + PRAGMA user_version 严格上迁（:127-148 migrate：0=建库置版本、>1=UnknownVersion 硬拒、永不删改既有库）；:66-83 StoreOpenError 三变体（Io/Sqlite 损坏/UnknownVersion，全部不触碰库文件）；:88-95 SqliteRelayStore=Mutex<Connection>（rusqlite Connection Send 非 Sync，RelayStorage 要求 Send+Sync 供 DSR-19+ axum 多线程共享）；:109-121 open=WAL+foreign_keys ON+fail-closed；storage.rs head() 真实现（COALESCE(MAX(seq),0)，i64→u64 防负值腐败）；main.rs run() 装配序 config→storage（dataDir/relay.db）；tests 4（sqlite.rs:236 fresh+重复启动+user_version=1、:254 落盘跨重启、:270 损坏拒绝且文件字节不变、:287 未知版本拒绝且 3 行数据仍在）；cargo test -p syncbond-server 11 通过，workspace clippy -D warnings 绿）。
 - [ ] **DSR-13** 实现事务密文追加与持久 ACK（依赖 DSR-12；验收：同 ID 同信封返回原序号、异内容冲突；注入提交失败不产生成功 ACK 或可读脏状态，重启保留已确认记录）。
 - [ ] **DSR-14** 实现按条数和字节限制的分页读取（依赖 DSR-13；验收：游标仅推进到实际交付末项，空页不跳游标，单条超限/无效游标显式报错，序号间隙不漏读，hasMore 正确）。
 - [ ] **DSR-15** 实现管理凭证与通道创建（依赖 DSR-12；验收：无管理授权不能创建通道，不使用硬编码或开发默认密钥，凭证不出现在 URL/日志）。
