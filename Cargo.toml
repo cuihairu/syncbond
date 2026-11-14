@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "apps/syncbond-server",
     "crates/syncbond-core",
     "crates/syncbond-relay-protocol",
     "crates/syncbond-ffi",
@@ -29,6 +30,13 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+# Default relay server (apps/syncbond-server). rusqlite builds its own SQLite
+# so a deployer machine without system libsqlite3 still builds.
+rusqlite = { version = "0.42", features = ["bundled"] }
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }
+base64 = "0.23"
+
 # Schema conformance of the frozen envelope wire shape; test-only.
 jsonschema = { version = "0.61", default-features = false }
 

@@ -1,0 +1,23 @@
+[package]
+name = "syncbond-server"
+description = "Default self-hosted syncbond relay: ciphertext-only sync server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "syncbond-server"
+path = "src/main.rs"
+
+[dependencies]
+syncbond-relay-protocol = { path = "../../crates/syncbond-relay-protocol" }
+rusqlite.workspace = true
+axum.workspace = true
+tokio.workspace = true
+base64.workspace = true
+sha2.workspace = true
+rand_core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
