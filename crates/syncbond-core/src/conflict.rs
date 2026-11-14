@@ -111,23 +111,28 @@ fn union_witness(
     out
 }
 
-fn dedupe_conflicts(list: Vec<Record>) -> Vec<Record> {
-    let mut out: Vec<Record> = Vec::new();
-    for record in list {
-        if !out.iter().any(|r| r.stamp == record.stamp) {
-            out.push(record);
-        }
-    }
-    out
-}
-
 /// Built-in default: HLC-ordered last-writer-wins with causal tombstones.
 ///
-/// - Causally ordered writes: the descendant wins (an old device reconnecting
-///   cannot resurrect a deleted record).
-/// - Concurrent writes: kept — the higher stamp becomes primary, the loser is
-///   retained in `conflicts` for the application.
-/// - Run-ahead clocks: a stamp beyond the skew bound never silently wins.
+/// Merge is a commutative set operation over the versions each side knows —
+/// the local primary with its retained conflicts, and the incoming write
+/// with the conflicts it carries:
+///
+/// 1. Every version whose exact stamp any version in the pool demonstrably
+///    observed (per the witness — conflicts ride along with their writers'
+///    witnesses) is dominated and drops out.
+/// 2. The primary is the highest-stamp survivor; a run-ahead stamp beyond
+///    `max_skew_ms` never wins the primary while a normal survivor exists —
+///    it stays in the conflict set, flagged via `skew_detected`, so a broken
+///    clock neither silently overwrites local state nor loses data.
+/// 3. The merged record keeps the primary's witness plus the witnesses of
+///    every dominated version: their supersession knowledge must survive
+///    the drop, or a later re-delivery of an already-superseded version
+///    could resurrect it as a phantom conflict.
+/// 4. The conflict set is normalized: deduplicated by stamp and sorted.
+///
+/// Dominance and ordering read only stamps and witnesses, so every delivery
+/// order of the same writes converges to the same primary and the same
+/// normalized conflict set.
 pub struct LwwHlc;
 
 impl MergeStrategy for LwwHlc {
@@ -137,15 +142,16 @@ impl MergeStrategy for LwwHlc {
         incoming: &Record,
         ctx: &MergeContext,
     ) -> Result<MergeOutcome, MergeError> {
-        let local = match local {
-            None => {
-                return Ok(MergeOutcome {
-                    record: incoming.clone(),
-                    concurrent: false,
-                    skew_detected: false,
-                });
-            }
-            Some(local) => local,
+        let skew_detected = incoming.stamp.pt.saturating_sub(ctx.now_ms) > ctx.max_skew_ms;
+        let Some(local) = local else {
+            // The empty-record path runs the same skew policy: the incoming
+            // write is adopted (it is the only version) but an anomalous
+            // future stamp is flagged instead of silently passing.
+            return Ok(MergeOutcome {
+                record: incoming.clone(),
+                concurrent: false,
+                skew_detected,
+            });
         };
         if local.stamp == incoming.stamp {
             return Ok(MergeOutcome {
@@ -155,41 +161,97 @@ impl MergeStrategy for LwwHlc {
             });
         }
 
-        let local_after = saw_version(&local.witness, incoming);
-        let incoming_after = saw_version(&incoming.witness, local);
-
-        if local_after && !incoming_after {
-            return Ok(MergeOutcome {
-                record: local.clone(),
-                concurrent: false,
-                skew_detected: false,
-            });
-        }
-        if incoming_after && !local_after {
-            return Ok(MergeOutcome {
-                record: incoming.clone(),
-                concurrent: false,
-                skew_detected: false,
-            });
-        }
-
-        // Concurrent (or causally unrelated). A run-ahead clock must not win.
-        let skew_detected = incoming.stamp.pt.saturating_sub(ctx.now_ms) > ctx.max_skew_ms;
-        let (primary, loser) = if skew_detected {
-            (local, incoming)
-        } else if compare_stamps(&incoming.stamp, &local.stamp) > std::cmp::Ordering::Equal {
-            (incoming, local)
-        } else {
-            (local, incoming)
+        // Collect every version this merge knows about, deduplicated by stamp.
+        let mut versions: Vec<Record> = Vec::new();
+        let mut push_version = |record: &Record| {
+            if !versions.iter().any(|v| v.stamp == record.stamp) {
+                versions.push(record.clone());
+            }
         };
-        let mut merged = primary.clone();
-        let mut pool = primary.conflicts.clone();
-        pool.push(loser.clone());
-        pool.extend(loser.conflicts.iter().cloned());
-        merged.conflicts = dedupe_conflicts(pool);
+        push_version(local);
+        push_version(incoming);
+        for record in &local.conflicts {
+            push_version(record);
+        }
+        for record in &incoming.conflicts {
+            push_version(record);
+        }
+
+        // Drop dominated versions: a version whose stamp ANY version in the
+        // pool demonstrably observed is superseded — including versions
+        // riding in either side's conflict set, not just the two exchange
+        // endpoints. Reading dominance over the whole pool is what makes
+        // the merge a canonical function of the delivered version set: any
+        // delivery order produces the same survivors. A writer's witness
+        // always contains its own latest stamp, so a version is never
+        // dominated by its own witness (older versions by the same writer
+        // are not exempt: a newer stamp from that writer dominates them).
+        let dominated = |version: &Record| {
+            versions
+                .iter()
+                .any(|other| other.stamp != version.stamp && saw_version(&other.witness, version))
+        };
+        let mut survivors: Vec<&Record> = versions
+            .iter()
+            .filter(|version| !dominated(version))
+            .collect();
+        // Degenerate (mutually cyclic) witnesses could dominate every version;
+        // fall back to keeping both writers rather than losing data.
+        if survivors.is_empty() {
+            survivors.push(local);
+            survivors.push(incoming);
+        }
+
+        // The primary: the highest-stamp survivor. A run-ahead stamp never
+        // wins the primary while a normal survivor exists.
+        let skewed = |record: &Record| record.stamp.pt.saturating_sub(ctx.now_ms) > ctx.max_skew_ms;
+        let normal: Vec<&&Record> = survivors.iter().filter(|record| !skewed(record)).collect();
+        let pool: Vec<&&Record> = if normal.is_empty() {
+            survivors.iter().collect()
+        } else {
+            normal
+        };
+        let primary = pool
+            .iter()
+            .max_by(|a, b| compare_stamps(&a.stamp, &b.stamp))
+            .expect("the equal-stamp short-circuit leaves at least one survivor");
+
+        // The merged record's witness: the primary's own witness plus the
+        // witnesses of every dominated version. Dropped versions must not
+        // take their supersession knowledge with them — a re-delivery of an
+        // already-superseded version would otherwise survive as a phantom
+        // conflict. Survivor conflicts keep their own witnesses inside the
+        // conflict set (they are concurrent, not superseded).
+        let mut witness = primary.witness.clone();
+        for version in &versions {
+            if dominated(version) {
+                for (node, stamp) in &version.witness {
+                    let newer = witness.get(node).is_none_or(|seen| {
+                        compare_stamps(seen, stamp) != std::cmp::Ordering::Greater
+                    });
+                    if newer {
+                        witness.insert(node.clone(), stamp.clone());
+                    }
+                }
+            }
+        }
+
+        // Normalized conflict set: every surviving non-primary version,
+        // sorted by stamp (already deduplicated by stamp).
+        let mut conflicts: Vec<Record> = survivors
+            .iter()
+            .filter(|record| record.stamp != primary.stamp)
+            .map(|record| (**record).clone())
+            .collect();
+        conflicts.sort_by(|a, b| compare_stamps(&a.stamp, &b.stamp));
+
         Ok(MergeOutcome {
-            record: merged,
-            concurrent: true,
+            concurrent: survivors.len() > 1,
+            record: Record {
+                witness,
+                conflicts,
+                ..(**primary).clone()
+            },
             skew_detected,
         })
     }

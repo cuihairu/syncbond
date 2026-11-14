@@ -188,12 +188,17 @@ fn sync_stats_track_exchanged_op_counts() {
         let (stats_b, payload_b) = responder.join().expect("responder thread");
 
         assert_eq!(stats_a.sent_ops, 1);
-        assert_eq!(stats_a.received_ops, 0);
+        // Forwarding is now part of the sync contract (DSR-02): b's oplog
+        // carries a's op, so the second leg echoes it back. The echo is
+        // received but not re-applied (op-id dedup).
+        assert_eq!(stats_a.received_ops, 1);
+        assert_eq!(stats_a.applied_ops, 0);
         assert_eq!(
             stats_a.total_exchanged(),
             stats_a.sent_ops + stats_a.received_ops
         );
         assert_eq!(stats_b.received_ops, 1);
+        assert_eq!(stats_b.applied_ops, 1);
         assert_eq!(
             stats_b.total_exchanged(),
             stats_b.sent_ops + stats_b.received_ops

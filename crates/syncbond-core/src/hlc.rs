@@ -114,13 +114,41 @@ impl HybridClock {
         }
     }
 
-    /// Absorb a remote stamp; returns our next local stamp.
+    /// Rebuild a clock from a persisted high-water state (crash restart).
     ///
-    /// Errors when the remote stamp claims a wall time more than
-    /// `max_skew_ms` ahead of local time: the caller must treat such writes
-    /// as concurrent (kept, flagged) instead of letting the runaway clock
-    /// overwrite local state.
-    pub fn receive(&mut self, remote: &HlcStamp) -> Result<HlcStamp, ClockError> {
+    /// `pt`/`ct` must be the greatest stamp this node knows about — the
+    /// snapshot's own high-water and the maximum over its persisted oplog.
+    /// Every stamp `issue` then returns is strictly greater than that
+    /// state (a wall time above it resets the counter, at or below it
+    /// advances it), so a same-millisecond restart, a wall-clock rollback
+    /// or a future-dated op in the log cannot repeat a stamp.
+    pub fn restored(
+        node_id: impl Into<String>,
+        max_skew_ms: u64,
+        now_ms: Box<dyn Fn() -> u64 + Send + Sync>,
+        pt: u64,
+        ct: u64,
+    ) -> Self {
+        Self {
+            node_id: node_id.into(),
+            max_skew_ms,
+            pt,
+            ct,
+            now_ms,
+        }
+    }
+
+    /// Persisted high-water state: `(pt, ct)`.
+    pub fn hlc_state(&self) -> (u64, u64) {
+        (self.pt, self.ct)
+    }
+
+    /// Absorb a remote stamp without issuing a local one (receive path).
+    ///
+    /// Errors — leaving the clock untouched — when the stamp claims a wall
+    /// time more than `max_skew_ms` ahead of local time: a broken remote
+    /// clock must not pollute the local one.
+    pub fn observe(&mut self, remote: &HlcStamp) -> Result<(), ClockError> {
         let wall = (self.now_ms)();
         if remote.pt.saturating_sub(wall) > self.max_skew_ms {
             return Err(ClockError::Skew {
@@ -140,9 +168,20 @@ impl HybridClock {
         };
         self.pt = pt;
         self.ct = ct;
+        Ok(())
+    }
+
+    /// Absorb a remote stamp; returns our next local stamp.
+    ///
+    /// Errors when the remote stamp claims a wall time more than
+    /// `max_skew_ms` ahead of local time: the caller must treat such writes
+    /// as concurrent (kept, flagged) instead of letting the runaway clock
+    /// overwrite local state.
+    pub fn receive(&mut self, remote: &HlcStamp) -> Result<HlcStamp, ClockError> {
+        self.observe(remote)?;
         Ok(HlcStamp {
-            pt,
-            ct,
+            pt: self.pt,
+            ct: self.ct,
             id: self.node_id.clone(),
         })
     }

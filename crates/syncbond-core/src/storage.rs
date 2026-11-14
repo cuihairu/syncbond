@@ -64,4 +64,11 @@ pub struct SyncState {
     /// snapshots taken before GC existed).
     #[serde(default)]
     pub gc_barriers: std::collections::BTreeMap<String, crate::conflict::Record>,
+    /// Persisted HLC high-water `(pt, ct)` captured at snapshot time, so a
+    /// same-millisecond restart or a wall-clock rollback cannot repeat a
+    /// stamp. Absent in snapshots taken before it existed;
+    /// `Replicator::from_state` then re-derives the high-water from the
+    /// persisted oplog.
+    #[serde(default)]
+    pub clock: Option<(u64, u64)>,
 }

@@ -49,9 +49,12 @@ pub trait MergeStrategy: Send + Sync {
 
 ### LwwHlc 规则（默认策略）
 
-1. 有因果序：后代获胜。携带过期编辑重连的旧设备无法复活已删除的记录——墓碑的 witness 占优（测试：`old_device_reconnect_cannot_resurrect_a_delete`）。
-2. 并发写入：两者都保留。戳较高的成为主版本；落败者追加到 `conflicts`（按戳去重），交由应用裁决（测试：`example_2_note_documents_with_offline_conflict`）。
-3. 时钟超前（run-ahead）：若传入戳声称的墙钟时间比本地超前超过 `max_skew_ms`（默认 5 分钟），则无论因果性如何都按并发处理——损坏的设备时钟不能静默覆盖本地状态；超前的写入被保留并标记（测试：`large_clock_skew_does_not_silently_overwrite`）。本地 HLC 还会拒绝采纳超前的远端戳（`HybridClock::receive`）。
+合并是对双方所知全部版本的集合运算——本地主版本连同其保留的 `conflicts`，加上传入写入连同它携带的 conflicts——按戳去重：
+
+1. **被支配的版本被淘汰。** 只要该池中*任意*版本的 witness 都能证明它观察过某个版本的戳，该版本即被支配。要看整个池，而不只是交换的两端：被保留的 conflict 携带其作者的 witness，因此被 `B` 支配的 `A` 在 `C` 成为主版本之后仍然被支配。携带过期编辑重连的旧设备因此无法复活已删除的记录——墓碑的 witness 占优（测试：`old_device_reconnect_cannot_resurrect_a_delete`）。
+2. **并发的幸存者全部保留。** 戳最高的幸存者成为主版本，其余保留在 `conflicts` 中交由应用裁决。冲突集合是规范化过的：按戳去重并排序，因此双向合并产生同一集合（测试：`example_2_note_documents_with_offline_conflict`）。
+3. **时钟超前（run-ahead）。** 若传入戳声称的墙钟时间比本地超前超过 `max_skew_ms`（默认 5 分钟），则无论因果性如何都按并发处理——损坏的设备时钟不能静默覆盖本地状态；超前的写入被保留并标记。只要有正常的幸存者存在，超前戳就不会赢得主版本，因此失控的时钟不压制任何值。空记录路径执行同一策略（`MergeOutcome.skew_detected` 同样被置位），异常的首次写入被标记而非静默接受。本地 HLC 还会拒绝采纳超前的远端戳（`HybridClock::receive`）。测试：`large_clock_skew_does_not_silently_overwrite`、`empty_record_path_flags_a_future_write`、`future_write_outcome_is_order_independent_and_trackable`。
+4. **支配知识不会丢弃。** 被支配版本的 witness 会被并入合并结果的 witness。否则一个已被支配的版本重投时可能作为幽灵冲突存活下来（测试：`independent_writes_converge_under_every_delivery_order`）。
 
 ## 墓碑垃圾回收（已实现）
 
@@ -71,7 +74,7 @@ pub trait MergeStrategy: Send + Sync {
 
 ## 收敛性论证
 
-- LWW 合并在记录上可交换且幂等（同戳短路、conflicts 去重）。
+- LWW 合并是投递版本集合的规范函数，与合并顺序无关：支配与排序只读戳与 witness，冲突集合经规范化（按戳去重并排序），超集支配知识留在合并记录的 witness 里。同一组写入的任意投递排列产生同一主版本与同一规范化冲突集合（测试：`independent_writes_converge_under_every_delivery_order`——A=1000 / B=900 已观察 A / C=950 矩阵覆盖全部六种投递顺序——以及 `multi_node_permutation_convergence_property`，在确定性 witness DAG 上穷举 `n!` 种投递排列）。
 - OR-Set 的添加/移除并集是半格（semilattice）；观察移除对未观察到的标签给出添加获胜。
 - PN-Counter 的按节点最大值是半格。
 - 上述策略下，操作投递是幂等的（op-id 去重）且与顺序无关，因此乱序 + 重复投递收敛（测试：`out_of_order_and_duplicate_delivery_converge`、`example_3_arbitrary_binary_records`）。

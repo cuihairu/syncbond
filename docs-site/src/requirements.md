@@ -76,6 +76,8 @@ Implementation: `src/storage.rs`. Tests: `crash_restart_restores_identity_cursor
 
 Implementation: `src/discovery.rs` and `src/transport.rs`. Tests: `crates/syncbond-core/tests/discovery_tests.rs`.
 
+Default server status (2026-11-14): R7.3 is not delivered as a network service. Existing relay stores persist plaintext Operations and are storage prototypes, not a ciphertext-only remote server. The planned independent server, shared relay contract, client adapter and acceptance criteria are specified in [Default relay server](design/default-server.md); implementation tasks are tracked as DSR-01–DSR-53 in the repository-root `todo.md`. Existing recovery and convergence gaps must be closed before delivery.
+
 ## 8. Groups and namespaces
 
 - Group authorization: group id derived from member public keys; envelopes carry the group id and are checked on receipt (R8.1).

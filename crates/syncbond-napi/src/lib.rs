@@ -379,7 +379,9 @@ mod tests {
             send_first: true,
         };
         assert_eq!(left_task.compute().expect("initiator sync"), 1);
-        assert_eq!(worker.join().expect("responder thread"), 0);
+        // Forwarding contract: the responder replies with its own (empty)
+        // oplog plus the op it just received, so it sends one forwarded op.
+        assert_eq!(worker.join().expect("responder thread"), 1);
 
         let value = right
             .get("key".to_string())

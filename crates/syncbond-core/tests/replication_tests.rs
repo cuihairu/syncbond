@@ -86,24 +86,41 @@ fn old_device_reconnect_cannot_resurrect_a_delete() {
     let tombstone = a.delete("doc").unwrap();
     let offline_edit = stale.put("doc", b"stale edit".to_vec()).unwrap();
 
-    // Tombstone and offline edit are concurrent: the edit is retained for
-    // the application, but on the stale side the tombstone is causally
-    // newer and must win once delivered.
+    // Tombstone and offline edit are concurrent. With the receive-path HLC
+    // (strict causal successors) the edit's stamp outranks the tombstone's,
+    // so under LWW it wins the primary while the tombstone stays retained:
+    // no data loss, the deletion remains visible to the application.
     a.apply_remote(&offline_edit).unwrap();
-    let after_merge = a.get("doc").unwrap();
+    let on_a = a.get("doc").unwrap();
+    assert_eq!(on_a.payload, b"stale edit".to_vec());
     assert!(
-        after_merge.deleted || after_merge.conflicts.iter().any(|c| c.deleted),
-        "the delete must be retained (primary or in conflicts), got: {after_merge:?}",
+        on_a.conflicts
+            .iter()
+            .any(|c| c.deleted && c.stamp == tombstone.stamp),
+        "the tombstone must stay retained for the application, got: {on_a:?}",
     );
 
+    // Both replicas converge on the same primary and the same conflict set.
     stale.apply_remote(&tombstone).unwrap();
+    let on_stale = stale.get("doc").unwrap();
+    assert_eq!(on_stale.payload, on_a.payload);
+    assert_eq!(on_stale.conflicts.len(), on_a.conflicts.len());
+    assert!(on_stale.conflicts.iter().any(|c| c.deleted));
+    // Re-delivering either op is a no-op (op-id dedup).
+    assert!(!stale.apply_remote(&tombstone).unwrap());
+
+    // The resurrection that IS impossible: a delete issued after observing
+    // the offline edit dominates it causally — the stale edit cannot win.
+    let dominating_tombstone = a.delete("doc").unwrap();
+    assert!(a.get("doc").unwrap().deleted);
+    assert!(stale.apply_remote(&dominating_tombstone).unwrap());
     assert!(
         stale.get("doc").unwrap().deleted,
-        "old device must not resurrect the deleted record",
+        "a causally dominating tombstone must win over the stale edit",
     );
-    // Re-delivering everything (idempotent) keeps it deleted.
-    stale.apply_remote(&offline_edit).unwrap();
+    assert!(!stale.apply_remote(&offline_edit).unwrap());
     assert!(stale.get("doc").unwrap().deleted);
+    let _ = created;
 }
 
 #[test]

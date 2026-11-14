@@ -31,6 +31,12 @@ Rust 核心已实现，由 workspace 测试套件覆盖（当前 75+ 测试）�
 
 进度与待拍板项：[`todo.md`](todo.md)。协议契约：[`docs/zh/design/PROTOCOL.md`](docs/zh/design/PROTOCOL.md)。合并设计：[`docs/zh/design/merge.md`](docs/zh/design/merge.md)。语言决策：[`docs/zh/design/language.md`](docs/zh/design/language.md)。需求基线：[`docs/zh/requirements.md`](docs/zh/requirements.md)。现状调研：[`docs/zh/research/survey-2026-10-21.md`](docs/zh/research/survey-2026-10-21.md)。
 
+## 默认服务器规划
+
+目前没有可直接部署的默认服务器；`FileRelayStore` 是保存明文 `Operation` 的存储原型。计划在 `apps/syncbond-server/` 实现可选自托管的密文中继，在 `crates/syncbond-transport-ws/` 实现客户端网络接入，并以 `crates/syncbond-relay-protocol/` 共享传输契约。目录与部署文件尚未实现。
+
+职责、信任边界与验收标准见 [默认中继服务器设计](docs/zh/design/default-server.md)；原子任务及依赖见 [todo.md](todo.md#默认服务器实施计划2026-11-14全部待实现)。复制恢复与收敛修复是交付前置阻断项；现有中继存储测试或多语言 conformance 通过不代表真实跨设备同步已完成。
+
 ## 每日构建
 
 `main` 有滚动 nightly 预发布（定时触发时要求 48 小时内有新提交，也可手动触发），且仅在 fmt + clippy + 完整 workspace 测试套通过后出包。nightly 只是构建产物分发，**不是稳定版**：版本号正式发布与 npm/crates.io 上架仅由维护者手动执行。

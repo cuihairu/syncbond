@@ -126,6 +126,13 @@ pub struct SyncStats {
     pub applied_ops: usize,
 }
 
+/// The run-ahead bound every clock the replicator builds enforces: a remote
+/// stamp more than five minutes ahead of local wall time is treated as
+/// concurrent and flagged instead of being adopted, and it never wins the
+/// merge primary. Named once so the live, restored and test constructors
+/// cannot drift apart.
+const DEFAULT_MAX_SKEW_MS: u64 = 5 * 60_000;
+
 impl Replicator {
     pub fn new(node_id: impl Into<String>) -> Self {
         Self::with_strategy(node_id, Arc::new(LwwHlc))
@@ -133,7 +140,7 @@ impl Replicator {
 
     pub fn with_strategy(node_id: impl Into<String>, strategy: Arc<dyn MergeStrategy>) -> Self {
         let node_id = node_id.into();
-        let clock = HybridClock::new(node_id.clone(), 5 * 60_000);
+        let clock = HybridClock::new(node_id.clone(), DEFAULT_MAX_SKEW_MS);
         Self::with_parts(node_id, strategy, clock, Box::new(wall_ms))
     }
 
@@ -144,8 +151,11 @@ impl Replicator {
         fixed_ms: u64,
     ) -> Self {
         let node_id = node_id.into();
-        let clock =
-            HybridClock::with_clock(node_id.clone(), 5 * 60_000, Box::new(move || fixed_ms));
+        let clock = HybridClock::with_clock(
+            node_id.clone(),
+            DEFAULT_MAX_SKEW_MS,
+            Box::new(move || fixed_ms),
+        );
         Self::with_parts(node_id, strategy, clock, Box::new(move || fixed_ms))
     }
 
@@ -160,8 +170,11 @@ impl Replicator {
     ) -> Self {
         let node_id = node_id.into();
         let clock_now = Arc::clone(&now_ms);
-        let clock =
-            HybridClock::with_clock(node_id.clone(), 5 * 60_000, Box::new(move || clock_now()));
+        let clock = HybridClock::with_clock(
+            node_id.clone(),
+            DEFAULT_MAX_SKEW_MS,
+            Box::new(move || clock_now()),
+        );
         Self::with_parts(node_id, strategy, clock, Box::new(move || now_ms()))
     }
 
@@ -278,6 +291,11 @@ impl Replicator {
     }
 
     fn ingest(&mut self, op: &Operation) -> Result<bool, MergeError> {
+        // Advance the HLC on the receive path so a later local write is a
+        // causal successor of this op. A stamp beyond the skew bound is
+        // refused here and leaves the clock untouched (the op itself is
+        // kept as a flagged concurrent version by the merge).
+        let _ = self.clock.observe(&op.stamp);
         let incoming = incoming_record(op);
         let had_barrier = self.gc_barriers.contains_key(&op.key);
         let outcome = match self.gc_barriers.get(&op.key) {
@@ -295,13 +313,17 @@ impl Replicator {
         for stamp in op.witness.values() {
             Self::absorb(&mut self.vector, stamp);
         }
+        // The op enters the local oplog exactly as received: it survives a
+        // restart (dedup keeps working across it), and forwarding it to
+        // further peers preserves the original op id. Local writes reach
+        // their own push through `apply_local`.
+        self.oplog.push(op.clone());
         if had_barrier {
             if outcome.record.deleted {
                 // A newer tombstone arrived over a collected key: keep the
                 // compacted representation and refresh the barrier.
                 self.gc_barriers
                     .insert(op.key.clone(), compact_tombstone(&outcome.record));
-                self.oplog.push(op.clone());
                 return Ok(true);
             }
             // A live write won against the barrier; the record is live again.
@@ -467,6 +489,7 @@ impl Replicator {
             cursor: self.cursor,
             oplog: self.oplog.clone(),
             gc_barriers: self.gc_barriers.clone(),
+            clock: Some(self.clock.hlc_state()),
         }
     }
 
@@ -485,7 +508,31 @@ impl Replicator {
         strategy: Arc<dyn MergeStrategy>,
         now_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
     ) -> Result<Self, MergeError> {
-        let mut replicator = Self::with_wall_clock(state.node_id.clone(), strategy, now_ms);
+        // Restore the HLC high-water: snapshots carry it explicitly; older
+        // snapshots re-derive it as the maximum (pt, ct) over the persisted
+        // oplog. Either way a same-millisecond restart or a wall-clock
+        // rollback cannot repeat a stamp.
+        let (mut pt, mut ct) = state.clock.unwrap_or((0, 0));
+        for op in &state.oplog {
+            if (op.stamp.pt, op.stamp.ct) > (pt, ct) {
+                pt = op.stamp.pt;
+                ct = op.stamp.ct;
+            }
+        }
+        let clock_now = Arc::clone(&now_ms);
+        let clock = HybridClock::restored(
+            state.node_id.clone(),
+            DEFAULT_MAX_SKEW_MS,
+            Box::new(move || clock_now()),
+            pt,
+            ct,
+        );
+        let mut replicator = Self::with_parts(
+            state.node_id.clone(),
+            strategy,
+            clock,
+            Box::new(move || now_ms()),
+        );
         replicator.cursor = state.cursor;
         replicator.gc_barriers = state.gc_barriers.clone();
         // The persisted oplog is authoritative; replay rebuilds records and
@@ -500,6 +547,11 @@ impl Replicator {
 
     /// Replay a persisted oplog entry without appending it again.
     fn apply_known(&mut self, op: &Operation) -> Result<(), MergeError> {
+        // Keep the replayed clock knowledge too: snapshots that predate the
+        // persisted high-water derive it from the oplog during rebuild, and
+        // this keeps later local writes strict causal successors of the
+        // replayed ops.
+        let _ = self.clock.observe(&op.stamp);
         let incoming = incoming_record(op);
         let had_barrier = self.gc_barriers.contains_key(&op.key);
         let outcome = match self.gc_barriers.get(&op.key) {

@@ -473,8 +473,10 @@ mod tests {
             Python::attach(|py| sync_pair(py, &left, &pair.initiator(), &right, &pair.responder()))
                 .unwrap();
         // The initiator pushes its one op; the responder starts with an
-        // empty oplog, so it sends nothing back.
-        assert_eq!((left_ops, right_ops), (1, 0));
+        // empty oplog, but the forwarding contract makes it reply with the
+        // op it just received (original op id preserved, so left's dedup
+        // absorbs the echo).
+        assert_eq!((left_ops, right_ops), (1, 1));
         assert_eq!(right.get("shared"), Some(vec![7]));
     }
 
@@ -552,7 +554,8 @@ mod tests {
         let left_sent = left.sync(&initiator, true).unwrap();
         let right_sent = worker.join().unwrap();
 
-        assert_eq!((left_sent, right_sent), (1, 0));
+        // Forwarding contract: the responder replies with the received op.
+        assert_eq!((left_sent, right_sent), (1, 1));
         assert_eq!(right.get("k"), Some(vec![1]));
     }
 

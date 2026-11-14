@@ -58,8 +58,11 @@ func main() {
 
 	leftOps, rightOps, err := syncbond.SyncPair(left, right, init, resp)
 	check("sync", err)
-	if leftOps != 3 || rightOps != 1 {
-		fail(fmt.Errorf("sent ops = (%d,%d), want (3,1)", leftOps, rightOps))
+	// Forwarding contract: right replies with its own op plus the three ops
+	// it just received (original op ids preserved; left's dedup absorbs the
+	// echo).
+	if leftOps != 3 || rightOps != 4 {
+		fail(fmt.Errorf("sent ops = (%d,%d), want (3,4)", leftOps, rightOps))
 	}
 
 	greeting, err := right.Get("greeting")

@@ -63,7 +63,9 @@ test("pair/sync e2e: two devices converge bidirectionally", async () => {
   ]);
 
   assert.equal(statsA.sentOps, 2);
-  assert.equal(statsB.sentOps, 1);
+  // Forwarding contract: B replies with its own op plus the two ops it just
+  // received (original op ids preserved; A's dedup absorbs the echo).
+  assert.equal(statsB.sentOps, 3);
 
   // Both directions carried data across the encrypted channel.
   assert.equal(Buffer.from(deviceB.get("greeting")).toString(), "hello from A");

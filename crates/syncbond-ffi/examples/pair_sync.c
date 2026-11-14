@@ -169,7 +169,10 @@ int main(int argc, char **argv)
     pthread_join(thread, NULL);
     expect(status == SB_ERR_NONE, "initiator sync succeeds");
     expect(responder_args.status == SB_ERR_NONE, "responder sync succeeds");
-    expect(sent == 3 && responder_args.sent_ops == 1, "both sides sent their oplogs");
+    /* Forwarding contract: right replies with its own op plus the three ops
+     * it just received (original op ids preserved, so left's dedup makes the
+     * echo a no-op). */
+    expect(sent == 3 && responder_args.sent_ops == 4, "both sides sent their oplogs");
 
     /* Convergence: the canonical dumps of both sides must be identical. */
     sb_buffer_t greeting = { NULL, 0, 0 };

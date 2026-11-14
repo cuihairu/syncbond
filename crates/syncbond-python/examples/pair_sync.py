@@ -96,7 +96,10 @@ def main():
             left, pair.initiator, right, pair.responder
         )
         expect(left_ops == 3, f"initiator sent three ops, got {left_ops}")
-        expect(right_ops == 1, f"responder sent one op, got {right_ops}")
+        # Forwarding contract: the responder replies with its own op plus the
+        # three ops it just received (original op ids preserved, so left's
+        # dedup makes the echo a no-op).
+        expect(right_ops == 4, f"responder sent its op plus the forwarded ops, got {right_ops}")
 
         expect(right.get("greeting") == b"hello from python", "payload survived the sync")
         expect(left.get("counter") == b"42", "counter arrived")

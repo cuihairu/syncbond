@@ -32,7 +32,8 @@ export default defineConfig({
             items: [
               { text: 'Protocol (v1)', link: '/design/PROTOCOL' },
               { text: 'Merge strategies', link: '/design/merge' },
-              { text: 'Language decision', link: '/design/language' }
+              { text: 'Language decision', link: '/design/language' },
+              { text: 'Default server plan', link: '/design/default-server' }
             ]
           },
           { text: 'Research', link: '/research/survey-2026-10-21', activeMatch: '^/research/' },
@@ -46,7 +47,8 @@ export default defineConfig({
               items: [
                 { text: 'Protocol specification (v1)', link: '/design/PROTOCOL' },
                 { text: 'Merge strategies & tombstones', link: '/design/merge' },
-                { text: 'Language decision: Rust core', link: '/design/language' }
+                { text: 'Language decision: Rust core', link: '/design/language' },
+                { text: 'Default server plan', link: '/design/default-server' }
               ]
             },
             { text: 'Research', items: [{ text: 'Landscape survey (2026-10-21)', link: '/research/survey-2026-10-21' }] }
@@ -72,7 +74,8 @@ export default defineConfig({
             items: [
               { text: '协议（v1）', link: '/zh/design/PROTOCOL' },
               { text: '合并策略', link: '/zh/design/merge' },
-              { text: '语言决策', link: '/zh/design/language' }
+              { text: '语言决策', link: '/zh/design/language' },
+              { text: '默认服务器规划', link: '/zh/design/default-server' }
             ]
           },
           { text: '调研', link: '/zh/research/survey-2026-10-21', activeMatch: '^/zh/research/' },
@@ -86,7 +89,8 @@ export default defineConfig({
               items: [
                 { text: '协议规范 v1', link: '/zh/design/PROTOCOL' },
                 { text: '合并策略与墓碑', link: '/zh/design/merge' },
-                { text: '语言决策：Rust core', link: '/zh/design/language' }
+                { text: '语言决策：Rust core', link: '/zh/design/language' },
+                { text: '默认服务器规划', link: '/zh/design/default-server' }
               ]
             },
             { text: '调研', items: [{ text: '现状调研（2026-10-21）', link: '/zh/research/survey-2026-10-21' }] }

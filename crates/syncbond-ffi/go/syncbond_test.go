@@ -102,8 +102,11 @@ func TestPairAndSyncConverge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SyncPair: %v", err)
 	}
-	if sentInit != 3 || sentResp != 1 {
-		t.Fatalf("sent ops = (%d,%d), want (3,1)", sentInit, sentResp)
+	// Forwarding contract: right replies with its own op plus the three ops
+	// it just received (original op ids preserved; left's dedup absorbs the
+	// echo).
+	if sentInit != 3 || sentResp != 4 {
+		t.Fatalf("sent ops = (%d,%d), want (3,4)", sentInit, sentResp)
 	}
 
 	greeting, err := right.Get("greeting")

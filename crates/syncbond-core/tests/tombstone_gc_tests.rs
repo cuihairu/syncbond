@@ -48,8 +48,8 @@ fn gc_collects_tombstones_after_the_threshold_when_every_replica_saw_the_delete(
     assert_eq!(report.scanned, 1);
     assert_eq!(report.collected, vec!["k".to_string()]);
     assert_eq!(
-        report.oplog_entries_removed, 2,
-        "pre-delete history collapses to one op"
+        report.oplog_entries_removed, 3,
+        "pre-delete history (created + forwarded offline edit) collapses to one op"
     );
     assert!(
         a.get("k").is_none(),

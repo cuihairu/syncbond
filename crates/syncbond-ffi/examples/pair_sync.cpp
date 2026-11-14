@@ -95,7 +95,10 @@ int main(int argc, char** argv) {
 
     SyncStats stats = Sync::run(left, pair.initiator, right, pair.responder);
     expect(stats.left_ops == 3, "initiator sent three ops");
-    expect(stats.right_ops == 1, "responder sent one op");
+    /* Forwarding contract: right replies with its own op plus the three ops
+     * it just received (original op ids preserved, left's dedup absorbs the
+     * echo). */
+    expect(stats.right_ops == 4, "responder sent its op plus the forwarded ops");
 
     const Buffer greeting = *right.get("greeting");
     expect(greeting.size() == 14 && std::memcmp(greeting.data(), "hello from cpp", 14) == 0,

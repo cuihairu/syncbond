@@ -54,7 +54,9 @@ def test_sync_converges_both_sides():
     left_ops, right_ops = syncbond.sync_pair(
         left, pair.initiator, right, pair.responder
     )
-    assert (left_ops, right_ops) == (1, 1)
+    # Forwarding contract: right replies with its own op plus the op it just
+    # received (original op id preserved; left's dedup absorbs the echo).
+    assert (left_ops, right_ops) == (1, 2)
     assert right.get("greeting") == b"hello from python"
     assert left.get("counter") == b"42"
     assert left.records_json() == right.records_json()

@@ -31,6 +31,12 @@ The Rust core is implemented and exercised by the workspace test suite (currentl
 
 Progress and open decisions: [`todo.md`](todo.md). Protocol contract: [`docs/design/PROTOCOL.md`](docs/design/PROTOCOL.md). Merge design: [`docs/design/merge.md`](docs/design/merge.md). Language decision: [`docs/design/language.md`](docs/design/language.md). Requirements baseline: [`docs/requirements.md`](docs/requirements.md). Landscape survey: [`docs/research/survey-2026-10-21.md`](docs/research/survey-2026-10-21.md).
 
+## Default server plan
+
+There is no deployable default server yet; `FileRelayStore` is a plaintext `Operation` storage prototype. The plan places the optional self-hosted ciphertext relay in `apps/syncbond-server/`, client networking in `crates/syncbond-transport-ws/`, and shared transport contracts in `crates/syncbond-relay-protocol/`. These directories and deployment files are not implemented yet.
+
+See the [default relay server design](docs/design/default-server.md) for responsibilities, trust boundaries and acceptance criteria, and [todo.md](todo.md#默认服务器实施计划2026-11-14全部待实现) for atomic tasks and dependencies. Replication recovery and convergence fixes block delivery; passing storage or cross-language conformance tests does not establish real cross-device synchronization.
+
 ## Nightly builds
 
 A rolling nightly prerelease is built from `main` (on schedule when there is a commit newer than 48 hours, or on manual trigger), and only after fmt + clippy + the full workspace test suite pass. Nightlies are build artifacts, **not stable releases**: versioned releases and npm/crates.io publishing are issued manually by the maintainer only.
