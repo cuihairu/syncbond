@@ -72,6 +72,10 @@ pub struct PullPage {
 /// Ciphertext-only relay storage. See the module docs for what a backend
 /// may and may not look at.
 pub trait RelayStorage: Send + Sync {
+    /// Create a channel and return its fresh server-assigned id. The
+    /// admin-authorized HTTP route that calls this arrives with DSR-19.
+    fn create_channel(&self) -> Result<String, StorageError>;
+
     /// The channel's highest committed sequence (0 for an empty channel).
     /// The server compares a pull cursor against this before reading.
     fn head(&self, channel: &str) -> Result<u64, StorageError>;

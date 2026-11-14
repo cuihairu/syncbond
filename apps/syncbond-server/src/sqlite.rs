@@ -24,7 +24,24 @@
 //!   append idempotency contract of relay-protocol.md §append. `payload`
 //!   holds the canonical JSON of the `relay::Envelope` exactly as
 //!   accepted — this server never decrypts or reshapes it.
+//!
+//! DSR-15 adds the admin-plane bootstrap: on first initialization a
+//! 32-byte random credential is written as 64 lowercase hex chars to
+//! `<dbDir>/admin-credential` with `0600` permissions (relay-protocol.md
+//! §auth: generated at first initialization, no hardcoded or development
+//! default). Restarts read that file back; an existing database whose
+//! credential file is gone refuses to start — the deployer restores it
+//! from backup, this binary never regenerates authority over live data.
+//! The in-memory copy redacts itself from [`fmt::Debug`] and compares in
+//! constant time, so it can neither leak through logs nor take a timing
+//! side channel into the HTTP layer.
 
+// Until DSR-19 wires the HTTP layer, the admin-plane surface (the admin
+// credential and its verification) is exercised by tests only.
+#![allow(dead_code)]
+
+use std::fmt;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -81,6 +98,87 @@ pub enum StoreOpenError {
          ({supported}); refusing to start without touching data"
     )]
     UnknownVersion { found: i32, supported: i32 },
+    #[error(
+        "admin credential file is missing for an existing database; restore \
+         it from the deployer backup — refusing to start without touching data"
+    )]
+    AdminCredentialMissing,
+    #[error("admin credential file is invalid: {0}")]
+    AdminCredential(&'static str),
+}
+
+/// Where the admin credential file lives: next to the database file, per
+/// relay-protocol.md §auth.
+fn admin_credential_path(db_path: &Path) -> PathBuf {
+    match db_path.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir.join("admin-credential"),
+        _ => PathBuf::from("admin-credential"),
+    }
+}
+
+/// The bootstrap admin credential in its on-disk form: 64 lowercase hex
+/// chars. Kept in memory only to verify incoming admin requests — the
+/// [`fmt::Debug`] impl redacts, [`AdminCredential::verify`] compares in
+/// constant time, and nothing else ever reads it.
+pub struct AdminCredential {
+    hex: String,
+}
+
+impl AdminCredential {
+    /// Generate 32 fresh random bytes from the OS entropy pool. There is
+    /// deliberately no deterministic or default fallback: a credential
+    /// that can be predicted is not a credential.
+    fn generate() -> Self {
+        use rand_core::{OsRng, RngCore};
+        let mut bytes = [0u8; 32];
+        OsRng.fill_bytes(&mut bytes);
+        Self {
+            hex: hex_encode(&bytes),
+        }
+    }
+
+    fn parse(content: &str) -> Result<Self, StoreOpenError> {
+        let hex = content.trim();
+        if hex.len() != 64 || !hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+            return Err(StoreOpenError::AdminCredential(
+                "expected exactly 64 lowercase hex chars",
+            ));
+        }
+        Ok(Self {
+            hex: hex.to_owned(),
+        })
+    }
+
+    /// Constant-time comparison: fold the XOR of every byte pair so the
+    /// branch behavior does not depend on where the first mismatch is.
+    /// Length differences return early — the length (64) is public.
+    fn verify(&self, candidate: &str) -> bool {
+        let candidate = candidate.trim().as_bytes();
+        let expected = self.hex.as_bytes();
+        if candidate.len() != expected.len() {
+            return false;
+        }
+        candidate
+            .iter()
+            .zip(expected)
+            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+            == 0
+    }
+}
+
+impl fmt::Debug for AdminCredential {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("AdminCredential([redacted])")
+    }
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
 }
 
 /// SQLite-backed [`RelayStorage`]. Opened once at startup by the binary.
@@ -91,6 +189,16 @@ pub enum StoreOpenError {
 /// deployment shape.
 pub struct SqliteRelayStore {
     conn: Mutex<Connection>,
+    admin_credential: AdminCredential,
+}
+
+impl fmt::Debug for SqliteRelayStore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // finish_non_exhaustive: no field of this struct belongs in a log
+        // line — the connection points at the data directory, the admin
+        // credential must never be printable.
+        f.debug_struct("SqliteRelayStore").finish_non_exhaustive()
+    }
 }
 
 impl SqliteRelayStore {
@@ -106,6 +214,11 @@ impl SqliteRelayStore {
                 })?;
             }
         }
+        // The database decides freshness first: a corrupt or
+        // newer-version file must report *that*, not an admin-credential
+        // problem. Only after the database itself opens and migrates do
+        // we bootstrap the admin credential.
+        let first_init = !path.exists();
         let conn = Connection::open(path).map_err(|source| StoreOpenError::Sqlite {
             path: path.to_path_buf(),
             source,
@@ -121,10 +234,72 @@ impl SqliteRelayStore {
                 source,
             })?;
         migrate(&conn, path)?;
+        let credential_path = admin_credential_path(path);
+        let admin_credential = if first_init {
+            // Fresh database. A leftover file from a wiped database is
+            // stale — the data it administered no longer exists — so it is
+            // replaced rather than resurrected. The file is created with
+            // owner-only mode directly: it must never briefly exist
+            // world-readable.
+            let token = AdminCredential::generate().hex;
+            write_admin_file(&credential_path, &token).map_err(|source| StoreOpenError::Io {
+                path: credential_path.clone(),
+                source,
+            })?;
+            AdminCredential::parse(&token)?
+        } else {
+            // Existing database. No credential file means no way to
+            // administer live data — regenerate would hand a fresh key to
+            // whoever deleted the file, so refuse instead.
+            let content = std::fs::read_to_string(&credential_path)
+                .map_err(|_| StoreOpenError::AdminCredentialMissing)?;
+            AdminCredential::parse(&content)?
+        };
         Ok(Self {
             conn: Mutex::new(conn),
+            admin_credential,
         })
     }
+
+    /// Check an admin candidate against the bootstrap credential.
+    pub fn verify_admin(&self, candidate: &str) -> bool {
+        self.admin_credential.verify(candidate)
+    }
+}
+
+/// Write the admin credential file with owner-only permissions from the
+/// moment it first exists (Unix); other platforms fall back to the
+/// platform default.
+#[cfg(unix)]
+fn write_admin_file(path: &Path, token: &str) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)
+        .and_then(|mut file| file.write_all(token.as_bytes()))
+}
+
+#[cfg(not(unix))]
+fn write_admin_file(path: &Path, token: &str) -> std::io::Result<()> {
+    std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(path)
+        .and_then(|mut file| file.write_all(token.as_bytes()))
+}
+
+/// Server-assigned channel id per relay-protocol.md §3.1: opaque,
+/// `ch_`-prefixed, 12 random bytes in hex (27 chars total, within the
+/// 1–128 limit).
+fn generate_channel_id() -> String {
+    use rand_core::{OsRng, RngCore};
+    let mut bytes = [0u8; 12];
+    OsRng.fill_bytes(&mut bytes);
+    format!("ch_{}", hex_encode(&bytes))
 }
 
 /// Bring an opened database up to [`SCHEMA_VERSION`]. Version 0 means the
@@ -159,6 +334,26 @@ fn internal_error() -> StorageError {
 }
 
 impl RelayStorage for SqliteRelayStore {
+    /// Create a channel with a fresh server-assigned id. The id space is
+    /// 96 random bits, so the retry loop below exists for completeness,
+    /// not because collisions are expected.
+    fn create_channel(&self) -> Result<String, StorageError> {
+        let conn = self.conn.lock().map_err(|_| internal_error())?;
+        for _ in 0..4 {
+            let id = generate_channel_id();
+            match conn.execute("INSERT INTO channels(id) VALUES (?1)", params![id]) {
+                Ok(_) => return Ok(id),
+                Err(rusqlite::Error::SqliteFailure(ref failure, _))
+                    if failure.code == rusqlite::ffi::ErrorCode::ConstraintViolation =>
+                {
+                    continue;
+                }
+                Err(_) => return Err(internal_error()),
+            }
+        }
+        Err(internal_error())
+    }
+
     fn head(&self, channel: &str) -> Result<u64, StorageError> {
         let conn = self.conn.lock().map_err(|_| internal_error())?;
         // SQLite integers are i64; stored seq values are non-negative by
@@ -802,6 +997,103 @@ mod tests {
             [1, 2, 3, 4, 5]
         );
         assert!(!page.has_more);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    fn admin_file(path: &Path) -> PathBuf {
+        admin_credential_path(path)
+    }
+
+    #[test]
+    fn first_init_writes_admin_credential_file_owner_only() {
+        let path = temp_db("admin-first-init");
+        let store = SqliteRelayStore::open(&path).unwrap();
+        let file = admin_file(&path);
+        let token = std::fs::read_to_string(&file).unwrap();
+        // On-disk form: exactly 64 lowercase hex chars, the token itself.
+        assert_eq!(token.trim().len(), 64);
+        assert!(token
+            .trim()
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')));
+        // Owner-only from birth: the file never exists world-readable.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&file).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        // Verification accepts only the real credential.
+        assert!(store.verify_admin(token.trim()));
+        assert!(!store.verify_admin(&"0".repeat(64)));
+        // The Debug impl must not be a leak path for logs.
+        let debug = format!("{store:?}");
+        assert!(!debug.contains(token.trim()));
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn restart_reads_back_the_same_admin_credential() {
+        let path = temp_db("admin-restart");
+        let token = {
+            let _store = SqliteRelayStore::open(&path).unwrap();
+            std::fs::read_to_string(admin_file(&path)).unwrap()
+        };
+        let store = SqliteRelayStore::open(&path).unwrap();
+        // Same credential, no silent regeneration on restart.
+        assert!(store.verify_admin(token.trim()));
+        // No hardcoded or development default: an independent fresh
+        // server gets an independent credential.
+        let other = temp_db("admin-restart-other");
+        let other_token = {
+            let _store = SqliteRelayStore::open(&other).unwrap();
+            std::fs::read_to_string(admin_file(&other)).unwrap()
+        };
+        assert_ne!(token, other_token);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+        std::fs::remove_dir_all(other.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn missing_admin_file_for_existing_db_refuses_startup() {
+        let path = temp_db("admin-missing");
+        {
+            let store = SqliteRelayStore::open(&path).unwrap();
+            store.create_channel().unwrap();
+        }
+        std::fs::remove_file(admin_file(&path)).unwrap();
+        let error = match SqliteRelayStore::open(&path) {
+            Ok(_) => panic!("a live database without its admin credential must refuse to start"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, StoreOpenError::AdminCredentialMissing));
+        // Refusal leaves the database untouched for the deployer.
+        assert_eq!(envelope_count(&path, "no-channel"), 0);
+        let conn = raw_connection(&path);
+        let channels: i64 = conn
+            .query_row("SELECT COUNT(*) FROM channels", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(channels, 1);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn create_channel_assigns_fresh_ids_and_enables_traffic() {
+        let path = temp_db("create-channel");
+        let store = SqliteRelayStore::open(&path).unwrap();
+        let first = store.create_channel().unwrap();
+        let second = store.create_channel().unwrap();
+        // Server-assigned opaque ids within the protocol contract.
+        assert!(first.starts_with("ch_"));
+        assert_ne!(first, second);
+        assert!(first.len() <= 128 && second.len() <= 128);
+        // The created channel is immediately usable end to end.
+        store
+            .append(&first, &[sample_envelope(&first, "msg-1", "ciphertext-1")])
+            .unwrap();
+        assert_eq!(store.head(&first).unwrap(), 1);
+        let page = store.pull(&first, 0, 16, u64::MAX).unwrap();
+        assert_eq!(page.entries[0].envelope.message_id, "msg-1");
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 }
