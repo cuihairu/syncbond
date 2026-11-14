@@ -59,7 +59,8 @@ use syncbond_relay_protocol::dto::{CredentialScope, Envelope, EnvelopeAck, PullE
 use syncbond_relay_protocol::error::RelayErrorCode;
 
 use crate::storage::{
-    AppendOutcome, IssuedCredential, PullPage, RelayStorage, RevokeOutcome, StorageError,
+    AppendOutcome, CredentialRecord, IssuedCredential, PullPage, RelayStorage, RevokeOutcome,
+    StorageError,
 };
 
 /// Schema version this binary understands. Bump together with a migration
@@ -122,7 +123,7 @@ pub enum StoreOpenError {
 
 /// Where the admin credential file lives: next to the database file, per
 /// relay-protocol.md §auth.
-fn admin_credential_path(db_path: &Path) -> PathBuf {
+pub fn admin_credential_path(db_path: &Path) -> PathBuf {
     match db_path.parent() {
         Some(dir) if !dir.as_os_str().is_empty() => dir.join("admin-credential"),
         _ => PathBuf::from("admin-credential"),
@@ -205,6 +206,10 @@ pub struct SqliteRelayStore {
     admin_credential: AdminCredential,
     quotas: Quotas,
     db_path: PathBuf,
+    /// Readiness gate (DSR-19 `/v1/ready`). `false` while startup has
+    /// not finished, so the endpoint can report not-ready without lying
+    /// about the process being alive.
+    ready: Mutex<bool>,
 }
 
 /// Append budgets, per relay-protocol.md §limits: a per-channel byte
@@ -300,6 +305,7 @@ impl SqliteRelayStore {
             admin_credential,
             quotas,
             db_path: path.to_path_buf(),
+            ready: Mutex::new(false),
         })
     }
 
@@ -864,6 +870,71 @@ impl RelayStorage for SqliteRelayStore {
         )
         .map_err(|_| internal_error())?;
         Ok(RevokeOutcome::Revoked)
+    }
+
+    fn list_credentials(&self, channel: &str) -> Result<Vec<CredentialRecord>, StorageError> {
+        let conn = self.conn.lock().map_err(|_| internal_error())?;
+        if !channel_exists(&conn, channel)? {
+            return Err(StorageError::new(RelayErrorCode::ChannelNotFound));
+        }
+        let mut stmt = conn
+            .prepare(
+                "SELECT credential_id, digest, scope, label, created_at, revoked_at \
+                 FROM credentials WHERE channel = ?1 \
+                 ORDER BY created_at ASC, credential_id ASC",
+            )
+            .map_err(|_| internal_error())?;
+        let mut rows = stmt.query(params![channel]).map_err(|_| internal_error())?;
+        let mut records = Vec::new();
+        while let Some(row) = rows.next().map_err(|_| internal_error())? {
+            let created_at = row.get::<_, i64>(4).map_err(|_| internal_error())?;
+            let revoked_at = row.get::<_, Option<i64>>(5).map_err(|_| internal_error())?;
+            records.push(CredentialRecord {
+                credential_id: row.get::<_, String>(0).map_err(|_| internal_error())?,
+                digest: row.get::<_, String>(1).map_err(|_| internal_error())?,
+                scopes: str_to_scopes(&row.get::<_, String>(2).map_err(|_| internal_error())?),
+                label: row
+                    .get::<_, Option<String>>(3)
+                    .map_err(|_| internal_error())?,
+                created_at: u64::try_from(created_at).map_err(|_| internal_error())?,
+                // `None` is the common case: most credentials are still
+                // active.
+                revoked_at: match revoked_at {
+                    Some(stamp) => Some(u64::try_from(stamp).map_err(|_| internal_error())?),
+                    None => None,
+                },
+            });
+        }
+        Ok(records)
+    }
+
+    fn ready(&self) -> bool {
+        // Readiness is the startup gate and nothing more: it says "the
+        // store may be asked a question now", not "storage is healthy
+        // forever". The gate flips when the serve loop starts accepting
+        // traffic; the probe underneath keeps proving the file is readable.
+        if !self.ready.lock().is_ok_and(|flag| *flag) {
+            return false;
+        }
+        let conn = match self.conn.lock() {
+            Ok(conn) => conn,
+            Err(_) => return false,
+        };
+        conn.query_row("SELECT COUNT(*) FROM channels", [], |_| Ok(()))
+            .is_ok()
+    }
+}
+
+impl SqliteRelayStore {
+    /// Lift the readiness gate. Called by the serve loop right before it
+    /// starts accepting traffic, which is the instant "ready" becomes
+    /// true; a process still opening its database answers liveness but
+    /// not readiness. Not a trait method: it is a server-lifecycle act,
+    /// not a storage query.
+    pub fn mark_ready(&self) {
+        if let Ok(mut flag) = self.ready.lock() {
+            *flag = true;
+        }
     }
 }
 

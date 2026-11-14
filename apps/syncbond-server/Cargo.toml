@@ -21,3 +21,10 @@ rand_core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+# Real socket coverage (todo.md DSR-19): binding and dialing a listener
+# needs the `net` feature, and `#[tokio::test]` drives it on a runtime,
+# neither of which the workspace-level tokio reference turns on for the
+# server binary itself.
+tokio = { workspace = true, features = ["net", "rt", "macros", "time"] }

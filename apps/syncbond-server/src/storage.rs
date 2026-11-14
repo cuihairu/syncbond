@@ -92,6 +92,19 @@ impl fmt::Debug for IssuedCredential {
     }
 }
 
+/// One stored credential, as the admin list endpoint may show it. The
+/// digest is included because the contract requires "digests and metadata
+/// only" — and the token is never recoverable from it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CredentialRecord {
+    pub credential_id: String,
+    pub digest: String,
+    pub scopes: Vec<CredentialScope>,
+    pub label: Option<String>,
+    pub created_at: u64,
+    pub revoked_at: Option<u64>,
+}
+
 /// What a revocation attempt actually changed on disk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RevokeOutcome {
@@ -162,6 +175,17 @@ pub trait RelayStorage: Send + Sync {
         channel: &str,
         credential_id: &str,
     ) -> Result<RevokeOutcome, StorageError>;
+
+    /// List a channel's credentials as metadata. The wire contract asks for
+    /// "digests and metadata only, never tokens" (relay-protocol.md §3.2),
+    /// which this shape makes structural: there is no token field to
+    /// accidentally fill in.
+    fn list_credentials(&self, channel: &str) -> Result<Vec<CredentialRecord>, StorageError>;
+
+    /// Whether the store can answer a trivial read *right now*. Liveness
+    /// does not imply this: a process that has not yet finished opening
+    /// its database is alive and not ready.
+    fn ready(&self) -> bool;
 }
 
 #[cfg(test)]
