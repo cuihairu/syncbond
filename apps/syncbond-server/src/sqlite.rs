@@ -52,7 +52,9 @@ use sha2::Digest as _;
 use syncbond_relay_protocol::dto::{CredentialScope, Envelope, EnvelopeAck, PullEntry};
 use syncbond_relay_protocol::error::RelayErrorCode;
 
-use crate::storage::{AppendOutcome, IssuedCredential, PullPage, RelayStorage, StorageError};
+use crate::storage::{
+    AppendOutcome, IssuedCredential, PullPage, RelayStorage, RevokeOutcome, StorageError,
+};
 
 /// Schema version this binary understands. Bump together with a migration
 /// step in [`migrate`]; never lower.
@@ -726,6 +728,49 @@ impl RelayStorage for SqliteRelayStore {
             return Err(StorageError::new(RelayErrorCode::Forbidden));
         }
         Ok(())
+    }
+
+    fn revoke_credential(
+        &self,
+        channel: &str,
+        credential_id: &str,
+    ) -> Result<RevokeOutcome, StorageError> {
+        let conn = self.conn.lock().map_err(|_| internal_error())?;
+        if !channel_exists(&conn, channel)? {
+            return Err(StorageError::new(RelayErrorCode::ChannelNotFound));
+        }
+        // Reads and writes here are serialized by this store's mutex
+        // (single-process deployment), so the select-then-update pair is
+        // not a TOCTOU window.
+        let revoked_at: Option<Option<i64>> = conn
+            .query_row(
+                "SELECT revoked_at FROM credentials \
+                 WHERE credential_id = ?1 AND channel = ?2",
+                params![credential_id, channel],
+                |row| Ok(Some(row.get(0)?)),
+            )
+            .optional()
+            .map_err(|_| internal_error())?
+            .flatten();
+        let revoked_at = match revoked_at {
+            Some(stamp) => stamp,
+            // Not issued here. Refuse as `Unauthorized` rather than
+            // pretending the credential exists: otherwise an admin could
+            // enumerate ids by their error codes.
+            None => {
+                return Err(StorageError::new(RelayErrorCode::Unauthorized));
+            }
+        };
+        if revoked_at.is_some() {
+            return Ok(RevokeOutcome::AlreadyRevoked);
+        }
+        conn.execute(
+            "UPDATE credentials SET revoked_at = ?1 \
+             WHERE credential_id = ?2 AND channel = ?3",
+            params![now_unix()?, credential_id, channel],
+        )
+        .map_err(|_| internal_error())?;
+        Ok(RevokeOutcome::Revoked)
     }
 }
 
@@ -1527,6 +1572,159 @@ CREATE TABLE envelopes (
         store
             .authorize(channel, token, CredentialScope::Pull)
             .unwrap();
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    fn store_with_channel_and_credential(
+        path: &Path,
+        scopes: &[CredentialScope],
+        label: Option<&str>,
+    ) -> (String, IssuedCredential) {
+        let store = SqliteRelayStore::open(path).unwrap();
+        let channel = store.create_channel().unwrap();
+        let issued = store.issue_credential(&channel, scopes, label).unwrap();
+        (channel, issued)
+    }
+
+    #[test]
+    fn revoke_refuses_the_credential_on_every_later_access() {
+        let path = temp_db("revoke-immediate");
+        let (channel, issued) = store_with_channel_and_credential(
+            &path,
+            &[CredentialScope::Append, CredentialScope::Pull],
+            Some("phone"),
+        );
+        let store = SqliteRelayStore::open(&path).unwrap();
+        let token = issued.token;
+        // An already-connected device keeps a token in memory; what stops
+        // it is the re-read of revocation on every authorize.
+        store
+            .authorize(&channel, &token, CredentialScope::Pull)
+            .unwrap();
+        assert_eq!(
+            store
+                .revoke_credential(&channel, &issued.credential_id)
+                .unwrap(),
+            RevokeOutcome::Revoked
+        );
+        for scope in [CredentialScope::Append, CredentialScope::Pull] {
+            assert_eq!(
+                store.authorize(&channel, &token, scope).unwrap_err().code(),
+                RelayErrorCode::Unauthorized
+            );
+        }
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn revoke_survives_restart_and_leaves_other_credentials_alone() {
+        let path = temp_db("revoke-restart");
+        let scopes = &[CredentialScope::Append, CredentialScope::Pull];
+        let channel = {
+            let store = SqliteRelayStore::open(&path).unwrap();
+            store.create_channel().unwrap()
+        };
+        let (revoked, kept) = {
+            let store = SqliteRelayStore::open(&path).unwrap();
+            (
+                store
+                    .issue_credential(&channel, scopes, Some("phone"))
+                    .unwrap(),
+                store
+                    .issue_credential(&channel, scopes, Some("laptop"))
+                    .unwrap(),
+            )
+        };
+        {
+            let store = SqliteRelayStore::open(&path).unwrap();
+            store
+                .revoke_credential(&channel, &revoked.credential_id)
+                .unwrap();
+        }
+        let store = SqliteRelayStore::open(&path).unwrap();
+        // The revoked one is still refused after the restart, on both
+        // of its scopes.
+        for scope in [CredentialScope::Append, CredentialScope::Pull] {
+            assert_eq!(
+                store
+                    .authorize(&channel, &revoked.token, scope)
+                    .unwrap_err()
+                    .code(),
+                RelayErrorCode::Unauthorized
+            );
+        }
+        // The other device's credential is untouched — revocation is per
+        // credential, never per channel and never global.
+        store
+            .authorize(&channel, &kept.token, CredentialScope::Append)
+            .unwrap();
+        store
+            .authorize(&channel, &kept.token, CredentialScope::Pull)
+            .unwrap();
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn revoke_is_idempotent_and_refuses_unknown_ids() {
+        let path = temp_db("revoke-idempotent");
+        let (channel, issued) =
+            store_with_channel_and_credential(&path, &[CredentialScope::Pull], None);
+        let store = SqliteRelayStore::open(&path).unwrap();
+        let first = store
+            .revoke_credential(&channel, &issued.credential_id)
+            .unwrap();
+        let second = store
+            .revoke_credential(&channel, &issued.credential_id)
+            .unwrap();
+        assert_eq!(first, RevokeOutcome::Revoked);
+        assert_eq!(second, RevokeOutcome::AlreadyRevoked);
+        // A duplicate revoke is not an error, so retrying a UI action is
+        // safe; it also cannot un-revoke.
+        assert_eq!(
+            store
+                .authorize(&channel, &issued.token, CredentialScope::Pull)
+                .unwrap_err()
+                .code(),
+            RelayErrorCode::Unauthorized
+        );
+        // Unknown ids, and ids that belong to another channel, refuse
+        // with the same code: revocation never reveals presence.
+        for bad in ["cred_0000000000000000", issued.credential_id.as_str()] {
+            let error = store.revoke_credential("no-such-channel", bad).unwrap_err();
+            assert_eq!(error.code(), RelayErrorCode::ChannelNotFound);
+        }
+        assert_eq!(
+            store
+                .revoke_credential(&channel, "cred_0000000000000000")
+                .unwrap_err()
+                .code(),
+            RelayErrorCode::Unauthorized
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn revoke_records_a_timestamp_and_never_stores_the_token() {
+        let path = temp_db("revoke-record");
+        let (channel, issued) =
+            store_with_channel_and_credential(&path, &[CredentialScope::Pull], Some("tablet"));
+        let store = SqliteRelayStore::open(&path).unwrap();
+        store
+            .revoke_credential(&channel, &issued.credential_id)
+            .unwrap();
+        let conn = raw_connection(&path);
+        let revoked_at: Option<i64> = conn
+            .query_row(
+                "SELECT revoked_at FROM credentials WHERE digest = ?1",
+                params![sha256_hex(issued.token.as_bytes())],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(revoked_at.is_some());
+        assert!(revoked_at.unwrap() > 0);
+        // The row is retained, and only as a digest: the token still
+        // appears nowhere after revocation.
+        assert!(!all_db_text(&path).contains(&issued.token));
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 }

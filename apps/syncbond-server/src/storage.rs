@@ -92,6 +92,15 @@ impl fmt::Debug for IssuedCredential {
     }
 }
 
+/// What a revocation attempt actually changed on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RevokeOutcome {
+    /// The credential was active and is now refused.
+    Revoked,
+    /// It was already revoked: nothing new happened.
+    AlreadyRevoked,
+}
+
 /// Ciphertext-only relay storage. See the module docs for what a backend
 /// may and may not look at.
 pub trait RelayStorage: Send + Sync {
@@ -142,6 +151,17 @@ pub trait RelayStorage: Send + Sync {
         token: &str,
         scope: CredentialScope,
     ) -> Result<(), StorageError>;
+
+    /// Revoke the named credential on `channel`. Revocation is a
+    /// persisted flag, not a cache invalidation: it survives a restart,
+    /// and every later [`RelayStorage::authorize`] call re-reads it, so
+    /// an already-connected device is refused on its next request
+    /// (relay-protocol.md §3.2 revocation semantics).
+    fn revoke_credential(
+        &self,
+        channel: &str,
+        credential_id: &str,
+    ) -> Result<RevokeOutcome, StorageError>;
 }
 
 #[cfg(test)]
