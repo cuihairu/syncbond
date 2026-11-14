@@ -31,6 +31,7 @@ export default defineConfig({
             text: 'Design',
             items: [
               { text: 'Protocol (v1)', link: '/design/PROTOCOL' },
+              { text: 'Relay protocol (v1)', link: '/design/relay-protocol' },
               { text: 'Merge strategies', link: '/design/merge' },
               { text: 'Language decision', link: '/design/language' },
               { text: 'Default server plan', link: '/design/default-server' }
@@ -46,6 +47,7 @@ export default defineConfig({
               text: 'Design',
               items: [
                 { text: 'Protocol specification (v1)', link: '/design/PROTOCOL' },
+                { text: 'Relay protocol (v1)', link: '/design/relay-protocol' },
                 { text: 'Merge strategies & tombstones', link: '/design/merge' },
                 { text: 'Language decision: Rust core', link: '/design/language' },
                 { text: 'Default server plan', link: '/design/default-server' }
@@ -73,6 +75,7 @@ export default defineConfig({
             text: '设计',
             items: [
               { text: '协议（v1）', link: '/zh/design/PROTOCOL' },
+              { text: '中继协议（v1）', link: '/zh/design/relay-protocol' },
               { text: '合并策略', link: '/zh/design/merge' },
               { text: '语言决策', link: '/zh/design/language' },
               { text: '默认服务器规划', link: '/zh/design/default-server' }
@@ -88,6 +91,7 @@ export default defineConfig({
               text: '设计',
               items: [
                 { text: '协议规范 v1', link: '/zh/design/PROTOCOL' },
+                { text: '中继协议 v1', link: '/zh/design/relay-protocol' },
                 { text: '合并策略与墓碑', link: '/zh/design/merge' },
                 { text: '语言决策：Rust core', link: '/zh/design/language' },
                 { text: '默认服务器规划', link: '/zh/design/default-server' }

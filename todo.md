@@ -52,9 +52,9 @@
 
 ### B. P1 — 冻结契约与目录边界
 
-- [ ] **DSR-07** 冻结 relay v1 传输契约（无前置；验收：在设计文档列出准确 HTTP 路由、WebSocket 消息、鉴权、版本、错误码、提交 ACK、分页/幂等/游标语义和各类默认/最大限制，并附成功与失败示例）。
-- [ ] **DSR-08** 对齐加密信封实际 JSON 与 Schema（依赖 DSR-07；验收：命名与未知字段策略一致，真实序列化信封通过 Schema 检查，记录旧 snake_case 格式的迁移/版本处理，更新双语协议文档）。
-- [ ] **DSR-09** 创建 `crates/syncbond-relay-protocol`（依赖 DSR-07、DSR-08；验收：共享 DTO/错误/大小上限及契约 fixture 可编译测试，不依赖应用服务器、合并实现或异步运行时）。
+- [x] **DSR-07** 冻结 relay v1 传输契约（无前置；验收：在设计文档列出准确 HTTP 路由、WebSocket 消息、鉴权、版本、错误码、提交 ACK、分页/幂等/游标语义和各类默认/最大限制，并附成功与失败示例）（证据：docs/design/relay-protocol.md + docs/zh/design/relay-protocol.md（路由/WS/鉴权/版本/错误码/ACK/分页/幂等/游标/§9 上限表/§10 示例）；docs-site 导航接入；default-server.md §4 指向该契约）。
+- [x] **DSR-08** 对齐加密信封实际 JSON 与 Schema（依赖 DSR-07；验收：命名与未知字段策略一致，真实序列化信封通过 Schema 检查，记录旧 snake_case 格式的迁移/版本处理，更新双语协议文档）（证据：crates/syncbond-core/src/crypto.rs:36（camelCase + deny_unknown_fields + snake_case 别名）；crates/syncbond-core/tests/envelope_wire_tests.rs:29 等 5 测试（真实信封过 schemas/envelope.schema.json、旧格式兼容、未知/缺失字段拒绝）；PROTOCOL.md §4 双语迁移记录）。
+- [x] **DSR-09** 创建 `crates/syncbond-relay-protocol`（依赖 DSR-07、DSR-08；验收：共享 DTO/错误/大小上限及契约 fixture 可编译测试，不依赖应用服务器、合并实现或异步运行时）（证据：crates/syncbond-relay-protocol（src/lib.rs:33 版本、src/limits.rs:36 上限与校验、src/error.rs 错误码映射、src/dto.rs 闭形状 DTO、fixtures/ 11 份契约 fixture）；19 测试（11 lib + 8 fixture，含真实 core 信封往返与 schema 校验），仅依赖 serde/thiserror）。
 - [ ] **DSR-10** 定义密文中继存储接口（依赖 DSR-09；验收：仅接收信封和路由元数据，明确事务/幂等/分页错误语义，Memory/FileRelayStore 原型不被误用于默认网络服务）。
 - [ ] **DSR-11** 创建 `apps/syncbond-server` 独立 binary crate（依赖 DSR-09；验收：注册 workspace，启动/配置校验/退出入口可运行，记录网络库选择与锁定版本，core 无反向网络或运行时依赖）。
 

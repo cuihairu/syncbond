@@ -75,6 +75,8 @@ interface EncryptedEnvelope {
 
 除 `ciphertext` 外的所有字段都是 AEAD 关联数据（稳定的字节编码）。接收方按顺序拒绝：协议版本不匹配 → 跨组投递 → 错误密钥纪元 → 重放的 `messageId` → 任何 AEAD 失败。`messageId` 为每消息随机的 16 字节；会话维护已见集合，已失效的会话拒绝一切后续流量（重放帧无法使其复活）。
 
+线上 JSON 键为 camelCase，未知字段一律拒绝（`additionalProperties: false`），由 schema 一致性测试强制（`serialized_envelope_passes_the_frozen_schema`）。迁移记录（2026-11-14）：此日期前构建的发送端以 snake_case 键序列化同样七个字段，违反了已冻结的 schema。接收方经字段别名接受旧形态并原样解封——AEAD 关联数据派生自字段值、与 JSON 键无关——而发送端只产出 schema 形态。此项不递增协议版本：早于 2026-11-14 的接收方无法解析 camelCase 形态并大声失败，与 §3 的无协商规则一致。别名仅作用于输入，将在信封 v2 版本移除。
+
 重放检查先于 AEAD 检查运行。能够向接收侧投递帧并观察错误类型的攻击者因此能得知某个 `messageId` 是否已被成功打开过（`Replay` 错误表示是；`AuthenticationFailed` 错误表示否）。这不泄露任何密钥材料，只泄露接收方的*内部*已见状态——而本就能投递帧的对端大体可以通过投递自己的帧推断出这些内容。该顺序是刻意的成本/收益权衡：只有在 AEAD 检查通过之后才记录 id（代码正是这么做的），使被篡改的帧不会永久烧掉它的 id，而 AEAD 前的重放检查则保证拒绝来得早、不在已知重放上浪费 AEAD 计算。
 
 ## 5. 密钥纪元与撤销

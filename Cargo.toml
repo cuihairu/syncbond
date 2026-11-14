@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/syncbond-core",
+    "crates/syncbond-relay-protocol",
     "crates/syncbond-ffi",
     "crates/syncbond-napi",
     "crates/syncbond-python",
@@ -28,6 +29,8 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+# Schema conformance of the frozen envelope wire shape; test-only.
+jsonschema = { version = "0.61", default-features = false }
 
 [profile.test]
 opt-level = 2

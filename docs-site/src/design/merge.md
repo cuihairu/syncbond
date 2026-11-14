@@ -62,9 +62,41 @@ OR-Set element's tag, or decrement a PN-Counter).
 
 ### LwwHlc rules (the default)
 
-1. Causally ordered: the descendant wins. An old device reconnecting with a stale edit cannot resurrect a deleted record — the tombstone's witness dominates (test: `old_device_reconnect_cannot_resurrect_a_delete`).
-2. Concurrent writes: both kept. The higher stamp becomes primary; the loser is appended to `conflicts` (deduplicated by stamp) for the application to resolve (test: `example_2_note_documents_with_offline_conflict`).
-3. Run-ahead clock: if the incoming stamp claims a wall time more than `max_skew_ms` (default 5 min) ahead, it is treated as concurrent regardless of causality — a broken device clock cannot silently overwrite local state; the skewed write is retained and flagged (test: `large_clock_skew_does_not_silently_overwrite`). The local HLC additionally refuses to adopt run-ahead remote stamps (`HybridClock::receive`).
+Merge is a set operation over every version both sides know — the local
+primary together with its retained `conflicts`, and the incoming write
+together with the conflicts it carries — deduplicated by stamp:
+
+1. **Dominated versions drop out.** A version is dominated when *any*
+   version in that pool has demonstrably observed its stamp, per the
+   witnesses. The pool matters, not just the two exchange endpoints: a
+   retained conflict carries its writer's witness, so `A` dominated by `B`
+   stays dominated even after `C` became the primary. An old device
+   reconnecting with a stale edit therefore cannot resurrect a deleted
+   record — the tombstone's witness dominates (test:
+   `old_device_reconnect_cannot_resurrect_a_delete`).
+2. **Concurrent survivors are all kept.** The highest-stamp survivor
+   becomes primary; the rest are retained in `conflicts` for the
+   application to resolve. The conflict set is normalized: deduplicated by
+   stamp and sorted, so both directions of the merge produce the same set
+   (test: `example_2_note_documents_with_offline_conflict`).
+3. **Run-ahead clock.** If the incoming stamp claims a wall time more than
+   `max_skew_ms` (default 5 min) ahead, it is treated as concurrent
+   regardless of causality — a broken device clock cannot silently overwrite
+   local state; the skewed write is retained and flagged. A skewed stamp
+   never wins the primary while a normal survivor exists, so a runaway
+   clock outranks nothing but loses the value. The empty-record path runs
+   the same policy (`MergeOutcome.skew_detected` is set there too), so an
+   anomalous first write is flagged rather than silently accepted. The
+   local HLC additionally refuses to adopt run-ahead remote stamps
+   (`HybridClock::receive`). Tests:
+   `large_clock_skew_does_not_silently_overwrite`,
+   `empty_record_path_flags_a_future_write`,
+   `future_write_outcome_is_order_independent_and_trackable`.
+4. **Supersession knowledge is not dropped.** A dominated version's
+   witness is merged into the resulting record's witness. Otherwise a
+   re-delivery of an already-superseded version could survive as a phantom
+   conflict (test: `independent_writes_converge_under_every_delivery_order`).
+
 
 ## Tombstone garbage collection (implemented)
 
@@ -116,7 +148,16 @@ documented as an application option.
 
 ## Convergence argument
 
-- LWW merge is commutative and idempotent on records (same-stamp short-circuit, dedupe on conflicts).
+- LWW merge is a canonical function of the delivered version set, not of the
+  merge order: dominance and ordering read only stamps and witnesses, the
+  conflict set is normalized (deduplicated by stamp, sorted), and
+  supersession knowledge survives in the merged record's witness. Every
+  delivery permutation of the same writes yields the same primary and the
+  same normalized conflict set (tests:
+  `independent_writes_converge_under_every_delivery_order` — the A=1000 /
+  B=900 having observed A / C=950 matrix over all six delivery orders — and
+  `multi_node_permutation_convergence_property`, a deterministic multi-node
+  witness DAG explored across all `n!` delivery permutations).
 - OR-Set union of adds/removes is a semilattice; observed-remove gives add-wins for unobserved tags.
 - PN-Counter per-node max is a semilattice.
 - Op delivery is idempotent (op-id dedup) and order-free for the strategies above, hence out-of-order + duplicate delivery converges (tests: `out_of_order_and_duplicate_delivery_converge`, `example_3_arbitrary_binary_records`).

@@ -73,6 +73,8 @@ interface EncryptedEnvelope {
 
 All fields except `ciphertext` are AEAD associated data (stable byte encoding). Receivers reject, in order: protocol-version mismatch → cross-group delivery → wrong key epoch → replayed `messageId` → any AEAD failure. `messageId` is random 16 bytes per message; the session keeps the seen-set, and an invalidated session refuses all further traffic (a replayed frame cannot revive it).
 
+Wire JSON keys are camelCase and unknown fields are rejected (`additionalProperties: false`), enforced by a schema-conformance test (`serialized_envelope_passes_the_frozen_schema`). Migration record (2026-11-14): emitters built before this date serialized the same seven fields with snake_case keys, which violated the frozen schema. Receivers accept the legacy shape through per-field aliases and open those envelopes unchanged — the AEAD associated data is derived from field values, never from JSON keys — while emitters produce only the schema shape. This carries no protocol-version bump: a receiver older than 2026-11-14 cannot parse the camelCase shape and fails loudly, consistent with the no-negotiation rule in §3. The aliases are input-only and are removed at a v2 envelope version.
+
 The replay check runs before the AEAD check. An attacker who can deliver a
 frame to the receiving side and observe the error type can therefore learn
 whether a given `messageId` was already opened successfully (a `Replay`

@@ -1,0 +1,21 @@
+{
+  "protocolVersion": 1,
+  "requestId": "req_aa00bb11cc22dd33ee44",
+  "channelId": "ch_9f8e7d6c5b4a3f2e1d0c",
+  "entries": [
+    {
+      "seq": 42,
+      "envelope": {
+        "protocolVersion": 1,
+        "groupId": "g_ab12cd34ef56ab12cd34ef56ab12cd34",
+        "senderDeviceId": "dev_phone",
+        "keyEpoch": 3,
+        "messageId": "m_0192f3e4d5c6b7a8",
+        "nonce": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "ciphertext": "AAAAAAAAAAAAAAAAAAAAAA"
+      }
+    }
+  ],
+  "nextCursor": 42,
+  "hasMore": false
+}

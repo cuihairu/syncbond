@@ -23,12 +23,27 @@ pub type Nonce = [u8; 24];
 
 /// Encrypted envelope. Serialized to JSON for wire transport (bytes become
 /// base64url); in memory the nonce and ciphertext stay raw.
+///
+/// Wire keys are camelCase, exactly as frozen in
+/// `schemas/envelope.schema.json` (`additionalProperties: false` — unknown
+/// JSON keys are rejected). Emitters built before 2026-11-14 serialized the
+/// same fields with snake_case keys; the per-field aliases accept that
+/// legacy shape on input, so a new receiver still opens envelopes from an
+/// old peer. Emitters always produce the schema shape. The legacy aliases
+/// are input-only and ride along until a v2 envelope version bump (there is
+/// no cross-version negotiation).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EncryptedEnvelope {
+    #[serde(alias = "protocol_version")]
     pub protocol_version: u16,
+    #[serde(alias = "group_id")]
     pub group_id: String,
+    #[serde(alias = "sender_device_id")]
     pub sender_device_id: String,
+    #[serde(alias = "key_epoch")]
     pub key_epoch: u64,
+    #[serde(alias = "message_id")]
     pub message_id: String,
     /// 24-byte XChaCha20 nonce.
     #[serde(with = "b64url_nonce")]

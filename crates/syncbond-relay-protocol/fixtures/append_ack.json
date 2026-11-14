@@ -1,0 +1,8 @@
+{
+  "protocolVersion": 1,
+  "requestId": "req_5f6e7d8c9b0a1f2e3d4c",
+  "channelId": "ch_9f8e7d6c5b4a3f2e1d0c",
+  "acks": [
+    {"messageId": "m_0192f3e4d5c6b7a8", "seq": 42, "duplicate": false}
+  ]
+}

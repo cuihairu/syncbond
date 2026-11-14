@@ -1,0 +1,9 @@
+{
+  "protocol_version": 1,
+  "group_id": "g_ab12cd34ef56ab12cd34ef56ab12cd34",
+  "sender_device_id": "dev_phone",
+  "key_epoch": 3,
+  "message_id": "m_0192f3e4d5c6b7a8",
+  "nonce": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  "ciphertext": "AAAAAAAAAAAAAAAAAAAAAA"
+}

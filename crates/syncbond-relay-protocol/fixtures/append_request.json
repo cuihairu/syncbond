@@ -1,0 +1,15 @@
+{
+  "protocolVersion": 1,
+  "requestId": "req_5f6e7d8c9b0a1f2e3d4c",
+  "envelopes": [
+    {
+      "protocolVersion": 1,
+      "groupId": "g_ab12cd34ef56ab12cd34ef56ab12cd34",
+      "senderDeviceId": "dev_phone",
+      "keyEpoch": 3,
+      "messageId": "m_0192f3e4d5c6b7a8",
+      "nonce": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "ciphertext": "AAAAAAAAAAAAAAAAAAAAAA"
+    }
+  ]
+}

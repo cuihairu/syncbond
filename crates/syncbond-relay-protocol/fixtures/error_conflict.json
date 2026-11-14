@@ -1,0 +1,9 @@
+{
+  "protocolVersion": 1,
+  "requestId": "req_5f6e7d8c9b0a1f2e3d4c",
+  "error": {
+    "code": "idempotency_conflict",
+    "message": "messageId m_0192f3e4d5c6b7a8 already committed with different content",
+    "retryable": false
+  }
+}

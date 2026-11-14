@@ -2,7 +2,7 @@
 
 # Default relay server: architecture and delivery boundary
 
-Status: **planned on 2026-11-14; not implemented**. This document records layout, responsibilities and acceptance criteria. Atomic tasks live in the repository-root `todo.md`, under the default server plan (DSR). This is not an available API or deployment guide; exact routes and message shapes are frozen in DSR-07.
+Status: **planned on 2026-11-14; not implemented**. This document records layout, responsibilities and acceptance criteria. Atomic tasks live in the repository-root `todo.md`, under the default server plan (DSR). This is not an available API or deployment guide; the exact routes, WebSocket messages, auth, error codes and limits are frozen in the [relay protocol v1 contract](relay-protocol.md) (DSR-07).
 
 ## 1. Current state and goal
 
@@ -44,6 +44,8 @@ The server sees routing metadata, timing, sizes, ciphertext and pairing protocol
 Separate service access from end-to-end group authorization. Initially the deployer holds an administration credential, creates channels and issues random per-device, per-channel credentials with read/write permissions. Credentials can be revoked independently without user accounts. Neither group IDs nor device IDs are credentials. Deliver credentials through protected configuration and TLS requests, never URLs or logs; initial distribution belongs to the application/deployer. Service credential revocation does not replace group key rotation.
 
 ## 4. Minimal network contract
+
+The authoritative detail — exact routes, message shapes, error codes and every limit — is the frozen [relay protocol v1 contract](relay-protocol.md). This section records only the invariants behind it.
 
 Use HTTP for control and pull requests, WebSocket for pairing forwarding and update notifications. Notifications are hints; durable logs and pull cursors are authoritative. Disconnects must not lose unacknowledged data.
 
