@@ -28,8 +28,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use rusqlite::{params, Connection};
-use syncbond_relay_protocol::dto::Envelope;
+use rusqlite::{params, Connection, OptionalExtension};
+use syncbond_relay_protocol::dto::{Envelope, EnvelopeAck};
 use syncbond_relay_protocol::error::RelayErrorCode;
 
 use crate::storage::{AppendOutcome, PullPage, RelayStorage, StorageError};
@@ -153,10 +153,14 @@ fn migrate(conn: &Connection, path: &Path) -> Result<(), StoreOpenError> {
     Ok(())
 }
 
+/// The one storage failure that carries no more specific relay code.
+fn internal_error() -> StorageError {
+    StorageError::new(RelayErrorCode::Internal)
+}
+
 impl RelayStorage for SqliteRelayStore {
     fn head(&self, channel: &str) -> Result<u64, StorageError> {
-        let internal = || StorageError::new(RelayErrorCode::Internal);
-        let conn = self.conn.lock().map_err(|_| internal())?;
+        let conn = self.conn.lock().map_err(|_| internal_error())?;
         // SQLite integers are i64; stored seq values are non-negative by
         // construction, so a negative MAX here means on-disk corruption.
         let head: i64 = conn
@@ -165,18 +169,95 @@ impl RelayStorage for SqliteRelayStore {
                 params![channel],
                 |row| row.get(0),
             )
-            .map_err(|_| internal())?;
-        head.try_into().map_err(|_| internal())
+            .map_err(|_| internal_error())?;
+        head.try_into().map_err(|_| internal_error())
     }
 
-    fn append(
-        &self,
-        _channel: &str,
-        _envelopes: &[Envelope],
-    ) -> Result<AppendOutcome, StorageError> {
-        // DSR-13 wires the transactional append (all-or-nothing batch with
-        // idempotent ACKs) on top of this schema. Nothing routes here yet.
-        unimplemented!("transactional append lands in DSR-13")
+    /// Append a batch inside one immediate transaction: sequences are
+    /// assigned in batch order, a retry of an identical envelope returns
+    /// the originally committed sequence with `duplicate: true`, a retry
+    /// of the same id with different ciphertext is a hard
+    /// idempotency_conflict, and any failure rolls the whole batch back —
+    /// no ACK is produced that the log does not hold (DSR-13).
+    fn append(&self, channel: &str, envelopes: &[Envelope]) -> Result<AppendOutcome, StorageError> {
+        if envelopes.is_empty() {
+            return Ok(AppendOutcome { acks: Vec::new() });
+        }
+        let mut conn = self.conn.lock().map_err(|_| internal_error())?;
+        // Immediate: take the write lock up front so the sequence window
+        // we compute cannot be invalidated by a concurrent writer before
+        // commit. The process is single-instance by design (module docs).
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|_| internal_error())?;
+        let channel_exists: bool = tx
+            .query_row(
+                "SELECT 1 FROM channels WHERE id = ?1",
+                params![channel],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(|_| internal_error())?
+            .is_some();
+        if !channel_exists {
+            let _ = tx.rollback();
+            return Err(StorageError::new(RelayErrorCode::ChannelNotFound));
+        }
+        let head: i64 = tx
+            .query_row(
+                "SELECT COALESCE(MAX(seq), 0) FROM envelopes WHERE channel = ?1",
+                params![channel],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|_| internal_error())?;
+        let mut next_seq = u64::try_from(head).map_err(|_| internal_error())? + 1;
+        let mut acks = Vec::with_capacity(envelopes.len());
+        for envelope in envelopes {
+            let payload = serde_json::to_string(envelope).map_err(|_| internal_error())?;
+            let stored: Option<(i64, String)> = tx
+                .query_row(
+                    "SELECT seq, payload FROM envelopes \
+                     WHERE channel = ?1 AND message_id = ?2",
+                    params![channel, envelope.message_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(|_| internal_error())?;
+            if let Some((seq, stored_payload)) = stored {
+                if stored_payload == payload {
+                    let seq = u64::try_from(seq).map_err(|_| internal_error())?;
+                    acks.push(EnvelopeAck {
+                        message_id: envelope.message_id.clone(),
+                        seq,
+                        duplicate: true,
+                    });
+                    continue;
+                }
+                // Same id, different ciphertext: the client is reusing an
+                // id across distinct payloads. Reject the whole batch.
+                let _ = tx.rollback();
+                return Err(StorageError::new(RelayErrorCode::IdempotencyConflict));
+            }
+            tx.execute(
+                "INSERT INTO envelopes(channel, seq, message_id, payload) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    channel,
+                    i64::try_from(next_seq).map_err(|_| internal_error())?,
+                    envelope.message_id,
+                    payload
+                ],
+            )
+            .map_err(|_| internal_error())?;
+            acks.push(EnvelopeAck {
+                message_id: envelope.message_id.clone(),
+                seq: next_seq,
+                duplicate: false,
+            });
+            next_seq += 1;
+        }
+        tx.commit().map_err(|_| internal_error())?;
+        Ok(AppendOutcome { acks })
     }
 
     fn pull(
@@ -303,6 +384,200 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM envelopes", [], |row| row.get(0))
             .unwrap();
         assert_eq!(rows, 3);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    fn sample_envelope(channel: &str, id: &str, body: &str) -> Envelope {
+        Envelope {
+            protocol_version: 1,
+            group_id: channel.to_string(),
+            sender_device_id: "device-a".to_string(),
+            key_epoch: 1,
+            message_id: id.to_string(),
+            nonce: "nonce".to_string(),
+            ciphertext: body.to_string(),
+        }
+    }
+
+    fn create_channel(path: &Path, channel: &str) {
+        let conn = raw_connection(path);
+        conn.execute("INSERT INTO channels(id) VALUES (?1)", params![channel])
+            .unwrap();
+    }
+
+    fn envelope_count(path: &Path, channel: &str) -> i64 {
+        let conn = raw_connection(path);
+        conn.query_row(
+            "SELECT COUNT(*) FROM envelopes WHERE channel = ?1",
+            params![channel],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn append_assigns_contiguous_sequences() {
+        let path = temp_db("append-seqs");
+        let channel = "ch-append";
+        SqliteRelayStore::open(&path).unwrap();
+        create_channel(&path, channel);
+        let store = SqliteRelayStore::open(&path).unwrap();
+        let batch = [
+            sample_envelope(channel, "msg-1", "ciphertext-1"),
+            sample_envelope(channel, "msg-2", "ciphertext-2"),
+        ];
+        let outcome = store.append(channel, &batch).unwrap();
+        let seqs: Vec<u64> = outcome
+            .acks
+            .iter()
+            .map(|ack| (ack.seq, ack.duplicate))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|(seq, _)| seq)
+            .collect();
+        assert_eq!(seqs, vec![1, 2], "sequences must be contiguous from head+1");
+        assert!(outcome.acks.iter().all(|ack| !ack.duplicate));
+        assert_eq!(store.head(channel).unwrap(), 2);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn duplicate_retry_returns_original_sequence_without_burning_one() {
+        let path = temp_db("append-retry");
+        let channel = "ch-retry";
+        SqliteRelayStore::open(&path).unwrap();
+        create_channel(&path, channel);
+        let store = SqliteRelayStore::open(&path).unwrap();
+        let first = sample_envelope(channel, "msg-1", "ciphertext-1");
+        let ack = store
+            .append(channel, std::slice::from_ref(&first))
+            .unwrap()
+            .acks
+            .remove(0);
+        assert_eq!((ack.seq, ack.duplicate), (1, false));
+        // Identical retry: same seq, marked duplicate, no new row.
+        let ack = store.append(channel, &[first]).unwrap().acks.remove(0);
+        assert_eq!((ack.seq, ack.duplicate), (1, true));
+        assert_eq!(store.head(channel).unwrap(), 1);
+        // A fresh id after the retry takes the next sequence: the retry
+        // must not have consumed one.
+        let ack = store
+            .append(
+                channel,
+                &[sample_envelope(channel, "msg-2", "ciphertext-2")],
+            )
+            .unwrap()
+            .acks
+            .remove(0);
+        assert_eq!((ack.seq, ack.duplicate), (2, false));
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn conflicting_content_is_rejected_without_side_effects() {
+        let path = temp_db("append-conflict");
+        let channel = "ch-conflict";
+        SqliteRelayStore::open(&path).unwrap();
+        create_channel(&path, channel);
+        let store = SqliteRelayStore::open(&path).unwrap();
+        store
+            .append(
+                channel,
+                &[sample_envelope(channel, "msg-1", "ciphertext-a")],
+            )
+            .unwrap();
+        let error = store
+            .append(
+                channel,
+                &[sample_envelope(channel, "msg-1", "ciphertext-b")],
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), RelayErrorCode::IdempotencyConflict);
+        assert_eq!(store.head(channel).unwrap(), 1);
+        assert_eq!(envelope_count(&path, channel), 1);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn failed_batch_rolls_back_atomically() {
+        let path = temp_db("append-atomic");
+        let channel = "ch-atomic";
+        SqliteRelayStore::open(&path).unwrap();
+        create_channel(&path, channel);
+        let store = SqliteRelayStore::open(&path).unwrap();
+        store
+            .append(channel, &[sample_envelope(channel, "msg-1", "committed")])
+            .unwrap();
+        // The second item of the batch reuses a committed id with
+        // different content: the injected commit failure. The first,
+        // individually fine item must vanish with the batch.
+        let batch = [
+            sample_envelope(channel, "msg-2", "doomed"),
+            sample_envelope(channel, "msg-1", "forged"),
+        ];
+        let error = store.append(channel, &batch).unwrap_err();
+        assert_eq!(error.code(), RelayErrorCode::IdempotencyConflict);
+        assert_eq!(store.head(channel).unwrap(), 1, "head must not move");
+        assert_eq!(envelope_count(&path, channel), 1, "no dirty rows");
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn unknown_channel_is_rejected_without_writes() {
+        let path = temp_db("append-unknown-channel");
+        let store = SqliteRelayStore::open(&path).unwrap();
+        let error = store
+            .append(
+                "ghost-channel",
+                &[sample_envelope("ghost-channel", "msg-1", "x")],
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), RelayErrorCode::ChannelNotFound);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn committed_records_survive_restart() {
+        let path = temp_db("append-restart");
+        let channel = "ch-restart";
+        SqliteRelayStore::open(&path).unwrap();
+        create_channel(&path, channel);
+        {
+            let store = SqliteRelayStore::open(&path).unwrap();
+            store
+                .append(
+                    channel,
+                    &[
+                        sample_envelope(channel, "msg-1", "ciphertext-1"),
+                        sample_envelope(channel, "msg-2", "ciphertext-2"),
+                    ],
+                )
+                .unwrap();
+        }
+        let store = SqliteRelayStore::open(&path).unwrap();
+        assert_eq!(store.head(channel).unwrap(), 2);
+        assert_eq!(envelope_count(&path, channel), 2);
+        // ACKed ids stay idempotent across the restart too.
+        let ack = store
+            .append(
+                channel,
+                &[sample_envelope(channel, "msg-1", "ciphertext-1")],
+            )
+            .unwrap()
+            .acks
+            .remove(0);
+        assert_eq!((ack.seq, ack.duplicate), (1, true));
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn empty_batch_is_a_no_op() {
+        let path = temp_db("append-empty");
+        SqliteRelayStore::open(&path).unwrap();
+        let store = SqliteRelayStore::open(&path).unwrap();
+        // A no-op needs no channel to exist and must touch nothing.
+        let outcome = store.append("any-channel", &[]).unwrap();
+        assert!(outcome.acks.is_empty());
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 }
