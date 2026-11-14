@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use rusqlite::{params, Connection, OptionalExtension};
-use syncbond_relay_protocol::dto::{Envelope, EnvelopeAck};
+use syncbond_relay_protocol::dto::{Envelope, EnvelopeAck, PullEntry};
 use syncbond_relay_protocol::error::RelayErrorCode;
 
 use crate::storage::{AppendOutcome, PullPage, RelayStorage, StorageError};
@@ -262,13 +262,91 @@ impl RelayStorage for SqliteRelayStore {
 
     fn pull(
         &self,
-        _channel: &str,
-        _after: u64,
-        _limit: u16,
-        _max_bytes: u64,
+        channel: &str,
+        after: u64,
+        limit: u16,
+        max_bytes: u64,
     ) -> Result<PullPage, StorageError> {
-        // DSR-14 wires cursor-bounded pagination. Nothing routes here yet.
-        unimplemented!("paginated pull lands in DSR-14")
+        // The HTTP layer resolves None to the frozen defaults and rejects
+        // out-of-range values via `effective_pull_limits`; a zero here would
+        // make the cursor loop without advancing, so refuse it too.
+        if limit == 0 {
+            return Err(StorageError::new(RelayErrorCode::BadRequest));
+        }
+
+        let conn = self.conn.lock().map_err(|_| internal_error())?;
+
+        let found: Option<i64> = conn
+            .query_row(
+                "SELECT 1 FROM channels WHERE id = ?1",
+                params![channel],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(|_| internal_error())?;
+        if found.is_none() {
+            return Err(StorageError::new(RelayErrorCode::ChannelNotFound));
+        }
+
+        let head: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(seq), 0) FROM envelopes WHERE channel = ?1",
+                params![channel],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|_| internal_error())?;
+        let head = u64::try_from(head).map_err(|_| internal_error())?;
+        if after > head {
+            return Err(StorageError::new(RelayErrorCode::CursorInvalid));
+        }
+        let after = i64::try_from(after).map_err(|_| internal_error())?;
+
+        // Fetch one row past the limit so a full page can be told apart
+        // from the true end of the channel.
+        let mut stmt = conn
+            .prepare(
+                "SELECT seq, payload FROM envelopes
+                 WHERE channel = ?1 AND seq > ?2
+                 ORDER BY seq ASC
+                 LIMIT ?3",
+            )
+            .map_err(|_| internal_error())?;
+        let mut rows = stmt
+            .query(params![channel, after, i64::from(limit) + 1])
+            .map_err(|_| internal_error())?;
+
+        let mut entries = Vec::new();
+        let mut used_bytes = 0u64;
+        let mut has_more = false;
+        while let Some(row) = rows.next().map_err(|_| internal_error())? {
+            if entries.len() == usize::from(limit) {
+                has_more = true;
+                break;
+            }
+            let seq = row.get::<_, i64>(0).map_err(|_| internal_error())?;
+            let seq = u64::try_from(seq).map_err(|_| internal_error())?;
+            let payload: String = row.get(1).map_err(|_| internal_error())?;
+            let envelope: Envelope =
+                serde_json::from_str(&payload).map_err(|_| internal_error())?;
+            let entry = PullEntry { seq, envelope };
+            let entry_bytes = serde_json::to_string(&entry)
+                .map_err(|_| internal_error())?
+                .len() as u64;
+            // A single entry above the cap is an error, never an empty
+            // page: an empty page would loop forever on the client.
+            if entry_bytes > max_bytes {
+                return Err(StorageError::new(RelayErrorCode::ItemTooLarge));
+            }
+            if used_bytes + entry_bytes > max_bytes {
+                // This entry belongs to the next page; the cursor stops at
+                // the last delivered sequence.
+                has_more = true;
+                break;
+            }
+            used_bytes += entry_bytes;
+            entries.push(entry);
+        }
+        Ok(PullPage { entries, has_more })
     }
 }
 
@@ -578,6 +656,152 @@ mod tests {
         // A no-op needs no channel to exist and must touch nothing.
         let outcome = store.append("any-channel", &[]).unwrap();
         assert!(outcome.acks.is_empty());
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    /// Open a store, create `channel`, and append five envelopes with
+    /// uniform shapes so their serialized sizes match.
+    fn five_envelope_store(path: &Path, channel: &str) -> SqliteRelayStore {
+        let store = SqliteRelayStore::open(path).unwrap();
+        create_channel(path, channel);
+        store
+            .append(
+                channel,
+                &[
+                    sample_envelope(channel, "id-1", "body-1"),
+                    sample_envelope(channel, "id-2", "body-2"),
+                    sample_envelope(channel, "id-3", "body-3"),
+                    sample_envelope(channel, "id-4", "body-4"),
+                    sample_envelope(channel, "id-5", "body-5"),
+                ],
+            )
+            .unwrap();
+        store
+    }
+
+    #[test]
+    fn pull_walks_pages_and_cursor_stops_at_last_delivery() {
+        let path = temp_db("pull-walk");
+        let channel = "walk-chan";
+        let store = five_envelope_store(&path, channel);
+
+        // Two entries per page, three pages, cursor lands on each page's
+        // last delivered sequence.
+        let page = store.pull(channel, 0, 2, u64::MAX).unwrap();
+        assert_eq!(
+            page.entries.iter().map(|e| e.seq).collect::<Vec<_>>(),
+            [1, 2]
+        );
+        assert!(page.has_more);
+        assert_eq!(page.entries[1].envelope.message_id, "id-2");
+
+        let page = store.pull(channel, 2, 2, u64::MAX).unwrap();
+        assert_eq!(
+            page.entries.iter().map(|e| e.seq).collect::<Vec<_>>(),
+            [3, 4]
+        );
+        assert!(page.has_more);
+
+        let page = store.pull(channel, 4, 2, u64::MAX).unwrap();
+        assert_eq!(page.entries.iter().map(|e| e.seq).collect::<Vec<_>>(), [5]);
+        // Head reached: no phantom has_more to send the client back around.
+        assert!(!page.has_more);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn pull_at_head_returns_empty_page_without_moving_cursor() {
+        let path = temp_db("pull-empty");
+        let channel = "empty-chan";
+        let store = five_envelope_store(&path, channel);
+
+        // Cursor at head: an empty page and nothing to advance to.
+        let page = store.pull(channel, 5, 4, u64::MAX).unwrap();
+        assert!(page.entries.is_empty());
+        assert!(!page.has_more);
+        // The same request must return the same empty page: the cursor
+        // was not skipped past anything.
+        let again = store.pull(channel, 5, 4, u64::MAX).unwrap();
+        assert_eq!(page, again);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn pull_rejects_invalid_cursor_and_unknown_channel() {
+        let path = temp_db("pull-bad-cursor");
+        let channel = "cursor-chan";
+        let store = five_envelope_store(&path, channel);
+
+        let error = store.pull(channel, 6, 4, u64::MAX).unwrap_err();
+        assert_eq!(error.code(), RelayErrorCode::CursorInvalid);
+        let error = store.pull("no-such-channel", 0, 4, u64::MAX).unwrap_err();
+        assert_eq!(error.code(), RelayErrorCode::ChannelNotFound);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn pull_single_entry_over_byte_cap_is_an_error_not_a_page() {
+        let path = temp_db("pull-item-too-large");
+        let channel = "big-chan";
+        let store = five_envelope_store(&path, channel);
+
+        // Calibrate: the real serialized size of one entry.
+        let one = store.pull(channel, 0, 1, u64::MAX).unwrap();
+        let entry_bytes = serde_json::to_string(&one.entries[0]).unwrap().len() as u64;
+
+        // One byte under: the entry alone busts the cap, so an explicit
+        // error rather than an empty page (which would loop the client).
+        let error = store.pull(channel, 0, 4, entry_bytes - 1).unwrap_err();
+        assert_eq!(error.code(), RelayErrorCode::ItemTooLarge);
+        // Exactly the cap: the single entry fits.
+        let page = store.pull(channel, 0, 4, entry_bytes).unwrap();
+        assert_eq!(page.entries.len(), 1);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn pull_byte_cap_splits_pages_without_skipping_entries() {
+        let path = temp_db("pull-byte-split");
+        let channel = "split-chan";
+        let store = five_envelope_store(&path, channel);
+
+        let one = store.pull(channel, 0, 1, u64::MAX).unwrap();
+        let entry_bytes = serde_json::to_string(&one.entries[0]).unwrap().len() as u64;
+
+        // Two entries fit exactly; the rest wait behind the same cursor.
+        let page = store.pull(channel, 0, 64, entry_bytes * 2).unwrap();
+        assert_eq!(
+            page.entries.iter().map(|e| e.seq).collect::<Vec<_>>(),
+            [1, 2]
+        );
+        assert!(page.has_more);
+
+        // Three entries remain and all fit in a raised cap: now the
+        // count limit (64) is what would bound the page, not bytes.
+        let page = store.pull(channel, 2, 64, entry_bytes * 3).unwrap();
+        assert_eq!(
+            page.entries.iter().map(|e| e.seq).collect::<Vec<_>>(),
+            [3, 4, 5]
+        );
+        assert!(!page.has_more);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn pull_survives_restart_and_stays_gap_free() {
+        let path = temp_db("pull-restart");
+        let channel = "restart-chan";
+        {
+            let store = five_envelope_store(&path, channel);
+            assert_eq!(store.head(channel).unwrap(), 5);
+        }
+        let store = SqliteRelayStore::open(&path).unwrap();
+        let page = store.pull(channel, 0, 64, u64::MAX).unwrap();
+        assert_eq!(
+            page.entries.iter().map(|e| e.seq).collect::<Vec<_>>(),
+            [1, 2, 3, 4, 5]
+        );
+        assert!(!page.has_more);
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 }
