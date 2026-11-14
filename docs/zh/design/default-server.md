@@ -12,7 +12,7 @@
 
 ## 2. 目录与依赖
 
-以下为计划目录，目前尚不存在：
+除 `crates/syncbond-relay-protocol/` 已实现外，下列目录均为计划中的，目前尚不存在：
 
 ```text
 apps/syncbond-server/

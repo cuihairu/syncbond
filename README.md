@@ -27,13 +27,13 @@ Cryptography is assembled on maintained, audited components — RustCrypto `p256
 
 ## Current status
 
-The Rust core is implemented and exercised by the workspace test suite (currently 75+ tests), including all four RFC 9382 Appendix B vectors and three unrelated example applications (generic KV, note documents, arbitrary binary records) running on the same core. Bindings for C, C++, Python, Go, Java, C#, TypeScript (napi), and browser WASM all run the same cross-language conformance fixture byte-for-byte.
+The Rust core is implemented and exercised by the workspace test suite (232 tests as of 2026-11-14), including all four RFC 9382 Appendix B vectors and three unrelated example applications (generic KV, note documents, arbitrary binary records) running on the same core. Bindings for C, C++, Python, Go, Java, C#, TypeScript (napi), and browser WASM all run the same cross-language conformance fixture byte-for-byte.
 
 Progress and open decisions: [`todo.md`](todo.md). Protocol contract: [`docs/design/PROTOCOL.md`](docs/design/PROTOCOL.md). Merge design: [`docs/design/merge.md`](docs/design/merge.md). Language decision: [`docs/design/language.md`](docs/design/language.md). Requirements baseline: [`docs/requirements.md`](docs/requirements.md). Landscape survey: [`docs/research/survey-2026-10-21.md`](docs/research/survey-2026-10-21.md).
 
 ## Default server plan
 
-There is no deployable default server yet; `FileRelayStore` is a plaintext `Operation` storage prototype. The plan places the optional self-hosted ciphertext relay in `apps/syncbond-server/`, client networking in `crates/syncbond-transport-ws/`, and shared transport contracts in `crates/syncbond-relay-protocol/`. These directories and deployment files are not implemented yet.
+There is no deployable default server yet; `FileRelayStore` is a plaintext `Operation` storage prototype. The frozen wire contract the server will serve — shared DTOs, 17 stable error codes, and size limits — is implemented in [`crates/syncbond-relay-protocol/`](crates/syncbond-relay-protocol) and documented in the [relay protocol (v1)](docs/design/relay-protocol.md) spec, which core-sealed envelopes are proven against byte-for-byte. The server itself (`apps/syncbond-server/`) and client networking (`crates/syncbond-transport-ws/`) are not implemented yet.
 
 See the [default relay server design](docs/design/default-server.md) for responsibilities, trust boundaries and acceptance criteria, and [todo.md](todo.md#默认服务器实施计划2026-11-14全部待实现) for atomic tasks and dependencies. Replication recovery and convergence fixes block delivery; passing storage or cross-language conformance tests does not establish real cross-device synchronization.
 
@@ -57,8 +57,9 @@ sha256sum -c --ignore-missing SHA256SUMS   # after downloading the assets you wa
 ## Layout
 
 ```
-crates/syncbond-core/   the Rust core (pairing, crypto, replication, conflict, storage, transport)
-crates/syncbond-ffi/    the C ABI (cdylib + headers), plus the C++/Go/Java/C# bindings and conformance fixtures
+crates/syncbond-core/          the Rust core (pairing, crypto, replication, conflict, storage, transport)
+crates/syncbond-ffi/           the C ABI (cdylib + headers), plus the C++/Go/Java/C# bindings and conformance fixtures
+crates/syncbond-relay-protocol/ the frozen relay v1 wire contract (DTOs, error codes, limits) shared by client and server
 crates/syncbond-napi/   Node.js TypeScript bindings (napi-rs over the C ABI)
 crates/syncbond-wasm/   browser WASM bindings (wasm-bindgen over the core)
 crates/syncbond-python/ Python bindings (PyO3 over the C ABI)

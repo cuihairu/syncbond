@@ -52,9 +52,9 @@ Independent confirmation of the *mechanism's* feasibility is well established (R
 
 ## 4. Fit for syncbond
 
-syncbond is already accountless, key-addressed, E2EE, and transport-agnostic, with a working **WebSocket minimal persistent relay** (`crates/syncbond-core/src/relay.rs`, P2 首项, commit `27c139d`). iroh would not replace the pairing/sync protocol — it would replace/augment the *transport* under it:
+syncbond is already accountless, key-addressed, E2EE, and transport-agnostic, with a **durable, resumable relay store** (`crates/syncbond-core/src/relay.rs`, commit `27c139d`) — that is storage with an oplog cursor, not a WebSocket transport: core contains no network I/O, and transports are application-injected behind the `Transport` trait. iroh would not replace the pairing/sync protocol — it would replace/augment the *transport* under it:
 
-| Aspect | Current WebSocket relay | iroh transport |
+| Aspect | Current relay store | iroh transport |
 |---|---|---|
 | Topology | central server relays everything | direct-first (95%+ illustrative), relay only on failure |
 | Relay role | the main path | a fallback |

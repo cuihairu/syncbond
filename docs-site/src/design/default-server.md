@@ -12,7 +12,7 @@ Deliver an optional, self-hosted Rust relay supporting pairing between independe
 
 ## 2. Layout and dependencies
 
-These directories are planned and do not exist yet:
+Every path below except `crates/syncbond-relay-protocol/` is planned and does not exist yet:
 
 ```text
 apps/syncbond-server/

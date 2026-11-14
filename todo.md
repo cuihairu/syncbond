@@ -274,3 +274,7 @@ P3：
 - [x] 对 2026-11-09「剩余 66 行不可达清单」的三处更正：member_crypto.rs:307、pairing_spake2.rs:250-252/332-334/303、scenario.rs:279/283 当时段定为不可达/防御分支，实际可达（伪造重签轮换、公共确定性构造器、缺字段 fixture），本轮已闭合并补测试；其余条目复核属实（member_crypto 279-280/288-291/451——with_epoch 的 device_id_from_public_key 前置校验使公共 API 无法送入伪钥；spake2:117 概率重试；relay:127 裸路径行界伪影；replication:374/508 前置不变量；abi catch_unwind/OOM 防御；napi/python #[napi]/#[pymethods] 宏胶水与 AsyncTask Env 门槛——sync()/resolve 仅 Node 运行时可执行，进程内测试只能直调 compute()）。
 - [x] 98% 目标评估：CI 口径剔除 wasm 后 97.27%，未达；剩余缺口全部为上述宏胶水/Env 门槛/防御分支/不可达幽灵行，在不改生产行为、不写凑数测试的前提下不可达，如实记录上限。每轮巡检后代码增长都会摊薄比率（11-09 快照 98.50% → 本轮起点 97.07% 即此效应），可持续做法是把「新增代码同批带测试」作为惯例而非事后补测冲比率。
 - [x] 观察项（未动 CI，留待用户拍板）：ci.yml 的 test 与 coverage 两 job 均不带 `--all-features`，lan mDNS 代码与其 9 个测试从不进 CI（本轮全部本地验证）；若需 CI 兜底，可在 coverage job 加一步 `cargo test --workspace --all-features`。另：llvm-cov 下 wasm_node 测试依赖 wasm32 无插桩缓存——`cargo llvm-cov clean`（全清）后 wasm-pack 继承 `-C instrument-coverage` 环境重编 wasm32 必失败（E0463 profiler_builtins），须先无插桩 `wasm-pack build` 重建缓存、或用 `cargo llvm-cov clean --profraw-only`（本巡检采用后者，两口径复测 exit 0）。（证据：/tmp/cov_all.txt E0463 失败记录 → 重建缓存后通过）
+
+## 文档站语言自动识别（2026-11-14，fleet-docs-audit-G2 待拍板）
+
+- [ ] 文档站浏览器语言自动识别跳转（P2，等用户拍板范围）：站有 `locales` root=英文 / zh=中文 与 `langSwitcher`（`docs-site/src/.vitepress/config.mts:21-22`），但无 `navigator.language` 探测、无 `rootLocale` 重定向，访客只能手动切换。舰队再审计（fleet-docs-audit-G2）对 67 个公开仓跑 `scripts/fleet-url-contract.py` 契约探针：0 个仓检出任何自动识别机制，故自动跳转列为增强项待用户拍板哪些仓上；受规基线维持「手动切换 + 显式链接」

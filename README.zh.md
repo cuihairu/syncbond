@@ -27,13 +27,13 @@ SDK 不理解、不解释、不决定业务数据的含义：载荷是不透明�
 
 ## 当前状态
 
-Rust 核心已实现，由 workspace 测试套件覆盖（当前 75+ 测试），含 RFC 9382 附录 B 全部四组向量，以及跑在同一核心上的三个互不相关的示例应用（通用 KV、笔记文档、任意二进制记录）。C/C++/Python/Go/Java/C#/TypeScript(napi)/浏览器 WASM 绑定全部逐字节跑同一条跨语言 conformance fixture。
+Rust 核心已实现，由 workspace 测试套件覆盖（截至 2026-11-14 共 232 个测试），含 RFC 9382 附录 B 全部四组向量，以及跑在同一核心上的三个互不相关的示例应用（通用 KV、笔记文档、任意二进制记录）。C/C++/Python/Go/Java/C#/TypeScript(napi)/浏览器 WASM 绑定全部逐字节跑同一条跨语言 conformance fixture。
 
 进度与待拍板项：[`todo.md`](todo.md)。协议契约：[`docs/zh/design/PROTOCOL.md`](docs/zh/design/PROTOCOL.md)。合并设计：[`docs/zh/design/merge.md`](docs/zh/design/merge.md)。语言决策：[`docs/zh/design/language.md`](docs/zh/design/language.md)。需求基线：[`docs/zh/requirements.md`](docs/zh/requirements.md)。现状调研：[`docs/zh/research/survey-2026-10-21.md`](docs/zh/research/survey-2026-10-21.md)。
 
 ## 默认服务器规划
 
-目前没有可直接部署的默认服务器；`FileRelayStore` 是保存明文 `Operation` 的存储原型。计划在 `apps/syncbond-server/` 实现可选自托管的密文中继，在 `crates/syncbond-transport-ws/` 实现客户端网络接入，并以 `crates/syncbond-relay-protocol/` 共享传输契约。目录与部署文件尚未实现。
+目前没有可直接部署的默认服务器；`FileRelayStore` 是保存明文 `Operation` 的存储原型。服务器将遵守的线上契约——共享 DTO、17 个稳定错误码、尺寸上限——已在 [`crates/syncbond-relay-protocol/`](crates/syncbond-relay-protocol) 实现并冻结于[中继协议（v1）](docs/zh/design/relay-protocol.md)文档，核心封印的信封已被证明可逐字节通过该契约。服务器本体（`apps/syncbond-server/`）与客户端网络接入（`crates/syncbond-transport-ws/`）尚未实现。
 
 职责、信任边界与验收标准见 [默认中继服务器设计](docs/zh/design/default-server.md)；原子任务及依赖见 [todo.md](todo.md#默认服务器实施计划2026-11-14全部待实现)。复制恢复与收敛修复是交付前置阻断项；现有中继存储测试或多语言 conformance 通过不代表真实跨设备同步已完成。
 
@@ -57,8 +57,9 @@ sha256sum -c --ignore-missing SHA256SUMS   # 先下载所需资产
 ## 目录
 
 ```
-crates/syncbond-core/   Rust 核心（pairing、crypto、replication、conflict、storage、transport）
-crates/syncbond-ffi/    C ABI（cdylib + 头文件）+ C++/Go/Java/C# 绑定与 conformance fixture
+crates/syncbond-core/          Rust 核心（pairing、crypto、replication、conflict、storage、transport）
+crates/syncbond-ffi/           C ABI（cdylib + 头文件）+ C++/Go/Java/C# 绑定与 conformance fixture
+crates/syncbond-relay-protocol/ 中继 v1 线上契约（DTO、错误码、上限），客户端与服务器共享
 crates/syncbond-napi/   Node.js TypeScript 绑定（napi-rs over C ABI）
 crates/syncbond-wasm/   浏览器 WASM 绑定（wasm-bindgen over 核心）
 crates/syncbond-python/ Python 绑定（PyO3 over C ABI）
