@@ -37,6 +37,12 @@
 //! The in-memory copy redacts itself from [`fmt::Debug`] and compares in
 //! constant time, so it can neither leak through logs nor take a timing
 //! side channel into the HTTP layer.
+//!
+//! DSR-18 enforces the append budgets on the same transactional basis: a
+//! batch is only committed after the channel and disk byte counts were
+//! checked against [`Quotas`], and a refusal rolls the whole batch back
+//! rather than half-consume a budget. Quotas can never block a read, and
+//! v1 never prunes — a full channel stays readable at its full history.
 
 // Until DSR-19 wires the HTTP layer, the admin-plane surface (the admin
 // credential and its verification) is exercised by tests only.
@@ -197,6 +203,28 @@ fn hex_encode(bytes: &[u8]) -> String {
 pub struct SqliteRelayStore {
     conn: Mutex<Connection>,
     admin_credential: AdminCredential,
+    quotas: Quotas,
+    db_path: PathBuf,
+}
+
+/// Append budgets, per relay-protocol.md §limits: a per-channel byte
+/// budget and a whole-database one, either of which `0` disables. Reads
+/// are never blocked by a quota, and v1 never prunes — reaching a budget
+/// only stops further appends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Quotas {
+    pub channel_bytes: u64,
+    pub disk_bytes: u64,
+}
+
+impl Default for Quotas {
+    /// The frozen relay defaults: 1 GiB per channel, 8 GiB per disk.
+    fn default() -> Self {
+        Self {
+            channel_bytes: 1024 * 1024 * 1024,
+            disk_bytes: 8 * 1024 * 1024 * 1024,
+        }
+    }
 }
 
 impl fmt::Debug for SqliteRelayStore {
@@ -213,6 +241,11 @@ impl SqliteRelayStore {
     /// [`SCHEMA_VERSION`]. Fails closed on corruption or unknown versions;
     /// see the module docs.
     pub fn open(path: &Path) -> Result<Self, StoreOpenError> {
+        Self::open_with_quotas(path, Quotas::default())
+    }
+
+    /// Open with explicit append budgets; see [`Quotas`].
+    pub fn open_with_quotas(path: &Path, quotas: Quotas) -> Result<Self, StoreOpenError> {
         if let Some(dir) = path.parent() {
             if !dir.as_os_str().is_empty() {
                 std::fs::create_dir_all(dir).map_err(|source| StoreOpenError::Io {
@@ -265,6 +298,8 @@ impl SqliteRelayStore {
         Ok(Self {
             conn: Mutex::new(conn),
             admin_credential,
+            quotas,
+            db_path: path.to_path_buf(),
         })
     }
 
@@ -412,6 +447,42 @@ fn internal_error() -> StorageError {
     StorageError::new(RelayErrorCode::Internal)
 }
 
+/// Refuse the append if the batch would cross a configured budget. Runs
+/// with every row staged but before `commit`; the caller returns while
+/// the transaction is still open, so the drop rolls the whole batch back
+/// and a budget is never half-consumed. A budget of `0`
+/// is disabled (relay-protocol.md §limits), and nothing here can block a
+/// read: quotas are append-only and v1 never prunes.
+fn check_quotas(
+    quotas: Quotas,
+    channel_used: u64,
+    disk_used: u64,
+    new_bytes: u64,
+) -> Result<(), StorageError> {
+    if quotas.channel_bytes != 0 && channel_used.saturating_add(new_bytes) > quotas.channel_bytes {
+        return Err(StorageError::new(RelayErrorCode::QuotaExceeded));
+    }
+    if quotas.disk_bytes != 0 && disk_used.saturating_add(new_bytes) > quotas.disk_bytes {
+        return Err(StorageError::new(RelayErrorCode::QuotaExceeded));
+    }
+    Ok(())
+}
+
+/// Bytes the database occupies on disk, sidecar files included. WAL mode
+/// parks committed bytes in `relay.db-wal` until a checkpoint, so
+/// reading the main file alone would let a channel overshoot its budget
+/// for the rest of the process's life.
+fn disk_bytes_used(db_path: &Path) -> u64 {
+    let mut total = 0u64;
+    for suffix in ["", "-wal", "-shm"] {
+        let name = format!("{}{}", db_path.display(), suffix);
+        if let Ok(meta) = std::fs::metadata(std::path::Path::new(&name)) {
+            total = total.saturating_add(meta.len());
+        }
+    }
+    total
+}
+
 /// Whether `channel` is registered. Reads take no transaction: channel
 /// rows are never deleted, so an ordinary read is authoritative here.
 fn channel_exists(conn: &Connection, channel: &str) -> Result<bool, StorageError> {
@@ -500,6 +571,20 @@ impl RelayStorage for SqliteRelayStore {
             .map_err(|_| internal_error())?;
         let mut next_seq = u64::try_from(head).map_err(|_| internal_error())? + 1;
         let mut acks = Vec::with_capacity(envelopes.len());
+        let quotas = self.quotas;
+        let channel_used: i64 = tx
+            .query_row(
+                "SELECT COALESCE(SUM(octet_length(payload)), 0) \
+                 FROM envelopes WHERE channel = ?1",
+                params![channel],
+                |row| row.get(0),
+            )
+            .map_err(|_| internal_error())?;
+        let channel_used = u64::try_from(channel_used).map_err(|_| internal_error())?;
+        let disk_used = disk_bytes_used(&self.db_path);
+        // Bytes this batch would newly occupy. Duplicates add no data, so
+        // a retry storm can never exhaust a budget.
+        let mut new_bytes = 0u64;
         for envelope in envelopes {
             let payload = serde_json::to_string(envelope).map_err(|_| internal_error())?;
             let stored: Option<(i64, String)> = tx
@@ -542,7 +627,15 @@ impl RelayStorage for SqliteRelayStore {
                 seq: next_seq,
                 duplicate: false,
             });
+            new_bytes = new_bytes.saturating_add(payload.len() as u64);
             next_seq += 1;
+        }
+        if let Err(error) = check_quotas(quotas, channel_used, disk_used, new_bytes) {
+            // Roll the staged rows back explicitly: a quota refusal must
+            // not consume even part of a budget, and it must not ACK
+            // anything.
+            let _ = tx.rollback();
+            return Err(error);
         }
         tx.commit().map_err(|_| internal_error())?;
         Ok(AppendOutcome { acks })
@@ -1726,5 +1819,239 @@ CREATE TABLE envelopes (
         // appears nowhere after revocation.
         assert!(!all_db_text(&path).contains(&issued.token));
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    /// Open a store with small budgets so a test can reach a quota without
+    /// gigabytes of ciphertext.
+    fn store_with_quotas(path: &Path, quotas: Quotas) -> (SqliteRelayStore, String) {
+        let store = SqliteRelayStore::open_with_quotas(path, quotas).unwrap();
+        let channel = store.create_channel().unwrap();
+        (store, channel)
+    }
+
+    /// Bytes the channel occupies, the same measurement `append` uses for
+    /// its budget check. A separate connection lets the measurement
+    /// survive dropping the store.
+    fn channel_used_bytes(path: &Path, channel: &str) -> i64 {
+        let conn = raw_connection(path);
+        conn.query_row(
+            "SELECT COALESCE(SUM(octet_length(payload)), 0)              FROM envelopes WHERE channel = ?1",
+            params![channel],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    fn batch(n: usize, channel: &str) -> Vec<Envelope> {
+        (1..=n)
+            .map(|i| sample_envelope(channel, &format!("id-{i:02}"), &format!("body-{i:02}")))
+            .collect()
+    }
+
+    #[test]
+    fn channel_quota_stops_append_and_leaves_everything_readable() {
+        let path = temp_db("quota-channel");
+        // Commit with limits disabled, then reopen at exactly the bytes
+        // already stored: any further append must cross the budget.
+        let (store, channel) = store_with_quotas(
+            &path,
+            Quotas {
+                channel_bytes: 0,
+                disk_bytes: 0,
+            },
+        );
+        store.append(&channel, &batch(2, &channel)).unwrap();
+        let budget = channel_used_bytes(&path, &channel) as u64;
+        drop(store);
+        let (store, _) = store_with_quotas(
+            &path,
+            Quotas {
+                channel_bytes: budget,
+                disk_bytes: 0,
+            },
+        );
+        let error = store.append(&channel, &batch(16, &channel)).unwrap_err();
+        assert_eq!(error.code(), RelayErrorCode::QuotaExceeded);
+        // Reads are never blocked by a quota: the two committed rows are
+        // still there, in order, with nothing half-consumed.
+        assert_eq!(store.head(&channel).unwrap(), 2);
+        let page = store.pull(&channel, 0, 64, u64::MAX).unwrap();
+        assert_eq!(
+            page.entries.iter().map(|e| e.seq).collect::<Vec<_>>(),
+            [1, 2]
+        );
+        assert!(!page.has_more);
+        // The rejected batch wrote nothing at all.
+        assert_eq!(envelope_count(&path, &channel), 2);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn disk_quota_spans_channels_and_rolls_the_batch_back() {
+        let path = temp_db("quota-disk");
+        let (store, channel) = store_with_quotas(
+            &path,
+            Quotas {
+                channel_bytes: 0,
+                disk_bytes: 0,
+            },
+        );
+        let other = store.create_channel().unwrap();
+        store.append(&channel, &batch(2, &channel)).unwrap();
+        store.append(&other, &batch(2, &other)).unwrap();
+        drop(store);
+        // Measured after the drop: closing the connection checkpoints
+        // and frees the WAL sidecar, so a budget taken while it was
+        // still open would not be the budget the reopened store sees.
+        let budget = disk_bytes_used(&path);
+        let (store, _) = store_with_quotas(
+            &path,
+            Quotas {
+                channel_bytes: 0,
+                disk_bytes: budget,
+            },
+        );
+        // A genuinely new message id: a duplicate id would add no bytes
+        // and so could never cross a budget.
+        let probe = sample_envelope(&other, "id-probe", "body-probe");
+        let error = store
+            .append(&other, std::slice::from_ref(&probe))
+            .unwrap_err();
+        assert_eq!(error.code(), RelayErrorCode::QuotaExceeded);
+        // Both committed channels read fine; the refused batch left no
+        // row in either one.
+        assert_eq!(store.head(&channel).unwrap(), 2);
+        assert_eq!(store.head(&other).unwrap(), 2);
+        assert_eq!(envelope_count(&path, &channel), 2);
+        assert_eq!(envelope_count(&path, &other), 2);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn quota_is_not_enforced_on_reads_after_a_quota_refusal() {
+        let path = temp_db("quota-reads-open");
+        let (store, channel) = store_with_quotas(
+            &path,
+            Quotas {
+                channel_bytes: 0,
+                disk_bytes: 0,
+            },
+        );
+        store.append(&channel, &batch(2, &channel)).unwrap();
+        let budget = channel_used_bytes(&path, &channel) as u64;
+        drop(store);
+        let (store, _) = store_with_quotas(
+            &path,
+            Quotas {
+                channel_bytes: budget,
+                disk_bytes: 0,
+            },
+        );
+        let _ = store.append(&channel, &batch(16, &channel)).unwrap_err();
+        // Pull and head keep working against a full channel — this is the
+        // v1 retention contract: no pruning, so a read cannot be evicted.
+        let page = store.pull(&channel, 1, 64, u64::MAX).unwrap();
+        assert_eq!(page.entries.iter().map(|e| e.seq).collect::<Vec<_>>(), [2]);
+        assert_eq!(store.head(&channel).unwrap(), 2);
+        // Issuance and revocation stay available too: they are not data
+        // growth and the relay must remain administrable.
+        let issued = store
+            .issue_credential(&channel, &[CredentialScope::Pull], None)
+            .unwrap();
+        store
+            .authorize(&channel, &issued.token, CredentialScope::Pull)
+            .unwrap();
+        assert_eq!(
+            store
+                .revoke_credential(&channel, &issued.credential_id)
+                .unwrap(),
+            RevokeOutcome::Revoked
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn quota_refusal_is_not_recorded_and_survives_restart() {
+        let path = temp_db("quota-restart");
+        let (store, channel) = store_with_quotas(
+            &path,
+            Quotas {
+                channel_bytes: 0,
+                disk_bytes: 0,
+            },
+        );
+        store.append(&channel, &batch(2, &channel)).unwrap();
+        drop(store);
+        let budget = channel_used_bytes(&path, &channel) as u64;
+        let quotas = Quotas {
+            channel_bytes: budget,
+            disk_bytes: 0,
+        };
+        let (store, _) = store_with_quotas(&path, quotas);
+        let rejected = batch(16, &channel);
+        let _ = store.append(&channel, &rejected).unwrap_err();
+        // Reopen with the same budgets: still full, still readable, and
+        // the refused batch is not queued for later replay.
+        drop(store);
+        let (store, _) = store_with_quotas(&path, quotas);
+        assert_eq!(store.head(&channel).unwrap(), 2);
+        assert_eq!(envelope_count(&path, &channel), 2);
+        let probe = sample_envelope(&channel, "id-probe", "body-probe");
+        let again = store
+            .append(&channel, std::slice::from_ref(&probe))
+            .unwrap_err();
+        assert_eq!(again.code(), RelayErrorCode::QuotaExceeded);
+        assert_eq!(
+            store.pull(&channel, 0, 64, u64::MAX).unwrap().entries.len(),
+            2
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn zero_quota_disables_the_limit_and_duplicates_never_count_against_it() {
+        let path = temp_db("quota-zero");
+        // `0` means disabled, never "block everything" (relay-protocol.md
+        // §limits).
+        let (store, channel) = store_with_quotas(
+            &path,
+            Quotas {
+                channel_bytes: 0,
+                disk_bytes: 0,
+            },
+        );
+        let two = batch(2, &channel);
+        store.append(&channel, &two).unwrap();
+        // A retry of the same batch adds no bytes, so it can never push a
+        // real budget over the edge: measure the stored bytes, reopen at
+        // exactly that, and replay.
+        let budget = channel_used_bytes(&path, &channel) as u64;
+        drop(store);
+        let path2 = temp_db("quota-duplicate");
+        let (store2, channel2) = store_with_quotas(
+            &path2,
+            Quotas {
+                channel_bytes: 0,
+                disk_bytes: 0,
+            },
+        );
+        let two2 = batch(2, &channel2);
+        let acks = store2.append(&channel2, &two2).unwrap().acks;
+        assert_eq!(acks.len(), 2);
+        let tight = channel_used_bytes(&path2, &channel2) as u64;
+        assert!(tight > 0 && budget > 0);
+        drop(store2);
+        let (store2, _) = store_with_quotas(
+            &path2,
+            Quotas {
+                channel_bytes: tight,
+                disk_bytes: 0,
+            },
+        );
+        let retry = store2.append(&channel2, &two2).unwrap().acks;
+        assert!(retry.iter().all(|ack| ack.duplicate));
+        assert_eq!(store2.head(&channel2).unwrap(), 2);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+        std::fs::remove_dir_all(path2.parent().unwrap()).ok();
     }
 }

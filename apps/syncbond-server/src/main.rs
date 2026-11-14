@@ -59,7 +59,13 @@ fn run(config_path: std::path::PathBuf) -> Result<(), StartupError> {
     // The store stays alive for the process lifetime once the serve loop
     // exists; today open-then-exit is the whole deliverable past config.
     let db_path = config.data_dir.join("relay.db");
-    let store = sqlite::SqliteRelayStore::open(&db_path)?;
+    // Quotas come from the deployer's config; a `0` there means "no
+    // limit", never "block everything".
+    let quotas = sqlite::Quotas {
+        channel_bytes: config.channel_quota_bytes,
+        disk_bytes: config.disk_quota_bytes,
+    };
+    let store = sqlite::SqliteRelayStore::open_with_quotas(&db_path, quotas)?;
     let _store = store;
     Ok(())
 }
