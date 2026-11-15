@@ -23,6 +23,7 @@ rand_core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+syncbond-relay-protocol = { path = "../syncbond-relay-protocol" }
 mdns-sd = { version = "0.21", optional = true, default-features = false }
 
 [dev-dependencies]

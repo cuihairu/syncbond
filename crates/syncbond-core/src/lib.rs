@@ -5,6 +5,7 @@
 //! merge behavior is a pluggable strategy. See docs/design/ for the
 //! protocol and design decisions.
 
+pub mod batch;
 pub mod codes;
 pub mod conflict;
 pub mod crypto;
@@ -20,6 +21,7 @@ pub mod replication;
 pub mod storage;
 pub mod transport;
 
+pub use batch::{from_wire, open_operations, seal_operations, to_wire, BatchError};
 pub use codes::{CodeError, PairingCodeBoard, PairingPolicy};
 pub use crypto::{CryptoError, EncryptedEnvelope, EnvelopeContext, KeyRing, PROTOCOL_VERSION};
 pub use discovery::pair_with_candidate;
