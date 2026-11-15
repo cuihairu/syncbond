@@ -14,6 +14,7 @@
 
 mod config;
 mod http;
+mod rooms;
 mod sqlite;
 mod storage;
 
@@ -99,10 +100,18 @@ async fn run(config_path: std::path::PathBuf) -> Result<(), StartupError> {
     // relay that is still opening its database answers liveness but not
     // readiness.
     store.mark_ready();
-    let app = http::router(http::AppState { store });
-    axum::serve(listener, app)
-        .await
-        .map_err(|source| StartupError::Serve { source })?;
+    let app = http::router(http::AppState {
+        store,
+        rooms: std::sync::Arc::new(rooms::PairingRooms::new()),
+    });
+    axum::serve(
+        listener,
+        // Connect info is the peer's socket address; the pairing-room route
+        // rate-limits by it (relay-protocol.md §9).
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .map_err(|source| StartupError::Serve { source })?;
     Ok(())
 }
 

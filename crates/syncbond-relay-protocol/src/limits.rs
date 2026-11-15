@@ -19,6 +19,10 @@ pub const MAX_PULL_BYTES: u64 = 16 * 1024 * 1024;
 pub const MAX_ROOM_PARTICIPANTS: usize = 2;
 pub const ROOM_TTL_MS: u64 = 120_000;
 pub const MAX_ROOM_JOIN_ATTEMPTS: usize = 16;
+/// Room-creation rate per source IP (frozen §9), enforced over a sliding
+/// one-minute window.
+pub const MAX_ROOM_CREATES_PER_MINUTE_PER_IP: usize = 16;
+pub const ROOM_CREATE_RATE_WINDOW_MS: u64 = 60_000;
 /// Parity with the core's `MAX_FRAME_BYTES`; the relay enforces it while
 /// reading, before allocation.
 pub const PAIRING_FRAME_MAX_BYTES: usize = 16 * 1024 * 1024;

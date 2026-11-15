@@ -16,17 +16,18 @@
 //!   logs, error messages, or the response, and admin tokens never leave
 //!   this module's comparison in storage.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::{ConnectInfo, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use syncbond_relay_protocol::dto::{
-    AppendAck, AppendRequest, ChannelCreated, CredentialIssued, CredentialRevoked,
-    IssueCredentialRequest, PullRequest, PullResponse,
+    AppendAck, AppendRequest, ChannelCreated, CreateRoomRequest, CredentialIssued,
+    CredentialRevoked, IssueCredentialRequest, PullRequest, PullResponse, RoomCreated,
 };
 use syncbond_relay_protocol::error::{ErrorBody, RelayError, RelayErrorCode};
 use syncbond_relay_protocol::{
@@ -34,19 +35,24 @@ use syncbond_relay_protocol::{
     RELAY_PROTOCOL_VERSION,
 };
 
+use crate::rooms::PairingRooms;
 use crate::sqlite::SqliteRelayStore;
 use crate::storage::{IssuedCredential, RelayStorage, StorageError};
 
 /// Shared state for every route. The store is `Send + Sync` by contract,
 /// which is exactly why `SqliteRelayStore` guards its connection with a
-/// mutex (see its module docs).
+/// mutex (see its module docs). Pairing rooms are separate: they are
+/// 120-second memory-only state and never touch storage.
 #[derive(Clone)]
 pub struct AppState {
     pub store: Arc<SqliteRelayStore>,
+    pub rooms: Arc<PairingRooms>,
 }
 
 /// Build the router. Kept separate from `listen` so tests can drive it
-/// through a real socket or mount it elsewhere.
+/// through a real socket or mount it elsewhere. Serving must use
+/// `into_make_service_with_connect_info` — the pairing-room creation route
+/// rate-limits by the peer's socket address.
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/v1/health", get(health))
@@ -62,6 +68,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/v1/channels/{channel_id}/append", post(append))
         .route("/v1/channels/{channel_id}/pull", post(pull))
+        .route("/v1/pairing/rooms", post(create_room))
         .with_state(state)
 }
 
@@ -227,6 +234,66 @@ async fn create_channel(
             .into_response(),
         Err(error) => Failure::from_storage(error, request_id).into_response(),
     }
+}
+
+// ---------------------------------------------------------- pairing rooms
+
+/// Create a pairing room (relay-protocol.md §7). No credential — the route
+/// is open and answered with the rate limit alone: per source IP, over a
+/// sliding one-minute window. The response shows the capability exactly
+/// once; the relay stores only its digest.
+async fn create_room(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    body: Bytes,
+) -> Response {
+    let request: CreateRoomRequest = match parse_body(&body) {
+        Ok(request) => request,
+        Err(failure) => return failure.into_response(),
+    };
+    let request_id = Some(request.request_id.clone());
+    if let Err(failure) = validate_envelope_fields(request.protocol_version, &request.request_id) {
+        return failure.into_response();
+    }
+    let now_ms = match unix_now_ms() {
+        Ok(now_ms) => now_ms,
+        Err(failure) => return failure.into_response(),
+    };
+    match state.rooms.create(peer.ip(), now_ms) {
+        Ok(created) => (
+            StatusCode::CREATED,
+            Json(RoomCreated {
+                protocol_version: RELAY_PROTOCOL_VERSION,
+                request_id: request.request_id,
+                room_id: created.room_id,
+                capability: created.capability,
+                expires_at: crate::rooms::rfc3339_utc(created.expires_at_ms),
+            }),
+        )
+            .into_response(),
+        Err(error) => Failure::new(
+            RelayError::new(error.code(), "room creation rate limit exceeded"),
+            request_id,
+        )
+        .into_response(),
+    }
+}
+
+/// Wall-clock unix milliseconds. A clock before the epoch cannot address a
+/// TTL deadline and is surfaced instead of silently minting dead rooms.
+fn unix_now_ms() -> Result<u64, Failure> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_millis() as u64)
+        .map_err(|_| {
+            Failure::new(
+                RelayError::new(
+                    RelayErrorCode::Internal,
+                    "system clock is before the unix epoch",
+                ),
+                None,
+            )
+        })
 }
 
 async fn issue_credential(
@@ -529,6 +596,7 @@ mod tests {
     // actually receives — not what a handler happens to return.
     use super::*;
     use crate::sqlite::{admin_credential_path, SqliteRelayStore};
+    use base64::Engine as _;
     use std::io::{Read, Write};
     use std::net::TcpStream;
 
@@ -582,7 +650,18 @@ mod tests {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap().to_string();
             let task = tokio::task::spawn(async move {
-                let _ = axum::serve(listener, router(AppState { store })).await;
+                // Served exactly the way `main` serves it: with connect
+                // info, because the pairing-room route rate-limits per
+                // peer address.
+                let app = router(AppState {
+                    store,
+                    rooms: std::sync::Arc::new(PairingRooms::new()),
+                });
+                let _ = axum::serve(
+                    listener,
+                    app.into_make_service_with_connect_info::<SocketAddr>(),
+                )
+                .await;
             });
             (address, task)
         });
@@ -1249,5 +1328,162 @@ mod tests {
         );
         assert_eq!(reply.status, 400);
         assert_eq!(reply.body["error"]["code"], "bad_request");
+    }
+
+    // ------------------------------------------------------- pairing rooms
+
+    fn room_request(protocol_version: u16, request_id: &str) -> String {
+        serde_json::to_string(&serde_json::json!({
+            "protocolVersion": protocol_version,
+            "requestId": request_id,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn admin_creates_a_pairing_room_with_a_128_bit_capability() {
+        let relay = start();
+        let reply = call_with_status(
+            &relay.address,
+            "POST",
+            "/v1/pairing/rooms",
+            Some(&room_request(1, "rm-000000000001")),
+            None,
+        );
+        assert_eq!(reply.status, 201, "create is unauthenticated and succeeds");
+        assert_eq!(reply.body["protocolVersion"], 1);
+        assert_eq!(reply.body["requestId"], "rm-000000000001");
+        let room_id = reply.body["roomId"].as_str().unwrap();
+        assert!(
+            room_id.starts_with("rm_"),
+            "room id is server-assigned: {room_id}"
+        );
+        let capability = reply.body["capability"].as_str().unwrap();
+        let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(capability)
+            .expect("capability is canonical base64url");
+        assert_eq!(
+            decoded.len(),
+            16,
+            "capability is 128 bits, got {}",
+            decoded.len()
+        );
+        let expires_at = reply.body["expiresAt"].as_str().unwrap();
+        assert!(
+            expires_at.ends_with('Z') && expires_at.len() == 20,
+            "expiresAt is the frozen RFC 3339 shape: {expires_at}"
+        );
+    }
+
+    #[test]
+    fn two_rooms_never_share_a_capability_or_an_id() {
+        let relay = start();
+        let mut capabilities = std::collections::HashSet::new();
+        let mut room_ids = std::collections::HashSet::new();
+        for offset in 0..4 {
+            let reply = call_with_status(
+                &relay.address,
+                "POST",
+                "/v1/pairing/rooms",
+                Some(&room_request(1, &format!("rm-00000000001{offset}"))),
+                None,
+            );
+            assert_eq!(reply.status, 201);
+            assert!(capabilities.insert(reply.body["capability"].as_str().unwrap().to_owned()));
+            assert!(room_ids.insert(reply.body["roomId"].as_str().unwrap().to_owned()));
+        }
+    }
+
+    #[test]
+    fn a_room_request_carrying_a_short_code_is_rejected() {
+        // The relay must never receive the code: `deny_unknown_fields`
+        // turns a body that tries to hand one over into a bad_request.
+        let relay = start();
+        let request = serde_json::to_string(&serde_json::json!({
+            "protocolVersion": 1,
+            "requestId": "rm-000000000020",
+            "code": "ABCD2345",
+        }))
+        .unwrap();
+        let reply = call_with_status(
+            &relay.address,
+            "POST",
+            "/v1/pairing/rooms",
+            Some(&request),
+            None,
+        );
+        assert_eq!(reply.status, 400);
+        assert_eq!(reply.body["error"]["code"], "bad_request");
+        assert_eq!(reply.body["requestId"], "rm-000000000020");
+    }
+
+    #[test]
+    fn an_unsupported_room_protocol_version_is_version_unsupported() {
+        let relay = start();
+        let reply = call_with_status(
+            &relay.address,
+            "POST",
+            "/v1/pairing/rooms",
+            Some(&room_request(2, "rm-000000000021")),
+            None,
+        );
+        assert_eq!(reply.status, 400);
+        assert_eq!(reply.body["error"]["code"], "version_unsupported");
+    }
+
+    #[test]
+    fn room_creation_is_rate_limited_per_source_ip() {
+        // 16 creates per minute per IP (relay-protocol.md §9). The whole
+        // test suite arrives from 127.0.0.1, so this test owns a fresh
+        // relay and spends the window itself.
+        let relay = start();
+        for offset in 0..16 {
+            let reply = call_with_status(
+                &relay.address,
+                "POST",
+                "/v1/pairing/rooms",
+                Some(&room_request(1, &format!("rm-00000000003{offset:02}"))),
+                None,
+            );
+            assert_eq!(
+                reply.status,
+                201,
+                "create #{} is inside the window",
+                offset + 1
+            );
+        }
+        let reply = call_with_status(
+            &relay.address,
+            "POST",
+            "/v1/pairing/rooms",
+            Some(&room_request(1, "rm-000000000040")),
+            None,
+        );
+        assert_eq!(reply.status, 429, "the 17th create in a minute is limited");
+        assert_eq!(reply.body["error"]["code"], "rate_limited");
+        assert_eq!(reply.body["error"]["retryable"], true);
+        assert_eq!(reply.body["requestId"], "rm-000000000040");
+        // The limited create minted nothing: the refused request leaves no
+        // room behind, and the limiter is a gate rather than a data path.
+        assert!(reply.body.get("capability").is_none());
+    }
+
+    #[test]
+    fn a_room_creation_rate_limit_does_not_touch_channel_routes() {
+        // Burning the room window must not lock out control-plane traffic:
+        // the limit is scoped to the one open route.
+        let relay = start();
+        for offset in 0..17 {
+            let _ = call_with_status(
+                &relay.address,
+                "POST",
+                "/v1/pairing/rooms",
+                Some(&room_request(1, &format!("rm-00000000005{offset:02}"))),
+                None,
+            );
+        }
+        let (channel, _credential_id, _token) =
+            provision(&relay, serde_json::json!(["append"]), "phone");
+        assert!(channel.starts_with("ch_"), "channel management still works");
     }
 }
