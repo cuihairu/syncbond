@@ -121,6 +121,37 @@ impl PairingCodeBoard {
         Ok(())
     }
 
+    /// The canonical form of a typed code: format-checked, upper-cased. Both
+    /// sides call this before any exchange — the bytes that reach the SPAKE2
+    /// secret must be the issued code's, not whatever case the user typed,
+    /// or a lower-case entry and an upper-case display would derive
+    /// different keys and refuse each other.
+    pub fn normalize(code: &str) -> Result<String, CodeError> {
+        Self::validate_format(code)?;
+        Ok(code.to_ascii_uppercase())
+    }
+
+    /// The accepting side's pre-flight gate: normalize, then refuse every
+    /// code the policy no longer admits — never issued, already consumed,
+    /// expired, or locked by too many failed attempts — before the exchange
+    /// starts, so a spent window's next guess never reaches the protocol.
+    /// Returns the normalized code to run the exchange with.
+    pub fn admit(&self, code: &str) -> Result<String, CodeError> {
+        let normalized = Self::normalize(code)?;
+        let now = (self.now)();
+        let entry = self.issued.get(&normalized).ok_or(CodeError::Unknown)?;
+        if entry.used {
+            return Err(CodeError::AlreadyUsed);
+        }
+        if now > entry.expires_at {
+            return Err(CodeError::Expired);
+        }
+        if entry.failed_attempts >= self.policy.max_attempts {
+            return Err(CodeError::TooManyAttempts);
+        }
+        Ok(normalized)
+    }
+
     /// Consume a code for a successful pairing. Single use: a consumed code
     /// can never pair again.
     pub fn consume(&mut self, code: &str) -> Result<(), CodeError> {
@@ -237,5 +268,25 @@ mod tests {
                 CODE_ALPHABET[idx] as char
             );
         }
+    }
+
+    /// The gate is format-first, hands back the canonical form, and refuses
+    /// spent windows — but admitting does not consume: only a completed
+    /// pairing does that.
+    #[test]
+    fn admit_normalizes_and_refuses_spent_windows_without_consuming() {
+        let mut board = PairingCodeBoard::new(PairingPolicy::default());
+        // Format before the board: a malformed code is BadFormat even
+        // though it was never issued.
+        assert_eq!(board.admit("k7q2m!"), Err(CodeError::BadFormat));
+        assert_eq!(board.admit("ZZZZZZ"), Err(CodeError::Unknown));
+        let code = board.issue();
+        assert_eq!(
+            board.admit(&code.to_ascii_lowercase()),
+            Ok(code.clone()),
+            "the gate hands back the upper-case issued form"
+        );
+        assert_eq!(board.consume(&code), Ok(()));
+        assert_eq!(board.admit(&code), Err(CodeError::AlreadyUsed));
     }
 }

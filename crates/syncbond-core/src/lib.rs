@@ -20,7 +20,7 @@ pub mod replication;
 pub mod storage;
 pub mod transport;
 
-pub use codes::{PairingCodeBoard, PairingPolicy};
+pub use codes::{CodeError, PairingCodeBoard, PairingPolicy};
 pub use crypto::{CryptoError, EncryptedEnvelope, EnvelopeContext, KeyRing, PROTOCOL_VERSION};
 pub use discovery::pair_with_candidate;
 pub use discovery::PROTOCOL_VERSION as LAN_PROTOCOL_VERSION;

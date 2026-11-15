@@ -307,7 +307,7 @@ fn invalid_code_format_is_rejected_before_any_exchange() {
         Err(err) => err,
         Ok(_) => panic!("must reject malformed code"),
     };
-    assert!(matches!(err, PairingError::Protocol(ref m) if m.contains("format")));
+    assert!(matches!(err, PairingError::Code(CodeError::BadFormat)));
     MemoryTransport::close_pair(&ta, &tb);
 }
 

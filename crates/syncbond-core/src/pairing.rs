@@ -8,6 +8,7 @@
 //! signatures bound to the transcript hash. Full requirements and the
 //! SPAKE2/RFC 9382 selection live in docs/design/PROTOCOL.md.
 
+use crate::codes::{CodeError, PairingCodeBoard};
 use crate::crypto::{self, KeyRing, SessionKey, PROTOCOL_VERSION};
 use crate::identity::{group_id_from_public_keys, DeviceIdentity, PublicIdentity};
 use crate::pairing_spake2::Spake2Error;
@@ -57,6 +58,8 @@ pub enum PairingError {
     Identity(#[from] crate::identity::IdentityError),
     #[error("crypto: {0}")]
     Crypto(#[from] crypto::CryptoError),
+    #[error("pairing code: {0}")]
+    Code(#[from] CodeError),
     #[error("{0}")]
     Protocol(String),
 }
@@ -288,6 +291,33 @@ pub fn accept(
     let driver =
         crate::pairing_driver::PairingDriver::responder(code, identity, transport.clone())?;
     pump_to_completion(driver, &transport)
+}
+
+/// Responder side behind the code board's policy (todo.md DSR-26): the gate
+/// ([`PairingCodeBoard::admit`]) runs before any frame exists, so a code
+/// that is malformed, unknown, expired, consumed, or locked by failed
+/// attempts never starts an exchange; a completed pairing consumes the
+/// code (single use); a wire-level failure burns one attempt against the
+/// window. A transport error — a flaky network, not a guess — burns
+/// nothing and leaves the window open.
+pub fn accept_gated(
+    board: &mut PairingCodeBoard,
+    code: &str,
+    identity: &DeviceIdentity,
+    transport: Arc<dyn Transport>,
+) -> Result<PairingSession, PairingError> {
+    let normalized = board.admit(code)?;
+    match accept(&normalized, identity, transport) {
+        Ok(session) => {
+            board.consume(&normalized)?;
+            Ok(session)
+        }
+        Err(error @ PairingError::Transport(_)) => Err(error),
+        Err(error) => {
+            let _ = board.register_failure(&normalized);
+            Err(error)
+        }
+    }
 }
 
 /// Drive a pairing driver to completion over a blocking transport: drain

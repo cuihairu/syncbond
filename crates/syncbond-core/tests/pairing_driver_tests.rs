@@ -6,8 +6,9 @@
 //! driver reuses (rather than re-implements) the crypto.
 
 use std::sync::Arc;
+use syncbond_core::codes::CodeError;
 use syncbond_core::identity::DeviceIdentity;
-use syncbond_core::pairing::{accept, pair};
+use syncbond_core::pairing::{accept, pair, PairingError};
 use syncbond_core::pairing_driver::{DriverEvent, PairingDriver};
 use syncbond_core::transport::{MemoryTransport, Transport};
 
@@ -274,7 +275,10 @@ fn a_mistyped_code_fails_before_any_frame_exists() {
         Err(error) => error,
         Ok(_) => panic!("format validation is the constructor's job"),
     };
-    assert!(error.to_string().contains("pairing code format"), "{error}");
+    assert!(
+        matches!(error, PairingError::Code(CodeError::BadFormat)),
+        "{error}"
+    );
 }
 
 #[test]

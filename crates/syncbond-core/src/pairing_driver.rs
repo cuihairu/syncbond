@@ -100,22 +100,22 @@ pub struct PairingDriver {
 impl PairingDriver {
     /// The side that shows the code and sends the first frame.
     ///
-    /// The code's display format is validated here, exactly as the blocking
-    /// [`crate::pairing::pair`] has always done, so a mistyped code fails
-    /// before any frame exists. The first frame (pA) is already in the
-    /// outbox when this returns.
+    /// The code is format-checked and normalized here, exactly as the
+    /// blocking [`crate::pairing::pair`] has always done, so a mistyped
+    /// code fails before any frame exists and a lower-case entry pairs
+    /// with the upper-case issued one. The first frame (pA) is already in
+    /// the outbox when this returns.
     pub fn initiator(
         code: &str,
         identity: &DeviceIdentity,
         transport: Arc<dyn Transport>,
     ) -> Result<Self, PairingError> {
-        crate::codes::PairingCodeBoard::validate_format(code)
-            .map_err(|e| PairingError::Protocol(format!("pairing code format: {e}")))?;
+        let code = crate::codes::PairingCodeBoard::normalize(code).map_err(PairingError::Code)?;
         let mut initiator = Spake2Initiator::new(code.as_bytes());
         let p_a = initiator.generate_message();
         Ok(Self {
             role: Role::Initiator,
-            code: code.to_owned(),
+            code,
             identity: identity.clone(),
             transport,
             outbox: VecDeque::from([frame_bytes(FRAME_P_A, &p_a)]),
@@ -133,11 +133,10 @@ impl PairingDriver {
         identity: &DeviceIdentity,
         transport: Arc<dyn Transport>,
     ) -> Result<Self, PairingError> {
-        crate::codes::PairingCodeBoard::validate_format(code)
-            .map_err(|e| PairingError::Protocol(format!("pairing code format: {e}")))?;
+        let code = crate::codes::PairingCodeBoard::normalize(code).map_err(PairingError::Code)?;
         Ok(Self {
             role: Role::Responder,
-            code: code.to_owned(),
+            code,
             identity: identity.clone(),
             transport,
             outbox: VecDeque::new(),
