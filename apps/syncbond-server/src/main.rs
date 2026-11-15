@@ -108,6 +108,7 @@ async fn run(config_path: std::path::PathBuf) -> Result<(), StartupError> {
         sessions: std::sync::Arc::new(ws::RoomSessions::default()),
         allowed_origins: config.allowed_origins.clone(),
         trusted_proxies: config.trusted_proxies.clone(),
+        subscriptions: std::sync::Arc::new(ws::ChannelSubscriptions::default()),
     });
     axum::serve(
         listener,

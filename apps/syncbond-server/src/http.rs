@@ -59,6 +59,9 @@ pub struct AppState {
     /// limit (crate::proxy); empty means the peer address is always the
     /// client address.
     pub trusted_proxies: Vec<crate::proxy::TrustedProxy>,
+    /// Live channel-event subscriptions (crate::ws, DSR-22): the append
+    /// route pushes lossy hints through this registry after a commit.
+    pub subscriptions: std::sync::Arc<crate::ws::ChannelSubscriptions>,
 }
 
 /// Build the router. Kept separate from `listen` so tests can drive it
@@ -80,6 +83,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/v1/channels/{channel_id}/append", post(append))
         .route("/v1/channels/{channel_id}/pull", post(pull))
+        .route(
+            "/v1/channels/{channel_id}/events",
+            get(crate::ws::events_stream),
+        )
         .route("/v1/pairing/rooms", post(create_room))
         .route("/v1/pairing/{room_id}", get(crate::ws::join_room))
         .with_state(state)
@@ -505,16 +512,36 @@ async fn append(
         }
     }
     match state.store.append(&channel_id, &request.envelopes) {
-        Ok(outcome) => (
-            StatusCode::OK,
-            Json(AppendAck {
-                protocol_version: RELAY_PROTOCOL_VERSION,
-                request_id: request.request_id,
-                channel_id,
-                acks: outcome.acks,
-            }),
-        )
-            .into_response(),
+        Ok(outcome) => {
+            // Hints follow the commit they describe: the ACK below is only
+            // built because the transaction committed (DSR-13), so any
+            // push here reports real state. Each subscriber re-authorizes
+            // on its push, which is where a revoked credential's stream
+            // is closed with 4401 (relay-protocol.md §8).
+            if let Some(seq) = outcome.acks.last().map(|ack| ack.seq) {
+                state.subscriptions.notify(&channel_id, seq, &mut |token| {
+                    use crate::storage::RelayStorage as _;
+                    state
+                        .store
+                        .authorize(
+                            &channel_id,
+                            token,
+                            syncbond_relay_protocol::dto::CredentialScope::Pull,
+                        )
+                        .is_ok()
+                });
+            }
+            (
+                StatusCode::OK,
+                Json(AppendAck {
+                    protocol_version: RELAY_PROTOCOL_VERSION,
+                    request_id: request.request_id,
+                    channel_id,
+                    acks: outcome.acks,
+                }),
+            )
+                .into_response()
+        }
         Err(error) => Failure::from_storage(error, request_id).into_response(),
     }
 }
@@ -671,6 +698,7 @@ mod tests {
             sessions: std::sync::Arc::new(RoomSessions::default()),
             allowed_origins: Vec::new(),
             trusted_proxies: Vec::new(),
+            subscriptions: std::sync::Arc::new(crate::ws::ChannelSubscriptions::default()),
         }
     }
 
@@ -1555,17 +1583,17 @@ mod tests {
     /// A real WebSocket client dialing the relay: same engine the server
     /// uses, over a real TCP socket. The capability rides only in the
     /// Authorization header, never the URL (relay-protocol.md §7).
-    async fn ws_join(
+    async fn ws_connect(
         address: &str,
-        room: &str,
-        capability: Option<&str>,
+        path: &str,
+        token: Option<&str>,
         origin: Option<&str>,
     ) -> Result<ClientSocket, tokio_tungstenite::tungstenite::Error> {
-        let mut request = format!("ws://{address}/v1/pairing/{room}").into_client_request()?;
-        if let Some(capability) = capability {
+        let mut request = format!("ws://{address}{path}").into_client_request()?;
+        if let Some(token) = token {
             request.headers_mut().insert(
                 "Authorization",
-                HeaderValue::from_str(&format!("Bearer {capability}")).unwrap(),
+                HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
             );
         }
         if let Some(origin) = origin {
@@ -1577,10 +1605,69 @@ mod tests {
         Ok(socket)
     }
 
+    async fn ws_join(
+        address: &str,
+        room: &str,
+        capability: Option<&str>,
+        origin: Option<&str>,
+    ) -> Result<ClientSocket, tokio_tungstenite::tungstenite::Error> {
+        ws_connect(address, &format!("/v1/pairing/{room}"), capability, origin).await
+    }
+
     async fn ws_join_ok(address: &str, room: &str, capability: &str) -> ClientSocket {
         ws_join(address, room, Some(capability), None)
             .await
             .expect("a valid capability joins the room")
+    }
+
+    async fn ws_events_ok(address: &str, channel: &str, token: &str) -> ClientSocket {
+        ws_connect(
+            address,
+            &format!("/v1/channels/{channel}/events"),
+            Some(token),
+            None,
+        )
+        .await
+        .expect("a pull credential subscribes")
+    }
+
+    /// Issue one more credential on an existing channel; returns
+    /// (credentialId, token).
+    fn issue_on(
+        relay: &Relay,
+        channel: &str,
+        scopes: serde_json::Value,
+        request_id: &str,
+        label: &str,
+    ) -> (String, String) {
+        let request = serde_json::to_string(&serde_json::json!({
+            "protocolVersion": 1,
+            "requestId": request_id,
+            "scopes": scopes,
+            "label": label,
+        }))
+        .unwrap();
+        let issued = call(
+            &relay.address,
+            "POST",
+            &format!("/v1/channels/{channel}/credentials"),
+            Some(&request),
+            Some(&admin_authorization(&relay.admin)),
+        );
+        (
+            issued["credentialId"].as_str().unwrap().to_owned(),
+            issued["token"].as_str().unwrap().to_owned(),
+        )
+    }
+
+    fn append_call(relay: &Relay, channel: &str, message_ids: &[&str], token: &str) -> Reply {
+        call_with_status(
+            &relay.address,
+            "POST",
+            &format!("/v1/channels/{channel}/append"),
+            Some(&append_request(message_ids)),
+            Some(&bearer(token)),
+        )
     }
 
     /// Create a pairing room over the real HTTP route.
@@ -1639,6 +1726,7 @@ mod tests {
             sessions: std::sync::Arc::new(RoomSessions::default()),
             allowed_origins: Vec::new(),
             trusted_proxies: Vec::new(),
+            subscriptions: std::sync::Arc::new(crate::ws::ChannelSubscriptions::default()),
         });
         (relay, created.room_id, created.capability)
     }
@@ -1790,6 +1878,7 @@ mod tests {
             sessions: std::sync::Arc::new(RoomSessions::default()),
             allowed_origins: vec!["https://ok.example".to_owned()],
             trusted_proxies: Vec::new(),
+            subscriptions: std::sync::Arc::new(crate::ws::ChannelSubscriptions::default()),
         });
 
         // An Origin the deployer did not allow never gets a socket.
@@ -1907,6 +1996,7 @@ mod tests {
             sessions: std::sync::Arc::new(RoomSessions::default()),
             allowed_origins: Vec::new(),
             trusted_proxies: vec![trusted],
+            subscriptions: std::sync::Arc::new(crate::ws::ChannelSubscriptions::default()),
         });
         // One client behind the proxy burns its own budget...
         for offset in 0..16 {
@@ -1957,5 +2047,247 @@ mod tests {
             reply.status, 201,
             "no header falls back to the peer address"
         );
+    }
+
+    // --------------------------------------- channel update notifications
+
+    #[tokio::test]
+    async fn the_events_stream_greets_and_pushes_committed_batches() {
+        let relay = start();
+        let (channel, _id, pull_token) = provision(&relay, serde_json::json!(["pull"]), "listener");
+        let (_id, append_token) = issue_on(
+            &relay,
+            &channel,
+            serde_json::json!(["append"]),
+            "i-000000000002",
+            "writer",
+        );
+        let mut socket = ws_events_ok(&relay.address, &channel, &pull_token).await;
+
+        let greeting = next_json(&mut socket).await;
+        assert_eq!(greeting["type"], "events.subscribed");
+        assert_eq!(greeting["protocolVersion"], 1);
+        assert_eq!(greeting["channelId"], channel);
+
+        let reply = append_call(
+            &relay,
+            &channel,
+            &["m-0000000000000001", "m-0000000000000002"],
+            &append_token,
+        );
+        assert_eq!(reply.status, 200);
+        let hint = next_json(&mut socket).await;
+        assert_eq!(hint["type"], "channel.appended");
+        assert_eq!(hint["channelId"], channel);
+        assert_eq!(
+            hint["seq"], 2,
+            "one hint per committed batch, carrying the batch's last seq"
+        );
+
+        let reply = append_call(&relay, &channel, &["m-0000000000000003"], &append_token);
+        assert_eq!(reply.status, 200);
+        let hint = next_json(&mut socket).await;
+        assert_eq!(hint["seq"], 3);
+    }
+
+    #[tokio::test]
+    async fn a_credential_without_pull_scope_is_refused_with_4403() {
+        let relay = start();
+        let (channel, _id, append_token) =
+            provision(&relay, serde_json::json!(["append"]), "writer");
+        let mut socket = ws_events_ok(&relay.address, &channel, &append_token).await;
+        let error = next_json(&mut socket).await;
+        assert_eq!(error["type"], "error");
+        assert_eq!(error["code"], "forbidden");
+        assert_eq!(next_close(&mut socket).await, 4403);
+    }
+
+    #[tokio::test]
+    async fn a_missing_or_unknown_credential_is_refused_with_4401() {
+        let relay = start();
+        let (channel, _id, _pull_token) = provision(&relay, serde_json::json!(["pull"]), "pull");
+        // No Authorization header at all.
+        let mut socket = ws_connect(
+            &relay.address,
+            &format!("/v1/channels/{channel}/events"),
+            None,
+            None,
+        )
+        .await
+        .expect("the refusal still completes the upgrade");
+        let error = next_json(&mut socket).await;
+        assert_eq!(error["code"], "unauthorized");
+        assert_eq!(next_close(&mut socket).await, 4401);
+        // A token that grants nothing.
+        let mut socket = ws_events_ok(&relay.address, &channel, "not-a-token").await;
+        let error = next_json(&mut socket).await;
+        assert_eq!(error["code"], "unauthorized");
+        assert_eq!(next_close(&mut socket).await, 4401);
+    }
+
+    #[tokio::test]
+    async fn a_nonexistent_channel_is_not_distinguishable_from_a_foreign_one() {
+        // No credential: 4401, the same answer any unknown token gets —
+        // the channel's existence is never leaked to a probe.
+        let relay = start();
+        let mut socket = ws_connect(
+            &relay.address,
+            "/v1/channels/ch_does_not_exist/events",
+            None,
+            None,
+        )
+        .await
+        .expect("the refusal still completes the upgrade");
+        let error = next_json(&mut socket).await;
+        assert_eq!(error["code"], "unauthorized");
+        assert_eq!(next_close(&mut socket).await, 4401);
+        // A real credential for another channel: 4403, again without
+        // saying whether the named channel exists.
+        let (_other_channel, _id, token) =
+            provision(&relay, serde_json::json!(["pull"]), "elsewhere");
+        let mut socket = ws_connect(
+            &relay.address,
+            "/v1/channels/ch_does_not_exist/events",
+            Some(&token),
+            None,
+        )
+        .await
+        .expect("the refusal still completes the upgrade");
+        let error = next_json(&mut socket).await;
+        assert_eq!(error["code"], "forbidden");
+        assert_eq!(next_close(&mut socket).await, 4403);
+    }
+
+    #[tokio::test]
+    async fn a_revoked_credential_is_disconnected_on_the_next_push() {
+        let relay = start();
+        let (channel, revoked_id, revoked_token) =
+            provision(&relay, serde_json::json!(["pull"]), "revoked");
+        let (kept_id, kept_token) = issue_on(
+            &relay,
+            &channel,
+            serde_json::json!(["pull"]),
+            "i-000000000002",
+            "kept",
+        );
+        let (_id, append_token) = issue_on(
+            &relay,
+            &channel,
+            serde_json::json!(["append"]),
+            "i-000000000003",
+            "writer",
+        );
+        let _ = kept_id;
+        let mut revoked = ws_events_ok(&relay.address, &channel, &revoked_token).await;
+        let mut kept = ws_events_ok(&relay.address, &channel, &kept_token).await;
+        let _ = next_json(&mut revoked).await;
+        let _ = next_json(&mut kept).await;
+
+        let reply = call_with_status(
+            &relay.address,
+            "DELETE",
+            &format!("/v1/channels/{channel}/credentials/{revoked_id}"),
+            None,
+            Some(&admin_authorization(&relay.admin)),
+        );
+        assert_eq!(reply.status, 200);
+        let reply = append_call(&relay, &channel, &["m-0000000000000001"], &append_token);
+        assert_eq!(reply.status, 200);
+
+        // The revoked stream dies on the push attempt that follows the
+        // commit — one error message, then the 4401 close.
+        let error = next_json(&mut revoked).await;
+        assert_eq!(error["type"], "error");
+        assert_eq!(error["code"], "unauthorized");
+        assert_eq!(next_close(&mut revoked).await, 4401);
+        // The other device's subscription is untouched by the revocation.
+        let hint = next_json(&mut kept).await;
+        assert_eq!(hint["type"], "channel.appended");
+        assert_eq!(hint["seq"], 1);
+    }
+
+    #[tokio::test]
+    async fn a_lost_hint_loses_nothing_because_pull_recovers() {
+        let relay = start();
+        let (channel, _id, token) =
+            provision(&relay, serde_json::json!(["pull", "append"]), "both");
+        // Three commits reach the log while nobody is subscribed: no
+        // listener exists, so no hint is ever delivered anywhere.
+        for ids in [
+            vec!["m-0000000000000001"],
+            vec!["m-0000000000000002"],
+            vec!["m-0000000000000003"],
+        ] {
+            let reply = append_call(&relay, &channel, &ids, &token);
+            assert_eq!(reply.status, 200);
+        }
+        // The recovery path is pull from a cursor, and it has everything.
+        let body = call(
+            &relay.address,
+            "POST",
+            &format!("/v1/channels/{channel}/pull"),
+            Some(&pull_request(0, None)),
+            Some(&bearer(&token)),
+        );
+        assert_eq!(body["entries"].as_array().unwrap().len(), 3);
+        assert_eq!(body["hasMore"], false);
+        // A listener joining now is told nothing about the past: the
+        // subscription carries no state, the greeting is all it gets.
+        let mut socket = ws_events_ok(&relay.address, &channel, &token).await;
+        let greeting = next_json(&mut socket).await;
+        assert_eq!(greeting["type"], "events.subscribed");
+    }
+
+    #[tokio::test]
+    async fn an_events_origin_gate_blocks_disallowed_browsers() {
+        let relay = boot_with(fresh_db(), true, |store| AppState {
+            store,
+            rooms: std::sync::Arc::new(PairingRooms::new()),
+            sessions: std::sync::Arc::new(RoomSessions::default()),
+            allowed_origins: vec!["https://ok.example".to_owned()],
+            trusted_proxies: Vec::new(),
+            subscriptions: std::sync::Arc::new(crate::ws::ChannelSubscriptions::default()),
+        });
+        let (channel, _id, token) = provision(&relay, serde_json::json!(["pull"]), "browser");
+
+        let rejected = ws_connect(
+            &relay.address,
+            &format!("/v1/channels/{channel}/events"),
+            Some(&token),
+            Some("https://evil.example"),
+        )
+        .await;
+        match rejected {
+            Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+                assert_eq!(response.status(), 403);
+            }
+            other => panic!("expected an HTTP 403 rejection, got {other:?}"),
+        }
+
+        let mut allowed = ws_connect(
+            &relay.address,
+            &format!("/v1/channels/{channel}/events"),
+            Some(&token),
+            Some("https://ok.example"),
+        )
+        .await
+        .expect("the allowed origin subscribes");
+        let greeting = next_json(&mut allowed).await;
+        assert_eq!(greeting["type"], "events.subscribed");
+    }
+
+    #[tokio::test]
+    async fn a_client_message_on_the_events_stream_closes_with_1008() {
+        let relay = start();
+        let (channel, _id, token) = provision(&relay, serde_json::json!(["pull"]), "listener");
+        let mut socket = ws_events_ok(&relay.address, &channel, &token).await;
+        let _ = next_json(&mut socket).await;
+        // A listener has no client vocabulary: anything sent is a shape
+        // violation, exactly like on the pairing surface.
+        socket
+            .send(WsMessage::Text(r#"{"type":"chat"}"#.into()))
+            .await
+            .unwrap();
+        assert_eq!(next_close(&mut socket).await, 1008);
     }
 }
