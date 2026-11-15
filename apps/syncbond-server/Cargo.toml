@@ -10,6 +10,15 @@ authors.workspace = true
 name = "syncbond-server"
 path = "src/main.rs"
 
+[lib]
+name = "syncbond_server"
+path = "src/lib.rs"
+
+[features]
+# In-process relay harness (src/test_support) for other crates' integration
+# tests; off by default so nothing that ships embeds a relay.
+test-support = []
+
 [dependencies]
 syncbond-relay-protocol = { path = "../../crates/syncbond-relay-protocol" }
 rusqlite.workspace = true

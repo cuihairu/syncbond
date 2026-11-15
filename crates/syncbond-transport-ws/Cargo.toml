@@ -1,0 +1,40 @@
+[package]
+name = "syncbond-transport-ws"
+description = "WebSocket pairing transport for syncbond: room-based pairing through the relay, TLS validation, bounded bridge into the sync core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "pair-end"
+path = "src/bin/pair-end.rs"
+
+[dependencies]
+syncbond-core = { path = "../syncbond-core" }
+syncbond-relay-protocol = { path = "../syncbond-relay-protocol" }
+tokio = { workspace = true, features = ["net", "rt", "sync", "time", "macros"] }
+# The same engine the relay serves with, pinned by the lockfile. rustls is
+# pulled with the `ring` provider (no aws-lc-rs build tools needed); TLS
+# validation is the point of this crate, so the rustls-tls feature is
+# always on.
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "logging", "tls12"] }
+rustls-pki-types = "1"
+# The REST room-creation hop speaks plain HTTP/1.1 over a raw socket; TLS
+# for it comes from the same rustls stack the WS hop uses.
+tokio-rustls = "0.26"
+webpki-roots = "0.26"
+# WS upgrade requests carry the room capability in an Authorization header,
+# so the client builds the request itself instead of passing a bare URL.
+http = "1"
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+base64.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# The real relay, in-process, for integration tests.
+syncbond-server = { path = "../../apps/syncbond-server", features = ["test-support"] }
+# Test certificates for the TLS validation policy tests.
+rcgen = "0.13"
