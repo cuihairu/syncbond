@@ -13,6 +13,7 @@ pub mod hlc;
 pub mod identity;
 pub mod member_crypto;
 pub mod pairing;
+pub mod pairing_driver;
 pub mod pairing_spake2;
 pub mod relay;
 pub mod replication;
@@ -30,7 +31,8 @@ pub use discovery::{
 pub use hlc::{compare_stamps, HlcStamp, HybridClock};
 pub use identity::{DeviceIdentity, IdentityError};
 pub use member_crypto::{MemberCryptoError, MemberKeyRing, Rotation, RotationResult};
-pub use pairing::{PairingError, PairingSession};
+pub use pairing::{PairingError, PairingSession, Role};
+pub use pairing_driver::{DriverEvent, PairingDriver};
 pub use replication::{GcReport, ReplicationError, Replicator};
 pub use storage::{MemoryStorage, SyncState, SyncStorage};
 pub use transport::{MemoryTransport, Transport, TransportError};

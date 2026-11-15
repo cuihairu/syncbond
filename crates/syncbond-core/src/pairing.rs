@@ -10,7 +10,7 @@
 
 use crate::crypto::{self, KeyRing, SessionKey, PROTOCOL_VERSION};
 use crate::identity::{group_id_from_public_keys, DeviceIdentity, PublicIdentity};
-use crate::pairing_spake2::{Spake2Error, Spake2Initiator, Spake2Responder};
+use crate::pairing_spake2::Spake2Error;
 use crate::transport::{Transport, TransportError};
 use ed25519_dalek::Signature;
 use hkdf::Hkdf;
@@ -20,14 +20,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
-const FRAME_P_A: u8 = 0x01;
-const FRAME_P_B: u8 = 0x02;
-const FRAME_CONFIRM_A: u8 = 0x03;
-const FRAME_CONFIRM_B: u8 = 0x04;
-const FRAME_IDENTITY_A: u8 = 0x05;
-const FRAME_IDENTITY_B: u8 = 0x06;
-const FRAME_ABORT: u8 = 0x07;
-const FRAME_APP: u8 = 0x08;
+pub(crate) const FRAME_P_A: u8 = 0x01;
+pub(crate) const FRAME_P_B: u8 = 0x02;
+pub(crate) const FRAME_CONFIRM_A: u8 = 0x03;
+pub(crate) const FRAME_CONFIRM_B: u8 = 0x04;
+pub(crate) const FRAME_IDENTITY_A: u8 = 0x05;
+pub(crate) const FRAME_IDENTITY_B: u8 = 0x06;
+pub(crate) const FRAME_ABORT: u8 = 0x07;
+pub(crate) const FRAME_APP: u8 = 0x08;
 
 const SESSION_KEY_INFO: &[u8] = b"syncbond/v1/session-key";
 /// Epoch used for envelopes inside a freshly paired session; epoch rotation
@@ -81,6 +81,32 @@ pub struct PairingSession {
 }
 
 impl PairingSession {
+    /// Assemble a session from a completed exchange. Crate-internal: the
+    /// blocking [`pair`]/[`accept`] and the non-blocking
+    /// [`crate::pairing_driver::PairingDriver`] both end here, so a session
+    /// always carries a live transport, a fresh replay set, and no
+    /// invalidation.
+    pub(crate) fn new(
+        identity: &DeviceIdentity,
+        peer_identity: PublicIdentity,
+        role: Role,
+        ke: &[u8; 16],
+        transport: Arc<dyn Transport>,
+    ) -> Self {
+        let group_id = group_id_from_public_keys(&[identity.public_key, peer_identity.public_key]);
+        Self {
+            device_id: identity.device_id.clone(),
+            peer_identity,
+            group_id: group_id.clone(),
+            session_key: session_key_from(ke),
+            keyring: KeyRing::new(group_id),
+            role,
+            transport,
+            seen_message_ids: Mutex::new(HashSet::new()),
+            invalidated: AtomicBool::new(false),
+        }
+    }
+
     /// Encrypt and send an application payload over the session channel.
     pub fn seal_and_send(&self, plaintext: &[u8]) -> Result<(), PairingError> {
         self.assert_live()?;
@@ -177,7 +203,7 @@ impl PairingSession {
     }
 }
 
-fn check_version(frame: &[u8]) -> Result<(), PairingError> {
+pub(crate) fn check_version(frame: &[u8]) -> Result<(), PairingError> {
     match frame.get(1) {
         Some(&v) if u16::from(v) == PROTOCOL_VERSION => Ok(()),
         Some(&v) => Err(PairingError::Protocol(format!(
@@ -187,7 +213,7 @@ fn check_version(frame: &[u8]) -> Result<(), PairingError> {
     }
 }
 
-fn frame_bytes(kind: u8, payload: &[u8]) -> Vec<u8> {
+pub(crate) fn frame_bytes(kind: u8, payload: &[u8]) -> Vec<u8> {
     let mut frame = Vec::with_capacity(payload.len() + 2);
     frame.push(kind);
     frame.push(PROTOCOL_VERSION as u8);
@@ -195,44 +221,19 @@ fn frame_bytes(kind: u8, payload: &[u8]) -> Vec<u8> {
     frame
 }
 
-fn expect_frame(
-    transport: &Arc<dyn Transport>,
-    want: u8,
-    what: &str,
-) -> Result<Vec<u8>, PairingError> {
-    let frame = transport.recv()?;
-    if frame.len() > MAX_FRAME_BYTES {
-        return Err(PairingError::Protocol(format!(
-            "frame too large: {} bytes (max {MAX_FRAME_BYTES})",
-            frame.len()
-        )));
-    }
-    if frame.first() == Some(&FRAME_ABORT) {
-        return Err(PairingError::Protocol("peer aborted the pairing".into()));
-    }
-    if frame.first() != Some(&want) {
-        return Err(PairingError::Protocol(format!(
-            "expected {what} frame, got type 0x{:02x}",
-            frame.first().copied().unwrap_or(0)
-        )));
-    }
-    check_version(&frame)?;
-    Ok(frame[2..].to_vec())
-}
-
-fn abort_quietly(transport: &Arc<dyn Transport>) {
-    let _ = transport.send(&frame_bytes(FRAME_ABORT, &[]));
-}
-
 /// Identity frame payload: JSON public identity || 64-byte signature.
-fn identity_payload(identity: &DeviceIdentity, role: &str, transcript: &[u8]) -> Vec<u8> {
+pub(crate) fn identity_payload(
+    identity: &DeviceIdentity,
+    role: &str,
+    transcript: &[u8],
+) -> Vec<u8> {
     let public = PublicIdentity::from(identity);
     let mut payload = serde_json::to_vec(&public).expect("public identity serialization");
     payload.extend_from_slice(&identity.sign_transcript(role, transcript).to_bytes());
     payload
 }
 
-fn parse_identity_payload(
+pub(crate) fn parse_identity_payload(
     payload: &[u8],
     role: &str,
     transcript: &[u8],
@@ -250,7 +251,7 @@ fn parse_identity_payload(
     Ok(public)
 }
 
-fn session_key_from(ke: &[u8; 16]) -> SessionKey {
+pub(crate) fn session_key_from(ke: &[u8; 16]) -> SessionKey {
     let hk = Hkdf::<Sha256>::new(None, ke);
     let mut key = [0u8; 32];
     hk.expand(SESSION_KEY_INFO, &mut key)
@@ -265,59 +266,17 @@ fn session_key_from(ke: &[u8; 16]) -> SessionKey {
 /// speaks a different protocol version, or when identity signatures do not
 /// verify. On any failure an abort frame is sent so the peer does not wait
 /// forever.
+///
+/// The protocol sequencing lives in [`crate::pairing_driver`]; this is the
+/// blocking pump over it, for callers whose event loop is a thread.
 pub fn pair(
     code: &str,
     identity: &DeviceIdentity,
     transport: Arc<dyn Transport>,
 ) -> Result<PairingSession, PairingError> {
-    let result = pair_inner(code, identity, &transport);
-    if result.is_err() {
-        abort_quietly(&transport);
-    }
-    result
-}
-
-fn pair_inner(
-    code: &str,
-    identity: &DeviceIdentity,
-    transport: &Arc<dyn Transport>,
-) -> Result<PairingSession, PairingError> {
-    crate::codes::PairingCodeBoard::validate_format(code)
-        .map_err(|e| PairingError::Protocol(format!("pairing code format: {e}")))?;
-    let mut initiator = Spake2Initiator::new(code.as_bytes());
-    transport.send(&frame_bytes(FRAME_P_A, &initiator.generate_message()))?;
-
-    let p_b = expect_frame(transport, FRAME_P_B, "pB")?;
-    let (secrets, confirm_a) = initiator.process_response(&p_b)?;
-    transport.send(&frame_bytes(FRAME_CONFIRM_A, &confirm_a))?;
-
-    let confirm_b: [u8; 32] = expect_frame(transport, FRAME_CONFIRM_B, "cB")?
-        .try_into()
-        .map_err(|_| PairingError::Protocol("cB must be 32 bytes".into()))?;
-    initiator.verify_confirmation(&secrets, &confirm_b)?;
-
-    transport.send(&frame_bytes(
-        FRAME_IDENTITY_A,
-        &identity_payload(identity, "initiator", &secrets.transcript),
-    ))?;
-    let peer = parse_identity_payload(
-        &expect_frame(transport, FRAME_IDENTITY_B, "identity(B)")?,
-        "responder",
-        &secrets.transcript,
-    )?;
-
-    let group_id = group_id_from_public_keys(&[identity.public_key, peer.public_key]);
-    Ok(PairingSession {
-        device_id: identity.device_id.clone(),
-        peer_identity: peer,
-        group_id: group_id.clone(),
-        session_key: session_key_from(&secrets.ke),
-        keyring: KeyRing::new(group_id),
-        role: Role::Initiator,
-        transport: transport.clone(),
-        seen_message_ids: Mutex::new(HashSet::new()),
-        invalidated: AtomicBool::new(false),
-    })
+    let driver =
+        crate::pairing_driver::PairingDriver::initiator(code, identity, transport.clone())?;
+    pump_to_completion(driver, &transport)
 }
 
 /// Responder side: type in the code shown by the peer.
@@ -326,51 +285,39 @@ pub fn accept(
     identity: &DeviceIdentity,
     transport: Arc<dyn Transport>,
 ) -> Result<PairingSession, PairingError> {
-    let result = accept_inner(code, identity, &transport);
-    if result.is_err() {
-        abort_quietly(&transport);
-    }
-    result
+    let driver =
+        crate::pairing_driver::PairingDriver::responder(code, identity, transport.clone())?;
+    pump_to_completion(driver, &transport)
 }
 
-fn accept_inner(
-    code: &str,
-    identity: &DeviceIdentity,
+/// Drive a pairing driver to completion over a blocking transport: drain
+/// the outbox, await one frame, feed it, repeat. The event-loop contract
+/// ([`crate::pairing_driver`]) blocks nowhere; this pump blocks exactly
+/// where the old `pair`/`accept` did.
+fn pump_to_completion(
+    mut driver: crate::pairing_driver::PairingDriver,
     transport: &Arc<dyn Transport>,
 ) -> Result<PairingSession, PairingError> {
-    crate::codes::PairingCodeBoard::validate_format(code)
-        .map_err(|e| PairingError::Protocol(format!("pairing code format: {e}")))?;
-    let p_a = expect_frame(transport, FRAME_P_A, "pA")?;
-    let mut responder = Spake2Responder::new(code.as_bytes());
-    let (p_b, secrets, confirm_b) = responder.process_intro(&p_a)?;
-    transport.send(&frame_bytes(FRAME_P_B, &p_b))?;
-
-    let confirm_a: [u8; 32] = expect_frame(transport, FRAME_CONFIRM_A, "cA")?
-        .try_into()
-        .map_err(|_| PairingError::Protocol("cA must be 32 bytes".into()))?;
-    responder.verify_confirmation(&secrets, &confirm_a)?;
-    transport.send(&frame_bytes(FRAME_CONFIRM_B, &confirm_b))?;
-
-    transport.send(&frame_bytes(
-        FRAME_IDENTITY_B,
-        &identity_payload(identity, "responder", &secrets.transcript),
-    ))?;
-    let peer = parse_identity_payload(
-        &expect_frame(transport, FRAME_IDENTITY_A, "identity(A)")?,
-        "initiator",
-        &secrets.transcript,
-    )?;
-
-    let group_id = group_id_from_public_keys(&[identity.public_key, peer.public_key]);
-    Ok(PairingSession {
-        device_id: identity.device_id.clone(),
-        peer_identity: peer,
-        group_id: group_id.clone(),
-        session_key: session_key_from(&secrets.ke),
-        keyring: KeyRing::new(group_id),
-        role: Role::Responder,
-        transport: transport.clone(),
-        seen_message_ids: Mutex::new(HashSet::new()),
-        invalidated: AtomicBool::new(false),
-    })
+    let result = (|| loop {
+        while let Some(frame) = driver.pop_outgoing() {
+            transport.send(&frame)?;
+        }
+        match driver.poll() {
+            Some(crate::pairing_driver::DriverEvent::Completed(session)) => return Ok(session),
+            Some(crate::pairing_driver::DriverEvent::Failed(error)) => return Err(error),
+            None => {}
+        }
+        let frame = transport.recv()?;
+        driver.push(&frame)?;
+    })();
+    if result.is_err() {
+        // The best-effort goodbye the old pair/accept always attempted;
+        // `abort` does not double-queue after a protocol failure, which
+        // already queued exactly one abort frame.
+        driver.abort();
+        while let Some(frame) = driver.pop_outgoing() {
+            let _ = transport.send(&frame);
+        }
+    }
+    result
 }
