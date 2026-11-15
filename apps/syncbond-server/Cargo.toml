@@ -14,17 +14,26 @@ path = "src/main.rs"
 syncbond-relay-protocol = { path = "../../crates/syncbond-relay-protocol" }
 rusqlite.workspace = true
 axum.workspace = true
-tokio.workspace = true
+# `sync` for the per-socket outbound channels and `net` for the listener:
+# both were arriving transitively through axum before DSR-21 needed them
+# directly, so now they are declared by their real user.
+tokio = { workspace = true, features = ["sync", "net"] }
 base64.workspace = true
 sha2.workspace = true
 rand_core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# Splitting the pairing WebSocket into a reader and a writer half
+# (todo.md DSR-21); already in the tree through axum's `ws` feature.
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 
 [dev-dependencies]
 # Real socket coverage (todo.md DSR-19): binding and dialing a listener
 # needs the `net` feature, and `#[tokio::test]` drives it on a runtime,
 # neither of which the workspace-level tokio reference turns on for the
 # server binary itself.
-tokio = { workspace = true, features = ["net", "rt", "macros", "time"] }
+tokio = { workspace = true, features = ["net", "rt", "macros", "time", "sync"] }
+# Real WebSocket client coverage (todo.md DSR-21): the same engine axum's
+# `ws` feature uses, pinned by the lockfile — no new tree entries.
+tokio-tungstenite = "0.29"

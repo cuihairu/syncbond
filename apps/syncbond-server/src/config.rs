@@ -27,6 +27,12 @@ pub struct Config {
     /// no browser origins are allowed (non-browser clients are unaffected).
     #[serde(default)]
     pub allowed_origins: Vec<String>,
+    /// Proxy addresses (IP or CIDR) whose `X-Forwarded-For` the server may
+    /// believe when keying the room-creation rate limit. Empty — the
+    /// default — means no header is believed anywhere and the peer socket
+    /// address is the client address (crate::proxy for the policy).
+    #[serde(default)]
+    pub trusted_proxies: Vec<crate::proxy::TrustedProxy>,
 }
 
 fn default_channel_quota() -> u64 {
@@ -45,6 +51,7 @@ impl Default for Config {
             channel_quota_bytes: default_channel_quota(),
             disk_quota_bytes: default_disk_quota(),
             allowed_origins: Vec::new(),
+            trusted_proxies: Vec::new(),
         }
     }
 }
@@ -178,6 +185,23 @@ mod tests {
             ..Config::default()
         };
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn trusted_proxies_parse_or_reject_at_deserialization() {
+        let raw = r#"{"listen":"127.0.0.1:8080","dataDir":"./data","trustedProxies":["10.0.0.0/8","::1"]}"#;
+        let config: Config = serde_json::from_str(raw).unwrap();
+        assert_eq!(config.trusted_proxies.len(), 2);
+        let raw =
+            r#"{"listen":"127.0.0.1:8080","dataDir":"./data","trustedProxies":["proxy.internal"]}"#;
+        let parsed: Result<Config, _> = serde_json::from_str(raw);
+        assert!(
+            parsed.is_err(),
+            "a name that is not an IP or CIDR fails startup, not rate limiting"
+        );
+        let raw =
+            r#"{"listen":"127.0.0.1:8080","dataDir":"./data","trustedProxies":["10.0.0.0/33"]}"#;
+        assert!(serde_json::from_str::<Config>(raw).is_err());
     }
 
     #[test]

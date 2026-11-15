@@ -66,6 +66,16 @@ pub struct CreatedRoom {
     pub expires_at_ms: u64,
 }
 
+/// What a successful join learned: whether this join completed the pair
+/// (the `peerJoined` field of the first `room.joined` message) and the
+/// instant the room dies, so the socket side can schedule its own
+/// deadline instead of trusting someone to keep probing the registry.
+#[derive(Debug)]
+pub struct Joined {
+    pub peer_joined: bool,
+    pub expires_at_ms: u64,
+}
+
 /// The pairing-room registry. Cheap to clone behind an `Arc` — the state
 /// lives behind a mutex, like the SQLite store.
 #[derive(Default)]
@@ -114,14 +124,12 @@ impl PairingRooms {
     /// successful join — and the sixteenth attempt is the last one served:
     /// a seventeenth finds the room dead, per the frozen contract.
     ///
-    /// Consumed by the WebSocket join route (DSR-21); unit-tested here.
-    #[allow(dead_code)]
     pub fn join(
         &self,
         room_id: &str,
         capability: &str,
         now_ms: u64,
-    ) -> Result<bool, JoinRoomError> {
+    ) -> Result<Joined, JoinRoomError> {
         let mut inner = self.lock();
         if !inner.rooms.contains_key(room_id) {
             return Err(JoinRoomError::RoomNotFound);
@@ -130,7 +138,8 @@ impl PairingRooms {
         // would drop it and hand back `room_not_found` where the contract
         // asks for `room_expired` — a stale capability holder must hear
         // "expired", not "never existed".
-        if now_ms >= inner.rooms.get(room_id).unwrap().expires_at_ms {
+        let expires_at_ms = inner.rooms.get(room_id).unwrap().expires_at_ms;
+        if now_ms >= expires_at_ms {
             inner.rooms.remove(room_id);
             return Err(JoinRoomError::Expired);
         }
@@ -153,7 +162,10 @@ impl PairingRooms {
             return Err(JoinRoomError::Full);
         }
         room.participants += 1;
-        Ok(room.participants == MAX_ROOM_PARTICIPANTS)
+        Ok(Joined {
+            peer_joined: room.participants == MAX_ROOM_PARTICIPANTS,
+            expires_at_ms,
+        })
     }
 
     /// Drop every expired room; returns how many went. Laziness covers the
@@ -426,11 +438,11 @@ mod tests {
         let first = rooms
             .join(&created.room_id, &created.capability, 1_001)
             .unwrap();
-        assert!(!first, "the first join is alone");
+        assert!(!first.peer_joined, "the first join is alone");
         let second = rooms
             .join(&created.room_id, &created.capability, 1_002)
             .unwrap();
-        assert!(second, "the second join completes the pair");
+        assert!(second.peer_joined, "the second join completes the pair");
         assert_eq!(
             rooms
                 .join(&created.room_id, &created.capability, 1_003)
@@ -451,9 +463,12 @@ mod tests {
         );
         // The right capability still works after a failed probe — and reads
         // `peerJoined: false`, because this device is alone so far.
-        assert!(!rooms
-            .join(&created.room_id, &created.capability, 1_002)
-            .unwrap());
+        assert!(
+            !rooms
+                .join(&created.room_id, &created.capability, 1_002)
+                .unwrap()
+                .peer_joined
+        );
     }
 
     #[test]
@@ -486,12 +501,18 @@ mod tests {
             );
         }
         // Attempts 15 and 16: both devices join for real.
-        assert!(!rooms
-            .join(&created.room_id, &created.capability, 2_000)
-            .unwrap());
-        assert!(rooms
-            .join(&created.room_id, &created.capability, 2_001)
-            .unwrap());
+        assert!(
+            !rooms
+                .join(&created.room_id, &created.capability, 2_000)
+                .unwrap()
+                .peer_joined
+        );
+        assert!(
+            rooms
+                .join(&created.room_id, &created.capability, 2_001)
+                .unwrap()
+                .peer_joined
+        );
         // Attempt 17 — the room dies on contact, even for a capability
         // holder: the contract caps total join attempts per room.
         assert_eq!(
@@ -519,9 +540,12 @@ mod tests {
             "only the early room went"
         );
         // The late room survives and still joins.
-        assert!(!rooms
-            .join(&late.room_id, &late.capability, early.expires_at_ms + 1)
-            .unwrap());
+        assert!(
+            !rooms
+                .join(&late.room_id, &late.capability, early.expires_at_ms + 1)
+                .unwrap()
+                .peer_joined
+        );
     }
 
     #[test]

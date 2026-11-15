@@ -14,9 +14,11 @@
 
 mod config;
 mod http;
+mod proxy;
 mod rooms;
 mod sqlite;
 mod storage;
+mod ws;
 
 use std::process::ExitCode;
 
@@ -103,6 +105,9 @@ async fn run(config_path: std::path::PathBuf) -> Result<(), StartupError> {
     let app = http::router(http::AppState {
         store,
         rooms: std::sync::Arc::new(rooms::PairingRooms::new()),
+        sessions: std::sync::Arc::new(ws::RoomSessions::default()),
+        allowed_origins: config.allowed_origins.clone(),
+        trusted_proxies: config.trusted_proxies.clone(),
     });
     axum::serve(
         listener,

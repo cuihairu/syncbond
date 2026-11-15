@@ -38,6 +38,7 @@ use syncbond_relay_protocol::{
 use crate::rooms::PairingRooms;
 use crate::sqlite::SqliteRelayStore;
 use crate::storage::{IssuedCredential, RelayStorage, StorageError};
+use crate::ws::RoomSessions;
 
 /// Shared state for every route. The store is `Send + Sync` by contract,
 /// which is exactly why `SqliteRelayStore` guards its connection with a
@@ -47,6 +48,17 @@ use crate::storage::{IssuedCredential, RelayStorage, StorageError};
 pub struct AppState {
     pub store: Arc<SqliteRelayStore>,
     pub rooms: Arc<PairingRooms>,
+    /// Live pairing-room sockets (the WebSocket join route's forwarding
+    /// table, DSR-21).
+    pub sessions: Arc<RoomSessions>,
+    /// Origins a browser client may present at a WebSocket upgrade; an
+    /// Origin header not in this list is a 403. Non-browser clients send
+    /// no Origin and are unaffected.
+    pub allowed_origins: Vec<String>,
+    /// Proxies whose `X-Forwarded-For` may key the room-creation rate
+    /// limit (crate::proxy); empty means the peer address is always the
+    /// client address.
+    pub trusted_proxies: Vec<crate::proxy::TrustedProxy>,
 }
 
 /// Build the router. Kept separate from `listen` so tests can drive it
@@ -69,6 +81,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/channels/{channel_id}/append", post(append))
         .route("/v1/channels/{channel_id}/pull", post(pull))
         .route("/v1/pairing/rooms", post(create_room))
+        .route("/v1/pairing/{room_id}", get(crate::ws::join_room))
         .with_state(state)
 }
 
@@ -103,7 +116,7 @@ async fn ready(State(state): State<AppState>) -> Response {
 /// A wire failure: code, message, the status and retryability come from
 /// the frozen mapping. `request_id` is whatever the request managed to
 /// carry, or `None` when even that could not be parsed.
-struct Failure {
+pub(crate) struct Failure {
     error: RelayError,
     request_id: Option<String>,
 }
@@ -162,7 +175,7 @@ fn validate_envelope_fields(protocol_version: u16, request_id: &str) -> Result<(
 /// The bearer token, if the header is present and well-formed. A header
 /// that is present but not `Bearer <token>` is treated as absent: there is
 /// no third state, and a malformed header must not read as a credential.
-fn bearer(headers: &HeaderMap) -> Option<String> {
+pub(crate) fn bearer(headers: &HeaderMap) -> Option<String> {
     let value = headers.get(axum::http::header::AUTHORIZATION)?;
     let text = value.to_str().ok()?;
     let token = text.strip_prefix("Bearer ")?;
@@ -245,6 +258,7 @@ async fn create_channel(
 async fn create_room(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Response {
     let request: CreateRoomRequest = match parse_body(&body) {
@@ -259,7 +273,16 @@ async fn create_room(
         Ok(now_ms) => now_ms,
         Err(failure) => return failure.into_response(),
     };
-    match state.rooms.create(peer.ip(), now_ms) {
+    // Rate-limit key: the peer address, or — behind a trusted proxy —
+    // the client the proxy chain saw (crate::proxy for the policy).
+    let client_ip = crate::proxy::client_ip(
+        peer.ip(),
+        headers
+            .get("x-forwarded-for")
+            .and_then(|value| value.to_str().ok()),
+        &state.trusted_proxies,
+    );
+    match state.rooms.create(client_ip, now_ms) {
         Ok(created) => (
             StatusCode::CREATED,
             Json(RoomCreated {
@@ -281,7 +304,7 @@ async fn create_room(
 
 /// Wall-clock unix milliseconds. A clock before the epoch cannot address a
 /// TTL deadline and is surfaced instead of silently minting dead rooms.
-fn unix_now_ms() -> Result<u64, Failure> {
+pub(crate) fn unix_now_ms() -> Result<u64, Failure> {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|since| since.as_millis() as u64)
@@ -608,16 +631,20 @@ mod tests {
         admin: String,
         _task: tokio::task::JoinHandle<()>,
         _db: std::path::PathBuf,
-        /// Must outlive the serve task: dropping a runtime aborts the tasks
-        /// it owns, which is how a listener goes away before its first
-        /// request is answered.
-        _runtime: tokio::runtime::Runtime,
+        /// The relay's runtime: it owns the serve task, so it must stay
+        /// alive until the relay does.
+        _runtime: std::mem::ManuallyDrop<tokio::runtime::Runtime>,
     }
 
     impl Drop for Relay {
         fn drop(&mut self) {
             self._task.abort();
             std::fs::remove_file(&self._db).ok();
+            // Runtime's own drop blocks, which panics inside a
+            // #[tokio::test] body; hand the runtime to a detached OS
+            // thread and let it shut down there.
+            let runtime = unsafe { std::mem::ManuallyDrop::take(&mut self._runtime) };
+            std::thread::spawn(move || drop(runtime));
         }
     }
 
@@ -635,9 +662,32 @@ mod tests {
         dir.join("relay.db")
     }
 
+    /// The state `main` assembles, as the tests assemble it: one store,
+    /// one room registry, one forwarding table, no browser origins.
+    fn boot_state(store: std::sync::Arc<SqliteRelayStore>) -> AppState {
+        AppState {
+            store,
+            rooms: std::sync::Arc::new(PairingRooms::new()),
+            sessions: std::sync::Arc::new(RoomSessions::default()),
+            allowed_origins: Vec::new(),
+            trusted_proxies: Vec::new(),
+        }
+    }
+
     /// Boot a relay: one store, one listener on an ephemeral port. `ready`
     /// lifts the readiness gate the way the binary's serve loop does.
     fn boot(db: std::path::PathBuf, ready: bool) -> Relay {
+        boot_with(db, ready, boot_state)
+    }
+
+    /// The same relay, with the caller assembling state — used by the
+    /// WebSocket tests to pre-seed rooms against a shifted clock or to
+    /// configure browser origins.
+    fn boot_with(
+        db: std::path::PathBuf,
+        ready: bool,
+        state_of: impl FnOnce(std::sync::Arc<SqliteRelayStore>) -> AppState + Send + 'static,
+    ) -> Relay {
         let store = std::sync::Arc::new(SqliteRelayStore::open(&db).unwrap());
         if ready {
             store.mark_ready();
@@ -646,32 +696,35 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let (address, task) = runtime.block_on(async {
+        // Bound inside the relay's own runtime and handed back over a std
+        // channel: from_std needs a reactor, and block_on would nest inside
+        // the #[tokio::test] bodies. Works from sync tests the same way.
+        let (address_tx, address_rx) = std::sync::mpsc::channel::<String>();
+        // Served exactly the way `main` serves it: with connect info,
+        // because the pairing-room route rate-limits per peer address.
+        let task = runtime.spawn(async move {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let address = listener.local_addr().unwrap().to_string();
-            let task = tokio::task::spawn(async move {
-                // Served exactly the way `main` serves it: with connect
-                // info, because the pairing-room route rate-limits per
-                // peer address.
-                let app = router(AppState {
-                    store,
-                    rooms: std::sync::Arc::new(PairingRooms::new()),
-                });
-                let _ = axum::serve(
-                    listener,
-                    app.into_make_service_with_connect_info::<SocketAddr>(),
-                )
-                .await;
-            });
-            (address, task)
+            address_tx
+                .send(listener.local_addr().unwrap().to_string())
+                .expect("the boot thread always collects the address");
+            let app = router(state_of(store));
+            if let Err(error) = axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            {
+                eprintln!("test relay serve error: {error}");
+            }
         });
+        let address = address_rx.recv().unwrap();
         let admin = std::fs::read_to_string(admin_credential_path(&db)).unwrap();
         Relay {
             address,
             admin: admin.trim().to_owned(),
             _task: task,
             _db: db,
-            _runtime: runtime,
+            _runtime: std::mem::ManuallyDrop::new(runtime),
         }
     }
 
@@ -1485,5 +1538,424 @@ mod tests {
         let (channel, _credential_id, _token) =
             provision(&relay, serde_json::json!(["append"]), "phone");
         assert!(channel.starts_with("ch_"), "channel management still works");
+    }
+
+    // ------------------------------------------- pairing rooms over WebSocket
+
+    use futures_util::{SinkExt as _, StreamExt as _};
+    use tokio_tungstenite::connect_async;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use tokio_tungstenite::tungstenite::http::HeaderValue;
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+    type ClientSocket = tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >;
+
+    /// A real WebSocket client dialing the relay: same engine the server
+    /// uses, over a real TCP socket. The capability rides only in the
+    /// Authorization header, never the URL (relay-protocol.md §7).
+    async fn ws_join(
+        address: &str,
+        room: &str,
+        capability: Option<&str>,
+        origin: Option<&str>,
+    ) -> Result<ClientSocket, tokio_tungstenite::tungstenite::Error> {
+        let mut request = format!("ws://{address}/v1/pairing/{room}").into_client_request()?;
+        if let Some(capability) = capability {
+            request.headers_mut().insert(
+                "Authorization",
+                HeaderValue::from_str(&format!("Bearer {capability}")).unwrap(),
+            );
+        }
+        if let Some(origin) = origin {
+            request
+                .headers_mut()
+                .insert("Origin", HeaderValue::from_str(origin).unwrap());
+        }
+        let (socket, _response) = connect_async(request).await?;
+        Ok(socket)
+    }
+
+    async fn ws_join_ok(address: &str, room: &str, capability: &str) -> ClientSocket {
+        ws_join(address, room, Some(capability), None)
+            .await
+            .expect("a valid capability joins the room")
+    }
+
+    /// Create a pairing room over the real HTTP route.
+    fn create_room(relay: &Relay) -> (String, String) {
+        let reply = call_with_status(
+            &relay.address,
+            "POST",
+            "/v1/pairing/rooms",
+            Some(&room_request(1, "rm-ws-0000000001")),
+            None,
+        );
+        assert_eq!(reply.status, 201);
+        (
+            reply.body["roomId"].as_str().unwrap().to_owned(),
+            reply.body["capability"].as_str().unwrap().to_owned(),
+        )
+    }
+
+    fn ws_frame(data: &str) -> String {
+        serde_json::to_string(&serde_json::json!({
+            "protocolVersion": 1,
+            "type": "pairing.frame",
+            "data": data,
+        }))
+        .unwrap()
+    }
+
+    async fn next_json(socket: &mut ClientSocket) -> serde_json::Value {
+        match socket.next().await {
+            Some(Ok(WsMessage::Text(text))) => serde_json::from_str(text.as_str()).unwrap(),
+            other => panic!("expected a text message, got {other:?}"),
+        }
+    }
+
+    async fn next_close(socket: &mut ClientSocket) -> u16 {
+        match socket.next().await {
+            Some(Ok(WsMessage::Close(Some(frame)))) => u16::from(frame.code),
+            other => panic!("expected a close frame, got {other:?}"),
+        }
+    }
+
+    /// Build a relay whose room registry holds a room created `age_ms`
+    /// ago on the shifted clock, returning it with the relay.
+    fn boot_with_aged_room(age_ms: u64) -> (Relay, String, String) {
+        let rooms = std::sync::Arc::new(PairingRooms::new());
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let created = rooms
+            .create(std::net::IpAddr::from([127, 0, 0, 9]), now_ms - age_ms)
+            .unwrap();
+        let relay = boot_with(fresh_db(), true, |store| AppState {
+            store,
+            rooms,
+            sessions: std::sync::Arc::new(RoomSessions::default()),
+            allowed_origins: Vec::new(),
+            trusted_proxies: Vec::new(),
+        });
+        (relay, created.room_id, created.capability)
+    }
+
+    #[tokio::test]
+    async fn two_participants_are_routed_and_frames_flow_both_ways() {
+        let relay = start();
+        let (room, capability) = create_room(&relay);
+        let mut first = ws_join_ok(&relay.address, &room, &capability).await;
+        let mut second = ws_join_ok(&relay.address, &room, &capability).await;
+
+        let greeting = next_json(&mut first).await;
+        assert_eq!(greeting["type"], "room.joined");
+        assert_eq!(greeting["roomId"], room);
+        assert_eq!(greeting["peerJoined"], false, "the first joiner is alone");
+
+        let greeting = next_json(&mut second).await;
+        assert_eq!(
+            greeting["peerJoined"], true,
+            "the second joiner hears the peer is already there"
+        );
+
+        first
+            .send(WsMessage::Text(
+                ws_frame("cGstZnJhbWUtZnJvbS1maXJzdA").into(),
+            ))
+            .await
+            .unwrap();
+        let forwarded = next_json(&mut second).await;
+        assert_eq!(forwarded["type"], "pairing.frame");
+        assert_eq!(forwarded["data"], "cGstZnJhbWUtZnJvbS1maXJzdA");
+
+        second
+            .send(WsMessage::Text(
+                ws_frame("cGstZnJhbWUtZnJvbS1zZWNvbmQ").into(),
+            ))
+            .await
+            .unwrap();
+        let forwarded = next_json(&mut first).await;
+        assert_eq!(forwarded["type"], "pairing.frame");
+        assert_eq!(forwarded["data"], "cGstZnJhbWUtZnJvbS1zZWNvbmQ");
+    }
+
+    #[tokio::test]
+    async fn a_third_participant_gets_an_error_then_4409() {
+        let relay = start();
+        let (room, capability) = create_room(&relay);
+        let _first = ws_join_ok(&relay.address, &room, &capability).await;
+        let _second = ws_join_ok(&relay.address, &room, &capability).await;
+        let mut third = ws_join_ok(&relay.address, &room, &capability).await;
+
+        let error = next_json(&mut third).await;
+        assert_eq!(error["type"], "error");
+        assert_eq!(error["code"], "room_full");
+        assert_eq!(next_close(&mut third).await, 4409);
+    }
+
+    #[tokio::test]
+    async fn a_wrong_capability_gets_an_error_then_4401() {
+        let relay = start();
+        let (room, _capability) = create_room(&relay);
+        let mut socket = ws_join_ok(&relay.address, &room, "wrong-capability").await;
+        let error = next_json(&mut socket).await;
+        assert_eq!(error["code"], "unauthorized");
+        assert_eq!(next_close(&mut socket).await, 4401);
+    }
+
+    #[tokio::test]
+    async fn an_unknown_room_join_gets_4404() {
+        let relay = start();
+        let mut socket = ws_join_ok(&relay.address, "rm_does_not_exist", "any").await;
+        let error = next_json(&mut socket).await;
+        assert_eq!(error["code"], "room_not_found");
+        assert_eq!(next_close(&mut socket).await, 4404);
+    }
+
+    #[tokio::test]
+    async fn a_capability_from_another_room_is_4401_not_4404() {
+        let relay = start();
+        let (_room_a, capability_a) = create_room(&relay);
+        let (room_b, _capability_b) = create_room(&relay);
+        let mut socket = ws_join_ok(&relay.address, &room_b, &capability_a).await;
+        // Cross-room is an authentication failure: the capability is real
+        // but not for this room, and 4404 would leak room existence to a
+        // capability holder.
+        let error = next_json(&mut socket).await;
+        assert_eq!(error["code"], "unauthorized");
+        assert_eq!(next_close(&mut socket).await, 4401);
+    }
+
+    #[tokio::test]
+    async fn a_disconnected_peer_closes_the_roommate_with_1001() {
+        let relay = start();
+        let (room, capability) = create_room(&relay);
+        let mut first = ws_join_ok(&relay.address, &room, &capability).await;
+        let mut second = ws_join_ok(&relay.address, &room, &capability).await;
+        let _ = next_json(&mut first).await;
+        let _ = next_json(&mut second).await;
+
+        first.close(None).await.unwrap();
+        // The server notices the dropped peer and closes the remaining
+        // socket with 1001: the handshake is dead, re-pair in a new room.
+        let closed =
+            tokio::time::timeout(std::time::Duration::from_secs(5), next_close(&mut second)).await;
+        assert_eq!(closed.expect("the roommate is closed"), 1001);
+    }
+
+    #[tokio::test]
+    async fn joining_an_expired_room_gets_4410() {
+        let (relay, room, capability) = boot_with_aged_room(121_000);
+        let mut socket = ws_join_ok(&relay.address, &room, &capability).await;
+        let error = next_json(&mut socket).await;
+        assert_eq!(error["code"], "room_expired");
+        assert_eq!(next_close(&mut socket).await, 4410);
+    }
+
+    #[tokio::test]
+    async fn a_room_expires_mid_session_error_then_4410() {
+        // Created 118.5 s "ago": about 1.5 s of life left at boot.
+        let (relay, room, capability) = boot_with_aged_room(118_500);
+        let mut socket = ws_join_ok(&relay.address, &room, &capability).await;
+        let greeting = next_json(&mut socket).await;
+        assert_eq!(greeting["type"], "room.joined");
+
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let error = next_json(&mut socket).await;
+            assert_eq!(error["type"], "error");
+            assert_eq!(error["code"], "room_expired");
+            next_close(&mut socket).await
+        })
+        .await
+        .expect("the deadline task closes the session");
+        assert_eq!(outcome, 4410);
+    }
+
+    #[tokio::test]
+    async fn a_disallowed_browser_origin_is_rejected_at_the_upgrade() {
+        let rooms = std::sync::Arc::new(PairingRooms::new());
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let created = rooms
+            .create(std::net::IpAddr::from([127, 0, 0, 9]), now_ms)
+            .unwrap();
+        let relay = boot_with(fresh_db(), true, |store| AppState {
+            store,
+            rooms,
+            sessions: std::sync::Arc::new(RoomSessions::default()),
+            allowed_origins: vec!["https://ok.example".to_owned()],
+            trusted_proxies: Vec::new(),
+        });
+
+        // An Origin the deployer did not allow never gets a socket.
+        let rejected = ws_join(
+            &relay.address,
+            &created.room_id,
+            Some(&created.capability),
+            Some("https://evil.example"),
+        )
+        .await;
+        match rejected {
+            Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+                assert_eq!(response.status(), 403);
+            }
+            other => panic!("expected an HTTP 403 rejection, got {other:?}"),
+        }
+
+        // The allowed origin joins normally, and no-Origin clients (every
+        // other test in this module) were never affected.
+        let mut allowed = ws_join(
+            &relay.address,
+            &created.room_id,
+            Some(&created.capability),
+            Some("https://ok.example"),
+        )
+        .await
+        .expect("the allowed origin joins");
+        let greeting = next_json(&mut allowed).await;
+        assert_eq!(greeting["type"], "room.joined");
+    }
+
+    #[tokio::test]
+    async fn a_message_with_an_unknown_type_closes_with_1008() {
+        let relay = start();
+        let (room, capability) = create_room(&relay);
+        let mut socket = ws_join_ok(&relay.address, &room, &capability).await;
+        let _ = next_json(&mut socket).await;
+        socket
+            .send(WsMessage::Text(
+                r#"{"protocolVersion":1,"type":"chat","data":"hello"}"#.into(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(next_close(&mut socket).await, 1008);
+    }
+
+    #[tokio::test]
+    async fn a_frame_with_an_unknown_field_closes_with_1008() {
+        let relay = start();
+        let (room, capability) = create_room(&relay);
+        let mut socket = ws_join_ok(&relay.address, &room, &capability).await;
+        let _ = next_json(&mut socket).await;
+        socket
+            .send(WsMessage::Text(
+                r#"{"protocolVersion":1,"type":"pairing.frame","data":"QUJD","extra":1}"#.into(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(next_close(&mut socket).await, 1008);
+    }
+
+    #[tokio::test]
+    async fn an_over_capacity_frame_closes_with_1008() {
+        let relay = start();
+        let (room, capability) = create_room(&relay);
+        let mut socket = ws_join_ok(&relay.address, &room, &capability).await;
+        let _ = next_json(&mut socket).await;
+        // Canonical base64url for 16 MiB would be 22_369_622 chars; one
+        // char more decodes past the cap.
+        let over = "A".repeat(22_369_623);
+        socket
+            .send(WsMessage::Text(ws_frame(&over).into()))
+            .await
+            .unwrap();
+        assert_eq!(next_close(&mut socket).await, 1008);
+    }
+
+    #[test]
+    fn a_forwarded_header_without_a_trusted_proxy_is_ignored() {
+        // Default config trusts nobody: 17 creates each claiming a
+        // different client must still exhaust, because the budget is keyed
+        // on the real peer and a caller cannot mint budgets with headers.
+        let relay = start();
+        for offset in 0..16 {
+            let reply = call_with_status(
+                &relay.address,
+                "POST",
+                "/v1/pairing/rooms",
+                Some(&room_request(1, &format!("rm-00000000006{offset:02}"))),
+                Some(&format!("X-Forwarded-For: 198.51.100.{offset}")),
+            );
+            assert_eq!(
+                reply.status,
+                201,
+                "create #{} spoofs a fresh budget",
+                offset + 1
+            );
+        }
+        let reply = call_with_status(
+            &relay.address,
+            "POST",
+            "/v1/pairing/rooms",
+            Some(&room_request(1, "rm-000000000070")),
+            Some("X-Forwarded-For: 198.51.100.99"),
+        );
+        assert_eq!(reply.status, 429, "spoofed headers never escape the budget");
+    }
+
+    #[test]
+    fn a_trusted_proxy_moves_the_rate_limit_to_the_forwarded_client() {
+        let trusted = crate::proxy::TrustedProxy::parse("127.0.0.1").unwrap();
+        let relay = boot_with(fresh_db(), true, |store| AppState {
+            store,
+            rooms: std::sync::Arc::new(PairingRooms::new()),
+            sessions: std::sync::Arc::new(RoomSessions::default()),
+            allowed_origins: Vec::new(),
+            trusted_proxies: vec![trusted],
+        });
+        // One client behind the proxy burns its own budget...
+        for offset in 0..16 {
+            let reply = call_with_status(
+                &relay.address,
+                "POST",
+                "/v1/pairing/rooms",
+                Some(&room_request(1, &format!("rm-00000000008{offset:02}"))),
+                Some("X-Forwarded-For: 198.51.100.7"),
+            );
+            assert_eq!(
+                reply.status,
+                201,
+                "create #{} is client #1's budget",
+                offset + 1
+            );
+        }
+        let reply = call_with_status(
+            &relay.address,
+            "POST",
+            "/v1/pairing/rooms",
+            Some(&room_request(1, "rm-000000000090")),
+            Some("X-Forwarded-For: 198.51.100.7"),
+        );
+        assert_eq!(
+            reply.status, 429,
+            "the forwarded client is limited, not the proxy"
+        );
+        // ...a different client keeps its own budget...
+        let reply = call_with_status(
+            &relay.address,
+            "POST",
+            "/v1/pairing/rooms",
+            Some(&room_request(1, "rm-000000000091")),
+            Some("X-Forwarded-For: 203.0.113.9"),
+        );
+        assert_eq!(reply.status, 201, "budgets are per client, not per proxy");
+        // ...and a direct peer (no header) is keyed on the proxy address,
+        // never on anything a caller could have forged.
+        let reply = call_with_status(
+            &relay.address,
+            "POST",
+            "/v1/pairing/rooms",
+            Some(&room_request(1, "rm-000000000092")),
+            None,
+        );
+        assert_eq!(
+            reply.status, 201,
+            "no header falls back to the peer address"
+        );
     }
 }
