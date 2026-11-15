@@ -72,6 +72,8 @@ enum StartupError {
     },
     #[error("relay serve loop failed: {source}")]
     Serve { source: std::io::Error },
+    #[error("final storage checkpoint failed: {source}")]
+    Shutdown { source: storage::StorageError },
 }
 
 /// Load configuration, open storage, and exit non-zero on any failure
@@ -103,6 +105,42 @@ async fn run(config_path: std::path::PathBuf) -> Result<(), StartupError> {
     // relay that is still opening its database answers liveness but not
     // readiness.
     store.mark_ready();
+    // The process stop edge (DSR-24): SIGINT (Ctrl-C) or SIGTERM, exactly
+    // what a terminal, a container runtime, or a service manager sends.
+    // Firing it starts the bounded drain; until then the server runs
+    // forever.
+    let shutdown = serve::Shutdown::new();
+    let shutdown_task = {
+        let shutdown = shutdown.clone();
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = async {
+                    // A stream that never yields if the platform has no
+                    // SIGTERM; on Unix this is the container-runtime stop.
+                    match tokio::signal::unix::signal(
+                        tokio::signal::unix::SignalKind::terminate(),
+                    ) {
+                        Ok(mut term) => {
+                            term.recv().await;
+                        }
+                        Err(_) => std::future::pending::<()>().await,
+                    }
+                } => {}
+            }
+            shutdown.fire();
+        })
+    };
+    // The state keeps its own Arc clone; keep one here for the final
+    // checkpoint after the drain.
+    let store_for_shutdown = store.clone();
+    // The process exit waits on this after the connection drain, so every
+    // WebSocket goodbye is on the wire before the runtime drops
+    // (relay-protocol.md §7: shutdown closes rooms with 1001 after
+    // draining in-flight frames).
+    let live_sessions = std::sync::Arc::new(ws::LiveSessions::new());
+    // One clone for the state, one for the exit wait.
+    let drain_sessions = live_sessions.clone();
     let app = http::router(http::AppState {
         store,
         rooms: std::sync::Arc::new(rooms::PairingRooms::new()),
@@ -113,10 +151,13 @@ async fn run(config_path: std::path::PathBuf) -> Result<(), StartupError> {
         ws_permits: std::sync::Arc::new(tokio::sync::Semaphore::new(config.max_ws_sessions)),
         ws_heartbeat: ws::Heartbeat::frozen(),
         ws_outbound_queue_bytes: syncbond_relay_protocol::limits::WS_OUTBOUND_QUEUE_BYTES,
+        shutdown: shutdown.clone(),
+        live_sessions,
     });
     // Connect info is the peer's socket address; the pairing-room route
     // rate-limits by it (relay-protocol.md §9). The hand-rolled loop adds
-    // the deployment's connection budget and header-read timeout
+    // the deployment's connection budget and header-read timeout, and on
+    // a stop signal drains bounded by shutdownTimeoutSeconds
     // (default-server.md §4).
     serve::serve(
         listener,
@@ -124,10 +165,34 @@ async fn run(config_path: std::path::PathBuf) -> Result<(), StartupError> {
         serve::Limits {
             max_connections: config.max_connections,
             header_timeout_seconds: config.header_timeout_seconds,
+            drain_timeout_seconds: config.shutdown_timeout_seconds,
         },
+        shutdown,
     )
     .await
     .map_err(|source| StartupError::Serve { source })?;
+    // The connection drain is over; now the WebSocket sessions. Each saw
+    // the same signal and is closing with 1001; wait until the last
+    // goodbye is flushed. The same budget bounds this wait, so the whole
+    // drain is at most twice `shutdownTimeoutSeconds` — still a promise
+    // about the process exit time, just not a tighter one.
+    if config.shutdown_timeout_seconds > 0 {
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(config.shutdown_timeout_seconds),
+            drain_sessions.drained(),
+        )
+        .await;
+    } else {
+        drain_sessions.drained().await;
+    }
+    // No session is alive from here on: no handler can still be
+    // mid-request or mid-goodbye. Folding the WAL now is what makes
+    // "everything ACKed is pullable after restart" a promise the deployer
+    // can verify by copying the data directory, and a failure to
+    // checkpoint is a failure to exit cleanly.
+    storage::RelayStorage::shutdown(store_for_shutdown.as_ref())
+        .map_err(|source| StartupError::Shutdown { source })?;
+    shutdown_task.abort();
     Ok(())
 }
 

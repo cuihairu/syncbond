@@ -26,6 +26,12 @@
 //!   30 s and closes a socket idle beyond 90 s with `1008`. Client
 //!   pings are answered by the transport; any received frame counts as
 //!   life.
+//! - **Shutdown** (todo.md DSR-24): when the process stop signal fires,
+//!   every session ends declared — one `1001` (going away) close, after
+//!   whatever is already queued is flushed, so a mid-pairing handshake
+//!   ends as a clean goodbye rather than a reset. A hint subscriber
+//!   loses nothing: hints are lossy by contract and the client pulls
+//!   from its cursor on reconnect.
 //!
 //! Browser clients must present an `Origin` in the configured
 //! `allowedOrigins` (403 at the upgrade, before any room state is
@@ -123,6 +129,82 @@ impl Heartbeat {
 
     fn idle_after(&self) -> Duration {
         Duration::from_millis(self.idle_after_ms)
+    }
+}
+
+/// Live-session accounting for the shutdown drain (todo.md DSR-24): every
+/// admitted session holds one [`LiveGuard`] from *before* its upgrade
+/// completes until its goodbye is flushed, and the process exit waits on
+/// [`LiveSessions::drained`]. Without the counter the drain could return
+/// while a session task is still mid-goodbye and the runtime drop would
+/// cancel it — exactly the reset-instead-of-close the contract forbids.
+/// The guard is taken in the route handler, not inside the spawned
+/// session task, so there is no scheduling gap in which the counter reads
+/// zero while a session is about to exist.
+#[derive(Default)]
+pub struct LiveSessions {
+    live: Mutex<usize>,
+    idle: tokio::sync::Notify,
+}
+
+/// One admitted session's hold on the drain. Dropping it — from any exit
+/// path, including a panic — releases the wait.
+pub struct LiveGuard {
+    sessions: std::sync::Arc<LiveSessions>,
+}
+
+impl LiveSessions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Take a hold. Call once per admitted session.
+    pub fn enter(self: &std::sync::Arc<Self>) -> LiveGuard {
+        *self.lock() += 1;
+        LiveGuard {
+            sessions: self.clone(),
+        }
+    }
+
+    /// Resolve when no session holds a guard anymore.
+    pub async fn drained(&self) {
+        loop {
+            if self.count() == 0 {
+                return;
+            }
+            let notified = self.idle.notified();
+            tokio::pin!(notified);
+            // Register before re-checking, so a guard dropped between the
+            // count and the await cannot fall through the gap.
+            notified.as_mut().enable();
+            if self.count() == 0 {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    fn count(&self) -> usize {
+        *self.lock()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, usize> {
+        self.live
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+impl Drop for LiveGuard {
+    fn drop(&mut self) {
+        let mut live = self.sessions.lock();
+        *live -= 1;
+        if *live == 0 {
+            // notify_waiters: every waiter re-checks the count, so one
+            // edge wakes them all; a missed edge cannot happen because
+            // `drained` re-checks after registering.
+            self.sessions.idle.notify_waiters();
+        }
     }
 }
 
@@ -496,8 +578,14 @@ pub async fn events_stream(
     let Some(permit) = acquire_session(&state) else {
         return budget_refusal(upgrade);
     };
+    // The drain hold is taken here, not inside the spawned session: the
+    // upgrade response returns at once, and a shutdown in the gap between
+    // must still see this session counted.
+    let live = state.live_sessions.enter();
     upgrade
-        .on_upgrade(move |socket| run_events_session(socket, state, channel_id, token, permit))
+        .on_upgrade(move |socket| {
+            run_events_session(socket, state, channel_id, token, permit, live)
+        })
         .into_response()
 }
 
@@ -531,6 +619,7 @@ async fn run_events_session(
     channel_id: String,
     token: String,
     _permit: SessionPermit,
+    _live: LiveGuard,
 ) {
     let (sender, mut receiver) = socket.split();
     let (out, out_rx) = Outbound::new(state.ws_outbound_queue_bytes);
@@ -561,6 +650,9 @@ async fn run_events_session(
     }
     let mut last_seen = tokio::time::Instant::now();
     let mut next_ping = last_seen + state.ws_heartbeat.ping_every();
+    // Fired once per session; a hint subscriber leaves the same way it
+    // would on any other quiet exit — the client recovers by pulling.
+    let mut stopping = false;
     loop {
         tokio::select! {
             incoming = receiver.next() => {
@@ -591,9 +683,19 @@ async fn run_events_session(
                 let _ = out.try_send(Message::Ping(Bytes::new()));
                 next_ping = now + state.ws_heartbeat.ping_every();
             }
+            _ = state.shutdown.wait() => {
+                stopping = true;
+                break;
+            }
         }
     }
     state.subscriptions.unsubscribe(&channel_id, my_id);
+    if stopping {
+        // 1001 (going away) is the code for "this endpoint is shutting
+        // down": the client reconnects to the next process and pulls from
+        // its cursor, which is the contract's recovery for a lost stream.
+        let _ = out.try_send(close_message(1001, "server shutting down"));
+    }
     out.finish(writer).await;
 }
 
@@ -629,6 +731,9 @@ pub async fn join_room(
         Some(permit) => permit,
         None => return budget_refusal(upgrade),
     };
+    // Same drain hold as the events route: taken in the handler so the
+    // gap between the response and the spawned session stays counted.
+    let live = state.live_sessions.enter();
     let now_ms = match unix_now_ms() {
         Ok(now_ms) => now_ms,
         Err(_) => {
@@ -659,6 +764,7 @@ pub async fn join_room(
                     joined.peer_joined,
                     joined.expires_at_ms,
                     permit,
+                    live,
                 )
                 .await;
             })
@@ -669,6 +775,7 @@ pub async fn join_room(
         // sends one error message before the 44xx close.
         Err(error) => {
             drop(permit);
+            drop(live);
             let (code, wire_code, reason) = refusal(&error);
             upgrade
                 .on_upgrade(move |mut socket| async move {
@@ -703,6 +810,7 @@ async fn run_session(
     peer_joined: bool,
     expires_at_ms: u64,
     _permit: SessionPermit,
+    _live: LiveGuard,
 ) {
     let (sender, mut receiver) = socket.split();
     let (out, out_rx) = Outbound::new(state.ws_outbound_queue_bytes);
@@ -751,6 +859,8 @@ async fn run_session(
     let my_id = state.sessions.register(&room_id, out.clone());
     let mut last_seen = tokio::time::Instant::now();
     let mut next_ping = last_seen + state.ws_heartbeat.ping_every();
+    // Fired once per session; drives the exit bookkeeping below.
+    let mut stopping = false;
     loop {
         tokio::select! {
             incoming = receiver.next() => {
@@ -803,7 +913,17 @@ async fn run_session(
                 let _ = out.try_send(Message::Ping(Bytes::new()));
                 next_ping = now + state.ws_heartbeat.ping_every();
             }
+            _ = state.shutdown.wait() => {
+                stopping = true;
+                break;
+            }
         }
+    }
+    if stopping {
+        // Say "going away" before the bookkeeping: the roommate's own
+        // shutdown branch sends its goodbye through the same path, so a
+        // mid-pairing handshake ends declared, not reset.
+        let _ = out.try_send(close_message(1001, "server shutting down"));
     }
     // Leaving: notify the roommate (1001) unless the room already
     // dissolved (expiry or the roommate left first — both remove it).

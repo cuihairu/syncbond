@@ -186,6 +186,15 @@ pub trait RelayStorage: Send + Sync {
     /// does not imply this: a process that has not yet finished opening
     /// its database is alive and not ready.
     fn ready(&self) -> bool;
+
+    /// Finish with storage after the process has stopped accepting work:
+    /// everything already committed must be readable by the next process
+    /// that opens this database (DSR-24). Backends that write through —
+    /// SQLite in WAL mode — have already fsynced every commit, so this is
+    /// a no-op they report as success; it exists so a backend with a
+    /// write-ahead file of its own must flush it here instead of betting
+    /// on the process being killed cleanly.
+    fn shutdown(&self) -> Result<(), StorageError>;
 }
 
 #[cfg(test)]

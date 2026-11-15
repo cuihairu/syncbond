@@ -119,6 +119,11 @@ pub enum StoreOpenError {
     AdminCredentialMissing,
     #[error("admin credential file is invalid: {0}")]
     AdminCredential(&'static str),
+    #[error(
+        "the store's connection lock is poisoned, so the final \
+         checkpoint cannot be taken; the database is untouched"
+    )]
+    ConnectionPoisoned,
 }
 
 /// Where the admin credential file lives: next to the database file, per
@@ -923,6 +928,40 @@ impl RelayStorage for SqliteRelayStore {
         conn.query_row("SELECT COUNT(*) FROM channels", [], |_| Ok(()))
             .is_ok()
     }
+
+    fn shutdown(&self) -> Result<(), StorageError> {
+        self.close().map_err(|_| internal_error())
+    }
+}
+
+impl SqliteRelayStore {
+    /// Fold the write-ahead log into the main database file at shutdown
+    /// (DSR-24). WAL mode makes every commit durable on its own — SQLite
+    /// fsyncs the WAL frame before reporting the write — so this never
+    /// decides whether acknowledged data survives a restart; it decides
+    /// how many sidecar files a backup has to copy. Without it, a copy of
+    /// `relay.db` taken on its own would look complete and read empty.
+    /// The connection itself is not dropped here: it is closed when the
+    /// process exits, and closing SQLite's last connection folds the WAL
+    /// back regardless.
+    pub fn close(&self) -> Result<(), StoreOpenError> {
+        let conn = match self.conn.lock() {
+            Ok(conn) => conn,
+            // A poisoned lock means a handler panicked while holding it.
+            // The database is untouched — SQLite rolls the transaction
+            // back — but nothing here can prove the checkpoint will
+            // succeed, so report the failure rather than guess.
+            Err(_) => return Err(StoreOpenError::ConnectionPoisoned),
+        };
+        // TRUNCATE also deletes the WAL file, leaving one self-contained
+        // `relay.db` behind — the shape every documented backup step
+        // expects, and the shape a copy of the data directory is.
+        conn.pragma_update(None, "wal_checkpoint", "TRUNCATE")
+            .map_err(|source| StoreOpenError::Sqlite {
+                path: self.db_path.clone(),
+                source,
+            })
+    }
 }
 
 impl SqliteRelayStore {
@@ -1234,6 +1273,49 @@ mod tests {
             .remove(0);
         assert_eq!((ack.seq, ack.duplicate), (1, true));
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn shutdown_folds_the_write_ahead_log_into_the_main_file() {
+        // DSR-24: WAL mode parks committed bytes in `relay.db-wal`. The
+        // shutdown checkpoint moves them into `relay.db` and truncates the
+        // WAL, so a backup of the main file alone — the shape every
+        // documented backup step implies — cannot look complete and read
+        // empty. Durability itself never depends on this: SQLite fsyncs
+        // every commit into the WAL before it reports success.
+        let path = temp_db("shutdown-checkpoint");
+        let wal = wal_path(&path);
+        let store = SqliteRelayStore::open(&path).unwrap();
+        create_channel(&path, "ch-wal");
+        store
+            .append(
+                "ch-wal",
+                &[
+                    sample_envelope("ch-wal", "msg-wal-1", "body-1"),
+                    sample_envelope("ch-wal", "msg-wal-2", "body-2"),
+                ],
+            )
+            .unwrap();
+        assert!(
+            wal.metadata().map(|meta| meta.len()).unwrap_or(0) > 0,
+            "WAL mode parks committed bytes in the sidecar before a checkpoint"
+        );
+        store.close().unwrap();
+        assert_eq!(
+            wal.metadata().map(|meta| meta.len()).unwrap_or(0),
+            0,
+            "the TRUNCATE checkpoint leaves an empty WAL behind"
+        );
+        // And the data reads back from the main file, through a fresh
+        // connection — the restart path.
+        assert_eq!(envelope_count(&path, "ch-wal"), 2);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    /// The WAL sidecar path for a database path (crate::sqlite's own
+    /// disk accounting counts the same trio).
+    fn wal_path(db_path: &Path) -> PathBuf {
+        PathBuf::from(format!("{}-wal", db_path.display()))
     }
 
     #[test]

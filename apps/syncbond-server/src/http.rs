@@ -73,6 +73,14 @@ pub struct AppState {
     /// The per-socket outbound byte budget (DSR-23): a pairing peer that
     /// exceeds it is closed with 1013 once its queue drains.
     pub ws_outbound_queue_bytes: usize,
+    /// The process shutdown edge (DSR-24). Every live pairing socket and
+    /// event subscription watches it: on the signal each one sends its
+    /// `goodbye` close before the process leaves, so a client reconnects
+    /// instead of finding a bare reset.
+    pub shutdown: crate::serve::Shutdown,
+    /// Live-session accounting (DSR-24): the process exit waits on this
+    /// so every WebSocket goodbye is flushed before the runtime drops.
+    pub live_sessions: std::sync::Arc<crate::ws::LiveSessions>,
 }
 
 /// Build the router. Kept separate from `listen` so tests can drive it
@@ -671,6 +679,9 @@ mod tests {
     struct Relay {
         address: String,
         admin: String,
+        /// The process shutdown edge (DSR-24): firing it is exactly what
+        /// the binary's signal handler does.
+        shutdown: crate::serve::Shutdown,
         _task: tokio::task::JoinHandle<()>,
         _db: std::path::PathBuf,
         /// The relay's runtime: it owns the serve task, so it must stay
@@ -706,7 +717,10 @@ mod tests {
 
     /// The state `main` assembles, as the tests assemble it: one store,
     /// one room registry, one forwarding table, no browser origins.
-    fn boot_state(store: std::sync::Arc<SqliteRelayStore>) -> AppState {
+    fn boot_state(
+        store: std::sync::Arc<SqliteRelayStore>,
+        shutdown: crate::serve::Shutdown,
+    ) -> AppState {
         AppState {
             store,
             rooms: std::sync::Arc::new(PairingRooms::new()),
@@ -717,13 +731,15 @@ mod tests {
             ws_permits: std::sync::Arc::new(tokio::sync::Semaphore::new(64)),
             ws_heartbeat: crate::ws::Heartbeat::frozen(),
             ws_outbound_queue_bytes: syncbond_relay_protocol::limits::WS_OUTBOUND_QUEUE_BYTES,
+            shutdown,
+            live_sessions: std::sync::Arc::new(crate::ws::LiveSessions::new()),
         }
     }
 
     /// Boot a relay: one store, one listener on an ephemeral port. `ready`
     /// lifts the readiness gate the way the binary's serve loop does.
     fn boot(db: std::path::PathBuf, ready: bool) -> Relay {
-        boot_with(db, ready, boot_state)
+        boot_with(db, ready, crate::serve::Shutdown::new(), boot_state)
     }
 
     /// The same relay, with the caller assembling state — used by the
@@ -732,8 +748,13 @@ mod tests {
     fn boot_with(
         db: std::path::PathBuf,
         ready: bool,
-        state_of: impl FnOnce(std::sync::Arc<SqliteRelayStore>) -> AppState + Send + 'static,
+        shutdown: crate::serve::Shutdown,
+        state_of: impl FnOnce(std::sync::Arc<SqliteRelayStore>, crate::serve::Shutdown) -> AppState
+            + Send
+            + 'static,
     ) -> Relay {
+        let serve_shutdown = shutdown.clone();
+        let state_shutdown = shutdown.clone();
         let store = std::sync::Arc::new(SqliteRelayStore::open(&db).unwrap());
         if ready {
             store.mark_ready();
@@ -755,14 +776,16 @@ mod tests {
             address_tx
                 .send(listener.local_addr().unwrap().to_string())
                 .expect("the boot thread always collects the address");
-            let app = router(state_of(store));
+            let app = router(state_of(store, state_shutdown));
             if let Err(error) = crate::serve::serve(
                 listener,
                 app,
                 crate::serve::Limits {
                     max_connections: 0,
                     header_timeout_seconds: 0,
+                    drain_timeout_seconds: 5,
                 },
+                serve_shutdown,
             )
             .await
             {
@@ -774,6 +797,7 @@ mod tests {
         Relay {
             address,
             admin: admin.trim().to_owned(),
+            shutdown,
             _task: task,
             _db: db,
             _runtime: std::mem::ManuallyDrop::new(runtime),
@@ -1745,17 +1769,24 @@ mod tests {
         let created = rooms
             .create(std::net::IpAddr::from([127, 0, 0, 9]), now_ms - age_ms)
             .unwrap();
-        let relay = boot_with(fresh_db(), true, |store| AppState {
-            store,
-            rooms,
-            sessions: std::sync::Arc::new(RoomSessions::default()),
-            allowed_origins: Vec::new(),
-            trusted_proxies: Vec::new(),
-            subscriptions: std::sync::Arc::new(crate::ws::ChannelSubscriptions::default()),
-            ws_permits: std::sync::Arc::new(tokio::sync::Semaphore::new(64)),
-            ws_heartbeat: crate::ws::Heartbeat::frozen(),
-            ws_outbound_queue_bytes: syncbond_relay_protocol::limits::WS_OUTBOUND_QUEUE_BYTES,
-        });
+        let relay = boot_with(
+            fresh_db(),
+            true,
+            crate::serve::Shutdown::new(),
+            |store, shutdown| AppState {
+                store,
+                rooms,
+                sessions: std::sync::Arc::new(RoomSessions::default()),
+                allowed_origins: Vec::new(),
+                trusted_proxies: Vec::new(),
+                subscriptions: std::sync::Arc::new(crate::ws::ChannelSubscriptions::default()),
+                ws_permits: std::sync::Arc::new(tokio::sync::Semaphore::new(64)),
+                ws_heartbeat: crate::ws::Heartbeat::frozen(),
+                ws_outbound_queue_bytes: syncbond_relay_protocol::limits::WS_OUTBOUND_QUEUE_BYTES,
+                shutdown,
+                live_sessions: std::sync::Arc::new(crate::ws::LiveSessions::new()),
+            },
+        );
         (relay, created.room_id, created.capability)
     }
 
@@ -1900,17 +1931,24 @@ mod tests {
         let created = rooms
             .create(std::net::IpAddr::from([127, 0, 0, 9]), now_ms)
             .unwrap();
-        let relay = boot_with(fresh_db(), true, |store| AppState {
-            store,
-            rooms,
-            sessions: std::sync::Arc::new(RoomSessions::default()),
-            allowed_origins: vec!["https://ok.example".to_owned()],
-            trusted_proxies: Vec::new(),
-            subscriptions: std::sync::Arc::new(crate::ws::ChannelSubscriptions::default()),
-            ws_permits: std::sync::Arc::new(tokio::sync::Semaphore::new(64)),
-            ws_heartbeat: crate::ws::Heartbeat::frozen(),
-            ws_outbound_queue_bytes: syncbond_relay_protocol::limits::WS_OUTBOUND_QUEUE_BYTES,
-        });
+        let relay = boot_with(
+            fresh_db(),
+            true,
+            crate::serve::Shutdown::new(),
+            |store, shutdown| AppState {
+                store,
+                rooms,
+                sessions: std::sync::Arc::new(RoomSessions::default()),
+                allowed_origins: vec!["https://ok.example".to_owned()],
+                trusted_proxies: Vec::new(),
+                subscriptions: std::sync::Arc::new(crate::ws::ChannelSubscriptions::default()),
+                ws_permits: std::sync::Arc::new(tokio::sync::Semaphore::new(64)),
+                ws_heartbeat: crate::ws::Heartbeat::frozen(),
+                ws_outbound_queue_bytes: syncbond_relay_protocol::limits::WS_OUTBOUND_QUEUE_BYTES,
+                shutdown,
+                live_sessions: std::sync::Arc::new(crate::ws::LiveSessions::new()),
+            },
+        );
 
         // An Origin the deployer did not allow never gets a socket.
         let rejected = ws_join(
@@ -2021,17 +2059,24 @@ mod tests {
     #[test]
     fn a_trusted_proxy_moves_the_rate_limit_to_the_forwarded_client() {
         let trusted = crate::proxy::TrustedProxy::parse("127.0.0.1").unwrap();
-        let relay = boot_with(fresh_db(), true, |store| AppState {
-            store,
-            rooms: std::sync::Arc::new(PairingRooms::new()),
-            sessions: std::sync::Arc::new(RoomSessions::default()),
-            allowed_origins: Vec::new(),
-            trusted_proxies: vec![trusted],
-            subscriptions: std::sync::Arc::new(crate::ws::ChannelSubscriptions::default()),
-            ws_permits: std::sync::Arc::new(tokio::sync::Semaphore::new(64)),
-            ws_heartbeat: crate::ws::Heartbeat::frozen(),
-            ws_outbound_queue_bytes: syncbond_relay_protocol::limits::WS_OUTBOUND_QUEUE_BYTES,
-        });
+        let relay = boot_with(
+            fresh_db(),
+            true,
+            crate::serve::Shutdown::new(),
+            |store, shutdown| AppState {
+                store,
+                rooms: std::sync::Arc::new(PairingRooms::new()),
+                sessions: std::sync::Arc::new(RoomSessions::default()),
+                allowed_origins: Vec::new(),
+                trusted_proxies: vec![trusted],
+                subscriptions: std::sync::Arc::new(crate::ws::ChannelSubscriptions::default()),
+                ws_permits: std::sync::Arc::new(tokio::sync::Semaphore::new(64)),
+                ws_heartbeat: crate::ws::Heartbeat::frozen(),
+                ws_outbound_queue_bytes: syncbond_relay_protocol::limits::WS_OUTBOUND_QUEUE_BYTES,
+                shutdown,
+                live_sessions: std::sync::Arc::new(crate::ws::LiveSessions::new()),
+            },
+        );
         // One client behind the proxy burns its own budget...
         for offset in 0..16 {
             let reply = call_with_status(
@@ -2274,17 +2319,24 @@ mod tests {
 
     #[tokio::test]
     async fn an_events_origin_gate_blocks_disallowed_browsers() {
-        let relay = boot_with(fresh_db(), true, |store| AppState {
-            store,
-            rooms: std::sync::Arc::new(PairingRooms::new()),
-            sessions: std::sync::Arc::new(RoomSessions::default()),
-            allowed_origins: vec!["https://ok.example".to_owned()],
-            trusted_proxies: Vec::new(),
-            subscriptions: std::sync::Arc::new(crate::ws::ChannelSubscriptions::default()),
-            ws_permits: std::sync::Arc::new(tokio::sync::Semaphore::new(64)),
-            ws_heartbeat: crate::ws::Heartbeat::frozen(),
-            ws_outbound_queue_bytes: syncbond_relay_protocol::limits::WS_OUTBOUND_QUEUE_BYTES,
-        });
+        let relay = boot_with(
+            fresh_db(),
+            true,
+            crate::serve::Shutdown::new(),
+            |store, shutdown| AppState {
+                store,
+                rooms: std::sync::Arc::new(PairingRooms::new()),
+                sessions: std::sync::Arc::new(RoomSessions::default()),
+                allowed_origins: vec!["https://ok.example".to_owned()],
+                trusted_proxies: Vec::new(),
+                subscriptions: std::sync::Arc::new(crate::ws::ChannelSubscriptions::default()),
+                ws_permits: std::sync::Arc::new(tokio::sync::Semaphore::new(64)),
+                ws_heartbeat: crate::ws::Heartbeat::frozen(),
+                ws_outbound_queue_bytes: syncbond_relay_protocol::limits::WS_OUTBOUND_QUEUE_BYTES,
+                shutdown,
+                live_sessions: std::sync::Arc::new(crate::ws::LiveSessions::new()),
+            },
+        );
         let (channel, _id, token) = provision(&relay, serde_json::json!(["pull"]), "browser");
 
         let rejected = ws_connect(
@@ -2405,17 +2457,24 @@ mod tests {
         // One permit: the first live socket takes it, everything else —
         // pairing join or event subscription — is refused in-band with
         // the load signal, not left hanging.
-        let relay = boot_with(fresh_db(), true, |store| AppState {
-            store,
-            rooms: std::sync::Arc::new(PairingRooms::new()),
-            sessions: std::sync::Arc::new(RoomSessions::default()),
-            allowed_origins: Vec::new(),
-            trusted_proxies: Vec::new(),
-            subscriptions: std::sync::Arc::new(crate::ws::ChannelSubscriptions::default()),
-            ws_permits: std::sync::Arc::new(tokio::sync::Semaphore::new(1)),
-            ws_heartbeat: crate::ws::Heartbeat::frozen(),
-            ws_outbound_queue_bytes: syncbond_relay_protocol::limits::WS_OUTBOUND_QUEUE_BYTES,
-        });
+        let relay = boot_with(
+            fresh_db(),
+            true,
+            crate::serve::Shutdown::new(),
+            |store, shutdown| AppState {
+                store,
+                rooms: std::sync::Arc::new(PairingRooms::new()),
+                sessions: std::sync::Arc::new(RoomSessions::default()),
+                allowed_origins: Vec::new(),
+                trusted_proxies: Vec::new(),
+                subscriptions: std::sync::Arc::new(crate::ws::ChannelSubscriptions::default()),
+                ws_permits: std::sync::Arc::new(tokio::sync::Semaphore::new(1)),
+                ws_heartbeat: crate::ws::Heartbeat::frozen(),
+                ws_outbound_queue_bytes: syncbond_relay_protocol::limits::WS_OUTBOUND_QUEUE_BYTES,
+                shutdown,
+                live_sessions: std::sync::Arc::new(crate::ws::LiveSessions::new()),
+            },
+        );
         let (room, capability) = create_room(&relay);
         let mut first = ws_join_ok(&relay.address, &room, &capability).await;
         let _ = next_json(&mut first).await;
@@ -2440,17 +2499,24 @@ mod tests {
         // The eviction is observed by the peer that is still alive —
         // the dead socket itself reads nothing, so its 1008 close is
         // only there for a client that comes back.
-        let relay = boot_with(fresh_db(), true, |store| AppState {
-            store,
-            rooms: std::sync::Arc::new(PairingRooms::new()),
-            sessions: std::sync::Arc::new(RoomSessions::default()),
-            allowed_origins: Vec::new(),
-            trusted_proxies: Vec::new(),
-            subscriptions: std::sync::Arc::new(crate::ws::ChannelSubscriptions::default()),
-            ws_permits: std::sync::Arc::new(tokio::sync::Semaphore::new(64)),
-            ws_heartbeat: crate::ws::Heartbeat::for_tests(200, 600),
-            ws_outbound_queue_bytes: syncbond_relay_protocol::limits::WS_OUTBOUND_QUEUE_BYTES,
-        });
+        let relay = boot_with(
+            fresh_db(),
+            true,
+            crate::serve::Shutdown::new(),
+            |store, shutdown| AppState {
+                store,
+                rooms: std::sync::Arc::new(PairingRooms::new()),
+                sessions: std::sync::Arc::new(RoomSessions::default()),
+                allowed_origins: Vec::new(),
+                trusted_proxies: Vec::new(),
+                subscriptions: std::sync::Arc::new(crate::ws::ChannelSubscriptions::default()),
+                ws_permits: std::sync::Arc::new(tokio::sync::Semaphore::new(64)),
+                ws_heartbeat: crate::ws::Heartbeat::for_tests(200, 600),
+                ws_outbound_queue_bytes: syncbond_relay_protocol::limits::WS_OUTBOUND_QUEUE_BYTES,
+                shutdown,
+                live_sessions: std::sync::Arc::new(crate::ws::LiveSessions::new()),
+            },
+        );
         let (room, capability) = create_room(&relay);
         let mut dead = ws_join_ok(&relay.address, &room, &capability).await;
         let _ = next_json(&mut dead).await;
@@ -2479,17 +2545,24 @@ mod tests {
     async fn a_client_that_answers_its_pings_is_never_closed_as_idle() {
         // Same heartbeat timing as the dead-peer test: a peer that stays
         // alive across several ping intervals must never be closed.
-        let relay = boot_with(fresh_db(), true, |store| AppState {
-            store,
-            rooms: std::sync::Arc::new(PairingRooms::new()),
-            sessions: std::sync::Arc::new(RoomSessions::default()),
-            allowed_origins: Vec::new(),
-            trusted_proxies: Vec::new(),
-            subscriptions: std::sync::Arc::new(crate::ws::ChannelSubscriptions::default()),
-            ws_permits: std::sync::Arc::new(tokio::sync::Semaphore::new(64)),
-            ws_heartbeat: crate::ws::Heartbeat::for_tests(200, 600),
-            ws_outbound_queue_bytes: syncbond_relay_protocol::limits::WS_OUTBOUND_QUEUE_BYTES,
-        });
+        let relay = boot_with(
+            fresh_db(),
+            true,
+            crate::serve::Shutdown::new(),
+            |store, shutdown| AppState {
+                store,
+                rooms: std::sync::Arc::new(PairingRooms::new()),
+                sessions: std::sync::Arc::new(RoomSessions::default()),
+                allowed_origins: Vec::new(),
+                trusted_proxies: Vec::new(),
+                subscriptions: std::sync::Arc::new(crate::ws::ChannelSubscriptions::default()),
+                ws_permits: std::sync::Arc::new(tokio::sync::Semaphore::new(64)),
+                ws_heartbeat: crate::ws::Heartbeat::for_tests(200, 600),
+                ws_outbound_queue_bytes: syncbond_relay_protocol::limits::WS_OUTBOUND_QUEUE_BYTES,
+                shutdown,
+                live_sessions: std::sync::Arc::new(crate::ws::LiveSessions::new()),
+            },
+        );
         let (room, capability) = create_room(&relay);
         let mut socket = ws_join_ok(&relay.address, &room, &capability).await;
         let _ = next_json(&mut socket).await;
@@ -2519,17 +2592,24 @@ mod tests {
         // Pairing frames are lossless by contract: a peer whose outbound
         // queue is over budget must be closed with a declared failure —
         // never silently lose a frame, never buffer without bound.
-        let relay = boot_with(fresh_db(), true, |store| AppState {
-            store,
-            rooms: std::sync::Arc::new(PairingRooms::new()),
-            sessions: std::sync::Arc::new(RoomSessions::default()),
-            allowed_origins: Vec::new(),
-            trusted_proxies: Vec::new(),
-            subscriptions: std::sync::Arc::new(crate::ws::ChannelSubscriptions::default()),
-            ws_permits: std::sync::Arc::new(tokio::sync::Semaphore::new(64)),
-            ws_heartbeat: crate::ws::Heartbeat::frozen(),
-            ws_outbound_queue_bytes: 256 * 1024,
-        });
+        let relay = boot_with(
+            fresh_db(),
+            true,
+            crate::serve::Shutdown::new(),
+            |store, shutdown| AppState {
+                store,
+                rooms: std::sync::Arc::new(PairingRooms::new()),
+                sessions: std::sync::Arc::new(RoomSessions::default()),
+                allowed_origins: Vec::new(),
+                trusted_proxies: Vec::new(),
+                subscriptions: std::sync::Arc::new(crate::ws::ChannelSubscriptions::default()),
+                ws_permits: std::sync::Arc::new(tokio::sync::Semaphore::new(64)),
+                ws_heartbeat: crate::ws::Heartbeat::frozen(),
+                ws_outbound_queue_bytes: 256 * 1024,
+                shutdown,
+                live_sessions: std::sync::Arc::new(crate::ws::LiveSessions::new()),
+            },
+        );
         let (room, capability) = create_room(&relay);
         let mut sender = ws_join_ok(&relay.address, &room, &capability).await;
         let _ = next_json(&mut sender).await;
@@ -2570,8 +2650,9 @@ mod tests {
         let address = listener.local_addr().unwrap().to_string();
         tokio::spawn(crate::serve::serve(
             listener,
-            router(boot_state(store)),
+            router(boot_state(store, crate::serve::Shutdown::new())),
             limits,
+            crate::serve::Shutdown::new(),
         ));
         address
     }
@@ -2589,6 +2670,7 @@ mod tests {
             crate::serve::Limits {
                 max_connections: 1,
                 header_timeout_seconds: 0,
+                drain_timeout_seconds: 0,
             },
         )
         .await;
@@ -2617,6 +2699,7 @@ mod tests {
             crate::serve::Limits {
                 max_connections: 0,
                 header_timeout_seconds: 1,
+                drain_timeout_seconds: 0,
             },
         )
         .await;
@@ -2641,5 +2724,168 @@ mod tests {
             "the trickler is cut off, not served forever"
         );
         std::fs::remove_file(&db).ok();
+    }
+
+    // ------------------------------------------------- shutdown (DSR-24)
+
+    /// One process told to stop the way the binary stops: fire the edge
+    /// and wait until the listener is gone, so a late connect fails
+    /// instead of hanging.
+    fn stop_relay(relay: &Relay) {
+        relay.shutdown.fire();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            match std::net::TcpStream::connect(&relay.address) {
+                // The listener socket is closed once the accept loop ends;
+                // until then the connect may still succeed (the drain is
+                // running), so keep polling.
+                Ok(stream) => drop(stream),
+                Err(_) => return,
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the relay must stop accepting within the drain budget"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_live_pairing_socket_is_closed_with_1001_when_the_process_stops() {
+        // The contract's shutdown rule (relay-protocol.md §7): rooms close
+        // with 1001 after in-flight frames drain — a declared goodbye, not
+        // a connection reset.
+        let relay = start();
+        let (room, capability) = create_room(&relay);
+        let mut first = ws_join_ok(&relay.address, &room, &capability).await;
+        let _ = next_json(&mut first).await;
+        let mut second = ws_join_ok(&relay.address, &room, &capability).await;
+        let _ = next_json(&mut second).await;
+        // A frame still in flight when the signal fires: the last thing
+        // each peer hears must still be data, then the goodbye.
+        first
+            .send(WsMessage::Text(ws_frame("cGstZnJhbWUtZHNyMjQ").into()))
+            .await
+            .unwrap();
+        let forwarded = next_json(&mut second).await;
+        assert_eq!(forwarded["type"], "pairing.frame");
+
+        stop_relay(&relay);
+        let first_close = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                match first.next().await {
+                    Some(Ok(WsMessage::Text(_))) => {}
+                    Some(Ok(WsMessage::Close(Some(frame)))) => break u16::from(frame.code),
+                    Some(Ok(WsMessage::Ping(_))) | Some(Ok(WsMessage::Pong(_))) => {}
+                    other => panic!("expected a close frame, got {other:?}"),
+                }
+            }
+        })
+        .await
+        .expect("the first peer hears the goodbye");
+        let second_close = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                match second.next().await {
+                    Some(Ok(WsMessage::Text(_))) => {}
+                    Some(Ok(WsMessage::Close(Some(frame)))) => break u16::from(frame.code),
+                    Some(Ok(WsMessage::Ping(_))) | Some(Ok(WsMessage::Pong(_))) => {}
+                    other => panic!("expected a close frame, got {other:?}"),
+                }
+            }
+        })
+        .await
+        .expect("the second peer hears the goodbye");
+        assert_eq!(first_close, 1001, "going away, not a reset");
+        assert_eq!(second_close, 1001);
+    }
+
+    #[tokio::test]
+    async fn an_event_subscription_ends_with_1001_when_the_process_stops() {
+        let relay = start();
+        let (channel, _credential, token) =
+            provision(&relay, serde_json::json!(["pull"]), "events-shutdown");
+        let mut socket = ws_events_ok(&relay.address, &channel, &token).await;
+        let greeting = next_json(&mut socket).await;
+        assert_eq!(greeting["type"], "events.subscribed");
+
+        stop_relay(&relay);
+        let close = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                match socket.next().await {
+                    Some(Ok(WsMessage::Text(_))) => {}
+                    Some(Ok(WsMessage::Close(Some(frame)))) => break u16::from(frame.code),
+                    Some(Ok(WsMessage::Ping(_))) | Some(Ok(WsMessage::Pong(_))) => {}
+                    other => panic!("expected a close frame, got {other:?}"),
+                }
+            }
+        })
+        .await
+        .expect("the subscriber hears the goodbye");
+        // Hints are lossy by contract; the goodbye is the reconnect signal.
+        assert_eq!(close, 1001);
+    }
+
+    #[test]
+    fn everything_acked_before_shutdown_is_pullable_after_restart() {
+        // The DSR-24 acceptance, end to end: append and get ACKs, stop the
+        // process the way a signal does, open the same data directory in a
+        // fresh process, and pull every acknowledged envelope back.
+        let db = fresh_db();
+        let mut relay = boot(db.clone(), true);
+        let (channel, _credential, token) =
+            provision(&relay, serde_json::json!(["append", "pull"]), "restart");
+        let first = call(
+            &relay.address,
+            "POST",
+            &format!("/v1/channels/{channel}/append"),
+            Some(&append_request(&["m-dsr24-00000001", "m-dsr24-00000002"])),
+            Some(&bearer(&token)),
+        );
+        assert!(first["acks"].is_array(), "{first}");
+        let second = call(
+            &relay.address,
+            "POST",
+            &format!("/v1/channels/{channel}/append"),
+            Some(&append_request(&["m-dsr24-00000003"])),
+            Some(&bearer(&token)),
+        );
+        assert!(second["acks"].is_array(), "{second}");
+
+        stop_relay(&relay);
+        // Keep the database: the relay's Drop removes its own path, so
+        // take it out first — exactly what a deployer's data volume does.
+        let db = std::mem::take(relay_db_slot(&mut relay));
+        drop(relay);
+
+        let restarted = boot(db, true);
+        let pulled = call(
+            &restarted.address,
+            "POST",
+            &format!("/v1/channels/{channel}/pull"),
+            Some(&pull_request(0, None)),
+            Some(&bearer(&token)),
+        );
+        let entries = pulled["entries"].as_array().expect("a pull page");
+        let ids: Vec<&str> = entries
+            .iter()
+            .map(|entry| entry["envelope"]["messageId"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            ids,
+            ["m-dsr24-00000001", "m-dsr24-00000002", "m-dsr24-00000003"],
+            "every ACKed envelope, in sequence order, after the restart"
+        );
+        let seqs: Vec<u64> = entries
+            .iter()
+            .map(|entry| entry["seq"].as_u64().unwrap())
+            .collect();
+        assert_eq!(seqs, [1, 2, 3], "the sequence numbers survived too");
+    }
+
+    /// A mutable slot for the relay's database path, so a test can rescue
+    /// it from the Drop cleanup without reaching into private fields from
+    /// outside the module.
+    fn relay_db_slot(relay: &mut Relay) -> &mut std::path::PathBuf {
+        &mut relay._db
     }
 }

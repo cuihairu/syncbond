@@ -49,6 +49,13 @@ pub struct Config {
     /// default-server.md §4 timeouts.
     #[serde(default = "default_header_timeout_seconds")]
     pub header_timeout_seconds: u64,
+    /// Seconds the shutdown drain may last after the process is told to
+    /// stop: accepted requests get this long to finish, and a WebSocket
+    /// is closed after flushing what it already queued. `0` waits for
+    /// every connection to end with no deadline (DSR-24, default-server.md
+    /// §4: shutdown must handle the commits it accepted).
+    #[serde(default = "default_shutdown_timeout_seconds")]
+    pub shutdown_timeout_seconds: u64,
 }
 
 fn default_max_ws_sessions() -> usize {
@@ -61,6 +68,10 @@ fn default_max_connections() -> usize {
 
 fn default_header_timeout_seconds() -> u64 {
     30
+}
+
+fn default_shutdown_timeout_seconds() -> u64 {
+    10
 }
 
 fn default_channel_quota() -> u64 {
@@ -83,6 +94,7 @@ impl Default for Config {
             max_ws_sessions: default_max_ws_sessions(),
             max_connections: default_max_connections(),
             header_timeout_seconds: default_header_timeout_seconds(),
+            shutdown_timeout_seconds: default_shutdown_timeout_seconds(),
         }
     }
 }
@@ -167,6 +179,13 @@ mod tests {
         );
         assert_eq!(config.channel_quota_bytes, 1024 * 1024 * 1024);
         assert_eq!(config.disk_quota_bytes, 8 * 1024 * 1024 * 1024);
+        // DSR-24: a bounded drain by default; `0` waits forever.
+        assert_eq!(config.shutdown_timeout_seconds, 10);
+        let config = Config {
+            shutdown_timeout_seconds: 0,
+            ..Config::default()
+        };
+        config.validate().unwrap();
     }
 
     #[test]
