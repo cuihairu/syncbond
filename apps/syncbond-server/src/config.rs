@@ -33,6 +33,34 @@ pub struct Config {
     /// address is the client address (crate::proxy for the policy).
     #[serde(default)]
     pub trusted_proxies: Vec<crate::proxy::TrustedProxy>,
+    /// Live WebSocket sessions (pairing joins plus event subscriptions)
+    /// admitted at once; `0` disables the limit. This is a deployment
+    /// budget, not a contract value: the frozen contract freezes no
+    /// session count (crate::serve drops nothing over it).
+    #[serde(default = "default_max_ws_sessions")]
+    pub max_ws_sessions: usize,
+    /// TCP connections handled at once; `0` disables the limit. Everything
+    /// above it is dropped at accept time: bounded resources beat a queue
+    /// that only delays the overload.
+    #[serde(default = "default_max_connections")]
+    pub max_connections: usize,
+    /// Seconds allowed for a client to finish sending request headers;
+    /// `0` disables it. Bounds slow-header clients (slowloris) per
+    /// default-server.md §4 timeouts.
+    #[serde(default = "default_header_timeout_seconds")]
+    pub header_timeout_seconds: u64,
+}
+
+fn default_max_ws_sessions() -> usize {
+    64
+}
+
+fn default_max_connections() -> usize {
+    256
+}
+
+fn default_header_timeout_seconds() -> u64 {
+    30
 }
 
 fn default_channel_quota() -> u64 {
@@ -52,6 +80,9 @@ impl Default for Config {
             disk_quota_bytes: default_disk_quota(),
             allowed_origins: Vec::new(),
             trusted_proxies: Vec::new(),
+            max_ws_sessions: default_max_ws_sessions(),
+            max_connections: default_max_connections(),
+            header_timeout_seconds: default_header_timeout_seconds(),
         }
     }
 }

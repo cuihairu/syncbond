@@ -16,6 +16,7 @@ mod config;
 mod http;
 mod proxy;
 mod rooms;
+mod serve;
 mod sqlite;
 mod storage;
 mod ws;
@@ -109,12 +110,21 @@ async fn run(config_path: std::path::PathBuf) -> Result<(), StartupError> {
         allowed_origins: config.allowed_origins.clone(),
         trusted_proxies: config.trusted_proxies.clone(),
         subscriptions: std::sync::Arc::new(ws::ChannelSubscriptions::default()),
+        ws_permits: std::sync::Arc::new(tokio::sync::Semaphore::new(config.max_ws_sessions)),
+        ws_heartbeat: ws::Heartbeat::frozen(),
+        ws_outbound_queue_bytes: syncbond_relay_protocol::limits::WS_OUTBOUND_QUEUE_BYTES,
     });
-    axum::serve(
+    // Connect info is the peer's socket address; the pairing-room route
+    // rate-limits by it (relay-protocol.md §9). The hand-rolled loop adds
+    // the deployment's connection budget and header-read timeout
+    // (default-server.md §4).
+    serve::serve(
         listener,
-        // Connect info is the peer's socket address; the pairing-room route
-        // rate-limits by it (relay-protocol.md §9).
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        app,
+        serve::Limits {
+            max_connections: config.max_connections,
+            header_timeout_seconds: config.header_timeout_seconds,
+        },
     )
     .await
     .map_err(|source| StartupError::Serve { source })?;

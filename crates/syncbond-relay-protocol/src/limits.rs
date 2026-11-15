@@ -26,6 +26,17 @@ pub const ROOM_CREATE_RATE_WINDOW_MS: u64 = 60_000;
 /// Parity with the core's `MAX_FRAME_BYTES`; the relay enforces it while
 /// reading, before allocation.
 pub const PAIRING_FRAME_MAX_BYTES: usize = 16 * 1024 * 1024;
+/// Server-level request body cap (frozen §9): one batch of maximal
+/// envelopes plus envelope JSON overhead must fit below this.
+pub const MAX_REQUEST_BODY_BYTES: usize = 16 * 1024 * 1024;
+/// The server pings every WebSocket at this interval (frozen §9).
+pub const WS_HEARTBEAT_INTERVAL_MS: u64 = 30_000;
+/// A WebSocket idle longer than this is closed (frozen §9).
+pub const WS_IDLE_TIMEOUT_MS: u64 = 90_000;
+/// Outbound per-socket queue budget in bytes: one maximal pairing frame
+/// plus slack. A peer that cannot drain faster than its peer pushes is
+/// closed with a bounded failure instead of growing memory unbounded.
+pub const WS_OUTBOUND_QUEUE_BYTES: usize = PAIRING_FRAME_MAX_BYTES + 1024 * 1024;
 pub const MAX_REQUEST_ID_LEN: usize = 64;
 pub const MAX_CHANNEL_ID_LEN: usize = 128;
 /// The envelope schema pins `messageId` to 16..=64 chars; the relay enforces

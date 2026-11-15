@@ -14,6 +14,11 @@ path = "src/main.rs"
 syncbond-relay-protocol = { path = "../../crates/syncbond-relay-protocol" }
 rusqlite.workspace = true
 axum.workspace = true
+# The serve loop is hand-rolled (crate::serve, DSR-23) to reach the
+# header-read timeout and connection budget; this is the engine axum's
+# own serve wraps.
+hyper-util.workspace = true
+tower-service.workspace = true
 # `sync` for the per-socket outbound channels and `net` for the listener:
 # both were arriving transitively through axum before DSR-21 needed them
 # directly, so now they are declared by their real user.

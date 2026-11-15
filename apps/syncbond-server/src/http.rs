@@ -30,6 +30,7 @@ use syncbond_relay_protocol::dto::{
     CredentialRevoked, IssueCredentialRequest, PullRequest, PullResponse, RoomCreated,
 };
 use syncbond_relay_protocol::error::{ErrorBody, RelayError, RelayErrorCode};
+use syncbond_relay_protocol::limits::MAX_REQUEST_BODY_BYTES;
 use syncbond_relay_protocol::{
     check_batch, check_envelope, check_request_id, check_version, effective_pull_limits,
     RELAY_PROTOCOL_VERSION,
@@ -62,6 +63,16 @@ pub struct AppState {
     /// Live channel-event subscriptions (crate::ws, DSR-22): the append
     /// route pushes lossy hints through this registry after a commit.
     pub subscriptions: std::sync::Arc<crate::ws::ChannelSubscriptions>,
+    /// The WebSocket session budget (DSR-23): at most this many live
+    /// pairing joins plus event subscriptions; further upgrades complete
+    /// and close with 1013. Tests shrink it to prove the refusal.
+    pub ws_permits: std::sync::Arc<tokio::sync::Semaphore>,
+    /// Heartbeat timing for every WebSocket (DSR-23): the frozen §9
+    /// values in production; test assemblies inject short ones.
+    pub ws_heartbeat: crate::ws::Heartbeat,
+    /// The per-socket outbound byte budget (DSR-23): a pairing peer that
+    /// exceeds it is closed with 1013 once its queue drains.
+    pub ws_outbound_queue_bytes: usize,
 }
 
 /// Build the router. Kept separate from `listen` so tests can drive it
@@ -89,6 +100,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/v1/pairing/rooms", post(create_room))
         .route("/v1/pairing/{room_id}", get(crate::ws::join_room))
+        // The frozen §9 request-body cap is 16 MiB; axum's own default is
+        // 2 MiB, which would silently reject legal multi-megabyte batches
+        // (DSR-23). One server-level cap ahead of every route.
+        .layer(axum::extract::DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .with_state(state)
 }
 
@@ -699,6 +714,9 @@ mod tests {
             allowed_origins: Vec::new(),
             trusted_proxies: Vec::new(),
             subscriptions: std::sync::Arc::new(crate::ws::ChannelSubscriptions::default()),
+            ws_permits: std::sync::Arc::new(tokio::sync::Semaphore::new(64)),
+            ws_heartbeat: crate::ws::Heartbeat::frozen(),
+            ws_outbound_queue_bytes: syncbond_relay_protocol::limits::WS_OUTBOUND_QUEUE_BYTES,
         }
     }
 
@@ -728,17 +746,23 @@ mod tests {
         // channel: from_std needs a reactor, and block_on would nest inside
         // the #[tokio::test] bodies. Works from sync tests the same way.
         let (address_tx, address_rx) = std::sync::mpsc::channel::<String>();
-        // Served exactly the way `main` serves it: with connect info,
-        // because the pairing-room route rate-limits per peer address.
+        // Served exactly the way `main` serves it: the same hand-rolled
+        // accept loop (connect info for the per-peer rate limit), with
+        // the deployment budgets unlimited — tests parallelize and hold
+        // sockets, and no test wants a 30 s header deadline.
         let task = runtime.spawn(async move {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             address_tx
                 .send(listener.local_addr().unwrap().to_string())
                 .expect("the boot thread always collects the address");
             let app = router(state_of(store));
-            if let Err(error) = axum::serve(
+            if let Err(error) = crate::serve::serve(
                 listener,
-                app.into_make_service_with_connect_info::<SocketAddr>(),
+                app,
+                crate::serve::Limits {
+                    max_connections: 0,
+                    header_timeout_seconds: 0,
+                },
             )
             .await
             {
@@ -1571,6 +1595,7 @@ mod tests {
     // ------------------------------------------- pairing rooms over WebSocket
 
     use futures_util::{SinkExt as _, StreamExt as _};
+    use tokio::io::AsyncReadExt as _;
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
     use tokio_tungstenite::tungstenite::http::HeaderValue;
@@ -1727,6 +1752,9 @@ mod tests {
             allowed_origins: Vec::new(),
             trusted_proxies: Vec::new(),
             subscriptions: std::sync::Arc::new(crate::ws::ChannelSubscriptions::default()),
+            ws_permits: std::sync::Arc::new(tokio::sync::Semaphore::new(64)),
+            ws_heartbeat: crate::ws::Heartbeat::frozen(),
+            ws_outbound_queue_bytes: syncbond_relay_protocol::limits::WS_OUTBOUND_QUEUE_BYTES,
         });
         (relay, created.room_id, created.capability)
     }
@@ -1879,6 +1907,9 @@ mod tests {
             allowed_origins: vec!["https://ok.example".to_owned()],
             trusted_proxies: Vec::new(),
             subscriptions: std::sync::Arc::new(crate::ws::ChannelSubscriptions::default()),
+            ws_permits: std::sync::Arc::new(tokio::sync::Semaphore::new(64)),
+            ws_heartbeat: crate::ws::Heartbeat::frozen(),
+            ws_outbound_queue_bytes: syncbond_relay_protocol::limits::WS_OUTBOUND_QUEUE_BYTES,
         });
 
         // An Origin the deployer did not allow never gets a socket.
@@ -1997,6 +2028,9 @@ mod tests {
             allowed_origins: Vec::new(),
             trusted_proxies: vec![trusted],
             subscriptions: std::sync::Arc::new(crate::ws::ChannelSubscriptions::default()),
+            ws_permits: std::sync::Arc::new(tokio::sync::Semaphore::new(64)),
+            ws_heartbeat: crate::ws::Heartbeat::frozen(),
+            ws_outbound_queue_bytes: syncbond_relay_protocol::limits::WS_OUTBOUND_QUEUE_BYTES,
         });
         // One client behind the proxy burns its own budget...
         for offset in 0..16 {
@@ -2247,6 +2281,9 @@ mod tests {
             allowed_origins: vec!["https://ok.example".to_owned()],
             trusted_proxies: Vec::new(),
             subscriptions: std::sync::Arc::new(crate::ws::ChannelSubscriptions::default()),
+            ws_permits: std::sync::Arc::new(tokio::sync::Semaphore::new(64)),
+            ws_heartbeat: crate::ws::Heartbeat::frozen(),
+            ws_outbound_queue_bytes: syncbond_relay_protocol::limits::WS_OUTBOUND_QUEUE_BYTES,
         });
         let (channel, _id, token) = provision(&relay, serde_json::json!(["pull"]), "browser");
 
@@ -2289,5 +2326,320 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(next_close(&mut socket).await, 1008);
+    }
+
+    // ------------------------------------------------- resource bounds (DSR-23)
+
+    #[test]
+    fn a_legal_multimegabyte_batch_is_within_the_body_cap() {
+        // axum's own default body limit is 2 MiB; the frozen §9 cap is
+        // 16 MiB. A legal ~3.5 MiB batch lives between the two and must
+        // be accepted, not silently rejected by a framework default.
+        let relay = start();
+        let (channel, _id, token) = provision(&relay, serde_json::json!(["append"]), "bulk");
+        let payload = vec![0u8; 5 * 512 * 1024];
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&payload);
+        let request = serde_json::to_string(&serde_json::json!({
+            "protocolVersion": 1,
+            "requestId": "r-append-big-001",
+            "envelopes": [envelope("m-0000000000000001", &encoded)],
+        }))
+        .unwrap();
+        let reply = call_with_status(
+            &relay.address,
+            "POST",
+            &format!("/v1/channels/{channel}/append"),
+            Some(&request),
+            Some(&bearer(&token)),
+        );
+        assert_eq!(reply.status, 200, "3+ MiB is under the 16 MiB cap");
+        assert_eq!(reply.body["acks"][0]["seq"], 1);
+    }
+
+    #[test]
+    fn a_body_over_the_frozen_cap_is_refused_with_413() {
+        // Push one byte past the 16 MiB cap: the body-limit machinery
+        // refuses the moment the received bytes cross it. The 413 is the
+        // transport cap, not the protocol shape — the route never runs,
+        // so the response is not the frozen error body.
+        let relay = start();
+        let mut stream = TcpStream::connect(&relay.address).unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .unwrap();
+        let head = format!(
+            "POST /v1/channels/ch_x/append HTTP/1.1\r\n\
+             Host: localhost\r\nConnection: close\r\n\
+             Content-Length: {}\r\n\r\n",
+            16 * 1024 * 1024 + 1
+        );
+        stream.write_all(head.as_bytes()).unwrap();
+        let chunk = [b'A'; 64 * 1024];
+        let mut sent = 0usize;
+        while sent < 16 * 1024 * 1024 + 1 {
+            let take = (16 * 1024 * 1024 + 1 - sent).min(chunk.len());
+            // The refusal may close the socket mid-write; that is the
+            // bounded failure, not an error of its own.
+            if stream.write(&chunk[..take]).is_err() {
+                break;
+            }
+            sent += take;
+        }
+        stream.flush().ok();
+        let mut raw = String::new();
+        stream.read_to_string(&mut raw).unwrap();
+        let status = raw
+            .lines()
+            .next()
+            .unwrap()
+            .split_whitespace()
+            .nth(1)
+            .unwrap()
+            .parse::<u16>()
+            .unwrap();
+        assert_eq!(status, 413, "past 16 MiB the cap refuses at the transport");
+    }
+
+    #[tokio::test]
+    async fn a_full_session_budget_refuses_the_next_upgrade_with_1013() {
+        // One permit: the first live socket takes it, everything else —
+        // pairing join or event subscription — is refused in-band with
+        // the load signal, not left hanging.
+        let relay = boot_with(fresh_db(), true, |store| AppState {
+            store,
+            rooms: std::sync::Arc::new(PairingRooms::new()),
+            sessions: std::sync::Arc::new(RoomSessions::default()),
+            allowed_origins: Vec::new(),
+            trusted_proxies: Vec::new(),
+            subscriptions: std::sync::Arc::new(crate::ws::ChannelSubscriptions::default()),
+            ws_permits: std::sync::Arc::new(tokio::sync::Semaphore::new(1)),
+            ws_heartbeat: crate::ws::Heartbeat::frozen(),
+            ws_outbound_queue_bytes: syncbond_relay_protocol::limits::WS_OUTBOUND_QUEUE_BYTES,
+        });
+        let (room, capability) = create_room(&relay);
+        let mut first = ws_join_ok(&relay.address, &room, &capability).await;
+        let _ = next_json(&mut first).await;
+
+        let mut second = ws_join_ok(&relay.address, &room, &capability).await;
+        let error = next_json(&mut second).await;
+        assert_eq!(error["type"], "error");
+        assert_eq!(error["code"], "rate_limited");
+        assert_eq!(next_close(&mut second).await, 1013);
+
+        let (channel, _id, token) = provision(&relay, serde_json::json!(["pull"]), "listener");
+        let mut listener = ws_events_ok(&relay.address, &channel, &token).await;
+        let error = next_json(&mut listener).await;
+        assert_eq!(error["code"], "rate_limited");
+        assert_eq!(next_close(&mut listener).await, 1013);
+    }
+
+    #[tokio::test]
+    async fn a_dead_peer_is_closed_after_the_idle_deadline() {
+        // The heartbeat proves liveness: a peer that never reads never
+        // pongs, and past the idle deadline the server gives up on it.
+        // The eviction is observed by the peer that is still alive —
+        // the dead socket itself reads nothing, so its 1008 close is
+        // only there for a client that comes back.
+        let relay = boot_with(fresh_db(), true, |store| AppState {
+            store,
+            rooms: std::sync::Arc::new(PairingRooms::new()),
+            sessions: std::sync::Arc::new(RoomSessions::default()),
+            allowed_origins: Vec::new(),
+            trusted_proxies: Vec::new(),
+            subscriptions: std::sync::Arc::new(crate::ws::ChannelSubscriptions::default()),
+            ws_permits: std::sync::Arc::new(tokio::sync::Semaphore::new(64)),
+            ws_heartbeat: crate::ws::Heartbeat::for_tests(200, 600),
+            ws_outbound_queue_bytes: syncbond_relay_protocol::limits::WS_OUTBOUND_QUEUE_BYTES,
+        });
+        let (room, capability) = create_room(&relay);
+        let mut dead = ws_join_ok(&relay.address, &room, &capability).await;
+        let _ = next_json(&mut dead).await;
+        let mut alive = ws_join_ok(&relay.address, &room, &capability).await;
+        let _ = next_json(&mut alive).await;
+        // The dead peer stays connected but never reads again: no pong
+        // ever leaves it, and its socket is never closed by the client —
+        // so the only way it can be evicted is the heartbeat's idle
+        // deadline. (Dropping it would be a plain peer disconnect.)
+        std::mem::forget(dead);
+        let close = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match alive.next().await {
+                    Some(Ok(WsMessage::Ping(_))) | Some(Ok(WsMessage::Pong(_))) => {}
+                    Some(Ok(WsMessage::Close(Some(frame)))) => break u16::from(frame.code),
+                    other => panic!("expected an idle eviction, got {other:?}"),
+                }
+            }
+        })
+        .await
+        .expect("the idle deadline fires within seconds");
+        assert_eq!(close, 1001, "the idle peer is evicted like a disconnect");
+    }
+
+    #[tokio::test]
+    async fn a_client_that_answers_its_pings_is_never_closed_as_idle() {
+        // Same heartbeat timing as the dead-peer test: a peer that stays
+        // alive across several ping intervals must never be closed.
+        let relay = boot_with(fresh_db(), true, |store| AppState {
+            store,
+            rooms: std::sync::Arc::new(PairingRooms::new()),
+            sessions: std::sync::Arc::new(RoomSessions::default()),
+            allowed_origins: Vec::new(),
+            trusted_proxies: Vec::new(),
+            subscriptions: std::sync::Arc::new(crate::ws::ChannelSubscriptions::default()),
+            ws_permits: std::sync::Arc::new(tokio::sync::Semaphore::new(64)),
+            ws_heartbeat: crate::ws::Heartbeat::for_tests(200, 600),
+            ws_outbound_queue_bytes: syncbond_relay_protocol::limits::WS_OUTBOUND_QUEUE_BYTES,
+        });
+        let (room, capability) = create_room(&relay);
+        let mut socket = ws_join_ok(&relay.address, &room, &capability).await;
+        let _ = next_json(&mut socket).await;
+        // Keep sending past what would be several idle deadlines.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(1500);
+        let mut pings_seen = 0;
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(std::time::Duration::from_millis(150), socket.next()).await {
+                Ok(Some(Ok(WsMessage::Ping(_)))) => pings_seen += 1,
+                Ok(Some(Ok(WsMessage::Close(frame)))) => {
+                    panic!("closed although alive: {frame:?}")
+                }
+                Ok(other) => panic!("unexpected frame {other:?}"),
+                Err(_quiet) => {
+                    socket
+                        .send(WsMessage::Text(ws_frame("cGstc3RheS1hbGl2ZQ").into()))
+                        .await
+                        .unwrap();
+                }
+            }
+        }
+        assert!(pings_seen >= 1, "the server heartbeats even a live peer");
+    }
+
+    #[tokio::test]
+    async fn a_peer_that_will_not_drain_is_closed_with_1013_once_flushed() {
+        // Pairing frames are lossless by contract: a peer whose outbound
+        // queue is over budget must be closed with a declared failure —
+        // never silently lose a frame, never buffer without bound.
+        let relay = boot_with(fresh_db(), true, |store| AppState {
+            store,
+            rooms: std::sync::Arc::new(PairingRooms::new()),
+            sessions: std::sync::Arc::new(RoomSessions::default()),
+            allowed_origins: Vec::new(),
+            trusted_proxies: Vec::new(),
+            subscriptions: std::sync::Arc::new(crate::ws::ChannelSubscriptions::default()),
+            ws_permits: std::sync::Arc::new(tokio::sync::Semaphore::new(64)),
+            ws_heartbeat: crate::ws::Heartbeat::frozen(),
+            ws_outbound_queue_bytes: 256 * 1024,
+        });
+        let (room, capability) = create_room(&relay);
+        let mut sender = ws_join_ok(&relay.address, &room, &capability).await;
+        let _ = next_json(&mut sender).await;
+        let mut slow = ws_join_ok(&relay.address, &room, &capability).await;
+        let _ = next_json(&mut slow).await;
+        // ~128 KiB frames against a 128 KiB budget: a peer reading nothing
+        // trips the budget within a handful of frames.
+        let frame = ws_frame(&"A".repeat(128 * 1024));
+        for _ in 0..60 {
+            sender
+                .send(WsMessage::Text(frame.clone().into()))
+                .await
+                .unwrap();
+        }
+        // The slow peer finally drains: everything queued goes out, and
+        // the bounded-failure close ends the socket.
+        let close = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            loop {
+                match slow.next().await {
+                    Some(Ok(WsMessage::Text(_))) => {}
+                    Some(Ok(WsMessage::Close(Some(close)))) => break u16::from(close.code),
+                    other => panic!("expected forwarded frames then a close, got {other:?}"),
+                }
+            }
+        })
+        .await
+        .expect("the slow peer gets its close within seconds");
+        assert_eq!(close, 1013, "the bounded failure is declared, not silent");
+    }
+
+    /// Serve a router directly on the current test runtime with explicit
+    /// serve-loop budgets — for tests of the loop itself, not the routes.
+    async fn serve_direct(
+        store: std::sync::Arc<SqliteRelayStore>,
+        limits: crate::serve::Limits,
+    ) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        tokio::spawn(crate::serve::serve(
+            listener,
+            router(boot_state(store)),
+            limits,
+        ));
+        address
+    }
+
+    #[tokio::test]
+    async fn a_connection_over_the_budget_is_dropped_not_queued() {
+        // One connection slot: while the first peer holds it, the next
+        // connect is closed outright — bounded refusal instead of an
+        // unbounded backlog.
+        let db = fresh_db();
+        let store = std::sync::Arc::new(SqliteRelayStore::open(&db).unwrap());
+        store.mark_ready();
+        let address = serve_direct(
+            store,
+            crate::serve::Limits {
+                max_connections: 1,
+                header_timeout_seconds: 0,
+            },
+        )
+        .await;
+        let held = tokio::net::TcpStream::connect(&address).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let mut second = tokio::net::TcpStream::connect(&address).await.unwrap();
+        let mut buf = [0u8; 16];
+        let read = tokio::time::timeout(std::time::Duration::from_secs(2), second.read(&mut buf))
+            .await
+            .expect("the refusal arrives, it does not hang")
+            .unwrap();
+        assert_eq!(read, 0, "over budget the socket is closed, not queued");
+        drop(held);
+        std::fs::remove_file(&db).ok();
+    }
+
+    #[tokio::test]
+    async fn a_slow_header_trickler_is_cut_off_by_the_deadline() {
+        // A peer that opens a connection and trickles headers forever
+        // pins a worker only until the header deadline, not forever.
+        let db = fresh_db();
+        let store = std::sync::Arc::new(SqliteRelayStore::open(&db).unwrap());
+        store.mark_ready();
+        let address = serve_direct(
+            store,
+            crate::serve::Limits {
+                max_connections: 0,
+                header_timeout_seconds: 1,
+            },
+        )
+        .await;
+        let mut stream = tokio::net::TcpStream::connect(&address).await.unwrap();
+        tokio::io::AsyncWriteExt::write_all(&mut stream, b"GET /v1/health HTTP/1.1\r\nHost: x\r\n")
+            .await
+            .unwrap();
+        // No more bytes ever come; the connection must still end soon.
+        let started = std::time::Instant::now();
+        let mut raw = Vec::new();
+        let closed = tokio::time::timeout(std::time::Duration::from_secs(5), {
+            tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut raw)
+        })
+        .await
+        .expect("the deadline fires within seconds");
+        assert!(
+            closed.is_ok(),
+            "the trickler's socket ends, cleanly or reset"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(4),
+            "the trickler is cut off, not served forever"
+        );
+        std::fs::remove_file(&db).ok();
     }
 }
