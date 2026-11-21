@@ -90,6 +90,10 @@ rejection early and avoids a wasted AEAD attempt on a known replay.
 
 The group holds a `KeyRing` with a monotonic `keyEpoch`. Removing a member automatically mints epoch N+1 and updates the member set atomically. The resulting distribution message carries the new key, survivor set, removed device, source identity, an Ed25519 signature over all signed fields, and an HKDF-SHA256 MAC derived from the pre-rotation group key. Receivers install it only after protocol/group/epoch/membership checks and both authentication checks pass. A removed device therefore cannot read any later envelope, forge a source-signed rotation, or replay an applied removal.
 
+A rotation distribution carries the new group key, and the removed member still holds the pre-rotation key — so the distribution must never ride the group channel, where the removed member could read it. The application hands each surviving device's copy over that device's own pairwise channel (a pairing-derived session, or any transport only that device can read); core exposes the routing seam (`MemberChannel`) but never picks the transport, and the removed device is never a recipient because it is absent from the rotation's member set.
+
+Admitting a new device into an existing group is an explicit member authorization, not an automatic join. An existing member mints a signed admission record carrying the current epoch key and the member set including the admittee (an admission never rotates the key); it goes to the admittee over the just-paired session and only counts when the session peer is the device that signed it. Other members adopt the same member set from the record. Membership drift between members heals on the next rotation, whose distribution carries the full survivor set.
+
 ## 6. Replication
 
 Records are opaque payloads with an HLC stamp and a causal witness (last-seen full stamp per node). Sync exchanges oplogs over the encrypted session; operations are deduplicated by id, so out-of-order and duplicate delivery converge. Merge behavior is a pluggable `MergeStrategy` (docs/design/merge.md). Full protocol log/cursor semantics live in `crates/syncbond-core/src/replication.rs`.

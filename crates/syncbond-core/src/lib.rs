@@ -13,6 +13,7 @@ pub mod discovery;
 pub mod hlc;
 pub mod identity;
 pub mod member_crypto;
+pub mod member_distribution;
 pub mod outbox;
 pub mod pairing;
 pub mod pairing_driver;
@@ -35,7 +36,10 @@ pub use discovery::{
 };
 pub use hlc::{compare_stamps, HlcStamp, HybridClock};
 pub use identity::{DeviceIdentity, IdentityError};
-pub use member_crypto::{MemberCryptoError, MemberKeyRing, Rotation, RotationResult};
+pub use member_crypto::{Admission, MemberCryptoError, MemberKeyRing, Rotation, RotationResult};
+pub use member_distribution::{
+    deliver_rotation, deliver_to_members, DeliveryError, MemberChannel, MemberChannelError,
+};
 pub use outbox::{
     drain, stage_operations, DrainFailure, MemoryOutboxStore, OutboxBatch, OutboxError,
     OutboxStore, StageError,

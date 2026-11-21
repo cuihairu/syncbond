@@ -8,7 +8,7 @@
 use crate::crypto::{
     self, CryptoError, EncryptedEnvelope, EnvelopeContext, KeyRing, SessionKey, PROTOCOL_VERSION,
 };
-use crate::identity::{device_id_from_public_key, DeviceIdentity};
+use crate::identity::{device_id_from_public_key, DeviceIdentity, PublicIdentity};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
@@ -37,6 +37,8 @@ pub enum MemberCryptoError {
     InvalidSignature,
     #[error("rotation is not the next epoch (got {got}, expected {expected})")]
     EpochNotNext { got: u64, expected: u64 },
+    #[error("admission is not for the current epoch (got {got}, expected {expected})")]
+    EpochNotCurrent { got: u64, expected: u64 },
     #[error("rotation for {device} was previously applied")]
     RotationReplay { device: String },
     #[error("rotation identity {got} is not in target membership")]
@@ -78,6 +80,30 @@ pub struct RotationResult {
     pub distribution: Vec<u8>,
     pub removed_device_id: String,
     pub member_ids: Vec<String>,
+}
+
+/// One existing member's signed authorization admitting a paired device
+/// into the group: the current epoch key plus the member set including the
+/// admittee. An admission never rotates. It goes to the admittee over the
+/// just-paired session, and only counts when it arrives from the device
+/// that signed it — the pairwise session is what binds the authorization
+/// to the real pairing peer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Admission {
+    pub protocol_version: u16,
+    pub group_id: String,
+    pub epoch: u64,
+    pub key: SessionKey,
+    /// Member set after the admission; distinct device ids only, includes
+    /// the admittee.
+    pub member_ids: BTreeSet<String>,
+    #[serde(with = "hex_key_map")]
+    pub member_public_keys: BTreeMap<String, [u8; 32]>,
+    pub source_device_id: String,
+    #[serde(with = "crate::identity::hex_bytes")]
+    pub source_public_key: [u8; 32],
+    #[serde(with = "crate::identity::hex_bytes64")]
+    pub signature: [u8; 64],
 }
 
 pub struct MemberKeyRing {
@@ -329,6 +355,126 @@ impl MemberKeyRing {
         Ok(())
     }
 
+    /// Mint the signed admission record for a just-paired device and add
+    /// it to the local member set. Explicit per admittee, driven only by
+    /// this call — nothing scans for candidates. The record's key and
+    /// epoch are the caller's current ones: an admission never rotates.
+    /// Keep the returned record; on a delivery failure redeliver it —
+    /// `apply_admission` is idempotent, while this method is once per
+    /// admittee (a second call for the same device is a conflict).
+    pub fn admit_member(
+        &mut self,
+        admittee: &DeviceIdentity,
+        source_identity: &DeviceIdentity,
+    ) -> Result<Admission, MemberCryptoError> {
+        if self.members.contains(&admittee.device_id) {
+            return Err(MemberCryptoError::MembershipConflict);
+        }
+        if source_identity.device_id != self.device_id
+            || self.member_keys.get(&self.device_id).copied() != Some(source_identity.public_key)
+        {
+            return Err(MemberCryptoError::SourceKeyMismatch {
+                got: source_identity.device_id.clone(),
+            });
+        }
+        let mut member_ids = self.members.clone();
+        member_ids.insert(admittee.device_id.clone());
+        let mut member_public_keys = self.member_keys.clone();
+        member_public_keys.insert(admittee.device_id.clone(), admittee.public_key);
+        let mut admission = Admission {
+            protocol_version: PROTOCOL_VERSION,
+            group_id: self.group_id.clone(),
+            epoch: self.keyring.current_epoch(),
+            key: *self.keyring.current_key(),
+            member_ids,
+            member_public_keys,
+            source_device_id: self.device_id.clone(),
+            source_public_key: source_identity.public_key,
+            signature: [0; 64],
+        };
+        admission.signature = source_identity
+            .sign(&admission_bytes_pre_signature(&admission))
+            .to_bytes();
+        self.members = admission.member_ids.clone();
+        self.member_keys = admission.member_public_keys.clone();
+        Ok(admission)
+    }
+
+    /// Verify an admission record and adopt its member set. The epoch must
+    /// be the caller's current one (admissions never rotate) and the
+    /// caller must be in the admitted set; the key and epoch the caller
+    /// already holds stay untouched. Idempotent: applying the same record
+    /// again adopts the same set.
+    pub fn apply_admission(&mut self, record: &[u8]) -> Result<(), MemberCryptoError> {
+        let admission = self.verify_admission(record)?;
+        self.members = admission.member_ids;
+        self.member_keys = admission.member_public_keys;
+        Ok(())
+    }
+
+    fn verify_admission(&self, record: &[u8]) -> Result<Admission, MemberCryptoError> {
+        let admission: Admission = serde_json::from_slice(record)
+            .map_err(|error| MemberCryptoError::Encoding(error.to_string()))?;
+        if admission.protocol_version != PROTOCOL_VERSION {
+            return Err(MemberCryptoError::EpochNotNext {
+                got: u64::from(admission.protocol_version),
+                expected: u64::from(PROTOCOL_VERSION),
+            });
+        }
+        if admission.group_id != self.group_id {
+            return Err(MemberCryptoError::CrossGroup {
+                got: admission.group_id,
+                expected: self.group_id.clone(),
+            });
+        }
+        if !self.members.contains(&admission.source_device_id) {
+            return Err(MemberCryptoError::UnauthorizedSource {
+                got: admission.source_device_id,
+            });
+        }
+        if admission.epoch != self.keyring.current_epoch() {
+            return Err(MemberCryptoError::EpochNotCurrent {
+                got: admission.epoch,
+                expected: self.keyring.current_epoch(),
+            });
+        }
+        let source_key = self
+            .member_keys
+            .get(&admission.source_device_id)
+            .ok_or_else(|| MemberCryptoError::UnauthorizedSource {
+                got: admission.source_device_id.clone(),
+            })?;
+        if *source_key != admission.source_public_key {
+            return Err(MemberCryptoError::SourceKeyMismatch {
+                got: admission.source_device_id,
+            });
+        }
+        let verifying_key =
+            VerifyingKey::from_bytes(&admission.source_public_key).map_err(|_| {
+                MemberCryptoError::SourceKeyMismatch {
+                    got: admission.source_device_id.clone(),
+                }
+            })?;
+        verifying_key
+            .verify(
+                &admission_bytes_pre_signature(&admission),
+                &Signature::from_bytes(&admission.signature),
+            )
+            .map_err(|_| MemberCryptoError::InvalidSignature)?;
+        if !admission.member_ids.contains(&self.device_id) {
+            return Err(MemberCryptoError::UnknownMember(self.device_id.clone()));
+        }
+        if admission.member_ids.len() != admission.member_public_keys.len()
+            || admission
+                .member_ids
+                .iter()
+                .any(|member| !admission.member_public_keys.contains_key(member))
+        {
+            return Err(MemberCryptoError::InvalidMembership);
+        }
+        Ok(admission)
+    }
+
     fn rotation(
         &mut self,
         member_ids: BTreeSet<String>,
@@ -391,6 +537,90 @@ impl MemberKeyRing {
     }
 }
 
+impl Admission {
+    pub fn from_bytes(record: &[u8]) -> Result<Self, MemberCryptoError> {
+        serde_json::from_slice(record)
+            .map_err(|error| MemberCryptoError::Encoding(error.to_string()))
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("admission serialization is infallible")
+    }
+
+    /// Everyone that still needs this record: the whole admitted set
+    /// except the source that minted it.
+    pub fn recipient_ids(&self) -> Vec<String> {
+        self.member_ids
+            .iter()
+            .filter(|member| **member != self.source_device_id)
+            .cloned()
+            .collect()
+    }
+
+    /// The paired device installs itself. The record only counts when the
+    /// session peer is the very device that signed it — the pairwise
+    /// session is what binds the authorization to the real pairing, so
+    /// the peer's device id and public key must both match the record's
+    /// source.
+    pub fn install_for_self(
+        &self,
+        self_identity: &DeviceIdentity,
+        session_peer: &PublicIdentity,
+    ) -> Result<MemberKeyRing, MemberCryptoError> {
+        if session_peer.device_id != self.source_device_id {
+            return Err(MemberCryptoError::UnauthorizedSource {
+                got: session_peer.device_id.clone(),
+            });
+        }
+        if device_id_from_public_key(&session_peer.public_key) != session_peer.device_id {
+            return Err(MemberCryptoError::SourceKeyMismatch {
+                got: session_peer.device_id.clone(),
+            });
+        }
+        if session_peer.public_key != self.source_public_key {
+            return Err(MemberCryptoError::UnauthorizedSource {
+                got: session_peer.device_id.clone(),
+            });
+        }
+        if self_identity.device_id == self.source_device_id {
+            return Err(MemberCryptoError::MembershipConflict);
+        }
+        if !self.member_ids.contains(&self_identity.device_id) {
+            return Err(MemberCryptoError::UnknownMember(
+                self_identity.device_id.clone(),
+            ));
+        }
+        if self.member_public_keys.get(&self.source_device_id).copied()
+            != Some(self.source_public_key)
+        {
+            return Err(MemberCryptoError::SourceKeyMismatch {
+                got: self.source_device_id.clone(),
+            });
+        }
+        let verifying_key = VerifyingKey::from_bytes(&self.source_public_key).map_err(|_| {
+            MemberCryptoError::SourceKeyMismatch {
+                got: self.source_device_id.clone(),
+            }
+        })?;
+        verifying_key
+            .verify(
+                &admission_bytes_pre_signature(self),
+                &Signature::from_bytes(&self.signature),
+            )
+            .map_err(|_| MemberCryptoError::InvalidSignature)?;
+        MemberKeyRing::with_epoch(
+            self.group_id.clone(),
+            self_identity.device_id.clone(),
+            self.member_ids.iter().cloned(),
+            self.member_public_keys
+                .iter()
+                .map(|(member, key)| (member.clone(), *key)),
+            self.epoch,
+            self.key,
+        )
+    }
+}
+
 fn non_empty(value: String) -> Result<String, MemberCryptoError> {
     if value.is_empty() {
         Err(MemberCryptoError::InvalidMembership)
@@ -423,6 +653,34 @@ fn rotation_bytes_pre_signature(rotation: &Rotation) -> Vec<u8> {
     unsigned.signature = [0; 64];
     unsigned.mac = [0; 32];
     rotation_bytes(&unsigned)
+}
+
+fn admission_bytes(admission: &Admission) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&admission.protocol_version.to_be_bytes());
+    bytes.extend_from_slice(admission.group_id.as_bytes());
+    bytes.push(0);
+    bytes.extend_from_slice(&admission.epoch.to_be_bytes());
+    bytes.extend_from_slice(&admission.key);
+    for member in &admission.member_ids {
+        bytes.extend_from_slice(member.as_bytes());
+        bytes.push(0);
+    }
+    for (member, key) in &admission.member_public_keys {
+        bytes.extend_from_slice(member.as_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(key);
+    }
+    bytes.extend_from_slice(admission.source_device_id.as_bytes());
+    bytes.extend_from_slice(&admission.source_public_key);
+    bytes.extend_from_slice(&admission.signature);
+    bytes
+}
+
+fn admission_bytes_pre_signature(admission: &Admission) -> Vec<u8> {
+    let mut unsigned = admission.clone();
+    unsigned.signature = [0; 64];
+    admission_bytes(&unsigned)
 }
 
 fn mac(rotation: &Rotation, old_key: &SessionKey) -> [u8; 32] {
@@ -474,6 +732,38 @@ mod hex_mac {
         bytes
             .try_into()
             .map_err(|_| serde::de::Error::custom("mac must be 32 bytes"))
+    }
+}
+
+mod hex_key_map {
+    use super::{hex, hex_to_bytes};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::BTreeMap;
+
+    pub fn serialize<S: Serializer>(
+        value: &BTreeMap<String, [u8; 32]>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let map: BTreeMap<&String, String> = value
+            .iter()
+            .map(|(member, key)| (member, hex(key)))
+            .collect();
+        map.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<BTreeMap<String, [u8; 32]>, D::Error> {
+        let raw = BTreeMap::<String, String>::deserialize(deserializer)?;
+        raw.into_iter()
+            .map(|(member, text)| {
+                let bytes = hex_to_bytes(&text).map_err(serde::de::Error::custom)?;
+                let key: [u8; 32] = bytes
+                    .try_into()
+                    .map_err(|_| serde::de::Error::custom("key must be 32 bytes"))?;
+                Ok((member, key))
+            })
+            .collect()
     }
 }
 
