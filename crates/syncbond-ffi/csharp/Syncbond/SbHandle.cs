@@ -70,3 +70,25 @@ internal sealed class KeyringHandle : SbHandle
         return true;
     }
 }
+
+internal sealed class ReceiveStateHandle : SbHandle
+{
+    internal ReceiveStateHandle(IntPtr handle) : base(handle) { }
+
+    protected override bool ReleaseHandle()
+    {
+        Native.ReceiveStateFree(handle);
+        return true;
+    }
+}
+
+internal sealed class RelayDriverHandle : SbHandle
+{
+    internal RelayDriverHandle(IntPtr handle) : base(handle) { }
+
+    protected override bool ReleaseHandle()
+    {
+        Native.RelayDriverFree(handle);
+        return true;
+    }
+}

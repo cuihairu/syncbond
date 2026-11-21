@@ -63,9 +63,20 @@ fn csharp_suite_passes() {
             .join(".nuget/packages/syncbond/0.1.0"),
     );
 
+    // The relay e2e spawns Syncbond.RelayChild processes that restore the same
+    // packaged library, so the child must be built against the fresh feed
+    // before the suite runs. The relay is booted in-process and held alive for
+    // the whole suite by keeping this handle bound.
+    run(Command::new("dotnet")
+        .args(["build", "Syncbond.RelayChild", "-c", "Release"])
+        .current_dir(&csharp));
+    let relay = syncbond_server::test_support::boot_relay();
+
     run(Command::new("dotnet")
         .args(["test", "Syncbond.Tests", "-c", "Release"])
         .env("SYNCBOND_NATIVE", &native)
+        .env("SYNCBOND_TEST_RELAY", format!("http://{}", relay.address))
+        .env("SYNCBOND_TEST_ADMIN", relay.admin.clone())
         .current_dir(&csharp));
     run(Command::new("dotnet")
         .args(["run", "--project", "Syncbond.Example"])

@@ -303,4 +303,106 @@ internal static class Native
     private static extern IntPtr ConformanceRun([MarshalAs(UnmanagedType.LPUTF8Str)] string fixtureJson);
 
     internal static string TakeConformanceRun(string fixtureJson) => TakeString(ConformanceRun(fixtureJson));
+
+    // ------------------------------------------------------- receive state
+    [DllImport(Lib, EntryPoint = "sb_receive_state_new", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr ReceiveStateNew();
+
+    [DllImport(Lib, EntryPoint = "sb_receive_state_free", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void ReceiveStateFree(IntPtr receive);
+
+    // --------------------------------------------------------- state import
+    [DllImport(Lib, EntryPoint = "sb_state_import", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int StateImport(
+        byte[] blob, nuint len, uint strategy, out IntPtr outReplicator, out IntPtr outReceive);
+
+    // --------------------------------------------------------- relay driver
+    internal const int TlsValidate = 0;
+    internal const int TlsValidateCa = 1;
+    internal const int TlsAcceptInvalid = 2;
+
+    internal const int DriverStopNone = 0;
+    internal const int DriverStopCancelled = 1;
+    internal const int DriverStopExhausted = 2;
+    internal const int DriverStopFatal = 3;
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct SbRelayProgress
+    {
+        internal uint Running;
+        internal ulong Cycles;
+        internal ulong SentBatches;
+        internal ulong SentEnvelopes;
+        internal ulong PagesPulled;
+        internal ulong Applied;
+    }
+
+    [DllImport(Lib, EntryPoint = "sb_relay_driver_new", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr RelayDriverNew(
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string relayUrl,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string channelId,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string channelToken,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string serverId,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string cursorChannel,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string groupId,
+        ulong keyEpoch, IntPtr identity, IntPtr keyring, IntPtr replicator, IntPtr receive,
+        ulong timeoutMs, uint tlsMode, byte[]? caDer, nuint caLen);
+
+    [DllImport(Lib, EntryPoint = "sb_relay_driver_free", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void RelayDriverFree(IntPtr driver);
+
+    [DllImport(Lib, EntryPoint = "sb_relay_driver_config", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int RelayDriverConfig(
+        IntPtr driver, ushort pageLimit, nuint maxPagesPerCycle, ulong initialBackoffMs,
+        ulong maxBackoffMs, uint maxAttempts, ulong idleIntervalMs);
+
+    [DllImport(Lib, EntryPoint = "sb_relay_driver_start", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int RelayDriverStart(IntPtr driver);
+
+    [DllImport(Lib, EntryPoint = "sb_relay_driver_stop", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int RelayDriverStop(IntPtr driver);
+
+    [DllImport(Lib, EntryPoint = "sb_relay_driver_write", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int RelayDriverWrite(
+        IntPtr driver, [MarshalAs(UnmanagedType.LPUTF8Str)] string key, byte[] payload, nuint len);
+
+    [DllImport(Lib, EntryPoint = "sb_relay_driver_delete", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int RelayDriverDelete(
+        IntPtr driver, [MarshalAs(UnmanagedType.LPUTF8Str)] string key);
+
+    [DllImport(Lib, EntryPoint = "sb_relay_driver_get", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int RelayDriverGet(
+        IntPtr driver, [MarshalAs(UnmanagedType.LPUTF8Str)] string key, out SbBuffer outPayload);
+
+    [DllImport(Lib, EntryPoint = "sb_relay_driver_running", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int RelayDriverRunning(IntPtr driver);
+
+    [DllImport(Lib, EntryPoint = "sb_relay_driver_progress", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int RelayDriverProgress(IntPtr driver, out SbRelayProgress outProgress);
+
+    [DllImport(Lib, EntryPoint = "sb_relay_driver_stop_reason", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int RelayDriverStopReason(IntPtr driver);
+
+    [DllImport(Lib, EntryPoint = "sb_relay_driver_error", CallingConvention = CallingConvention.Cdecl)]
+    private static extern IntPtr RelayDriverError(IntPtr driver);
+
+    [DllImport(Lib, EntryPoint = "sb_relay_driver_export_state", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int RelayDriverExportState(IntPtr driver, out SbBuffer outSnapshot);
+
+    /// <summary>
+    /// Copy an owned driver error text, or null when the loop ended without an
+    /// error. This is a legitimate NULL result, unlike the other owned-string
+    /// returns that treat NULL as a failure.
+    /// </summary>
+    internal static string? TakeRelayDriverError(IntPtr driver)
+    {
+        IntPtr text = RelayDriverError(driver);
+        if (text == IntPtr.Zero)
+        {
+            return null;
+        }
+        string message = Marshal.PtrToStringUTF8(text) ?? "";
+        FreeString(text);
+        return message;
+    }
 }
