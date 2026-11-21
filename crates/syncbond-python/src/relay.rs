@@ -340,6 +340,11 @@ mod tests {
 
     #[test]
     fn constructor_rejects_bad_arguments() {
+        // The `#[new]` constructor builds pyo3 exceptions, so it needs the
+        // interpreter; initialize it here rather than relying on another
+        // test in the binary having done so (test order is not guaranteed).
+        Python::initialize();
+
         let err = RelayDriver::new(
             "http://127.0.0.1:1",
             "",
@@ -431,6 +436,7 @@ mod tests {
 
     #[test]
     fn dead_endpoint_driver_lifecycle_and_state() {
+        Python::initialize();
         let driver = fresh("http://127.0.0.1:1", "ch", "tok", "py-dead");
         fast_config(&driver);
         assert!(!driver.running(), "not running yet");
@@ -467,6 +473,7 @@ mod tests {
 
     #[test]
     fn restore_constructor_resumes_from_an_exported_state() {
+        Python::initialize();
         let driver = fresh("http://127.0.0.1:1", "ch", "tok", "py-first");
         fast_config(&driver);
         driver.write_core("persist", b"p").expect("write");
@@ -484,6 +491,7 @@ mod tests {
 
     #[test]
     fn stop_is_idempotent_and_drop_joins_the_worker() {
+        Python::initialize();
         let driver = fresh("http://127.0.0.1:1", "ch", "tok", "py-idle");
         fast_config(&driver);
         driver.start_core().expect("start");
@@ -501,6 +509,7 @@ mod tests {
 
     #[test]
     fn two_drivers_sync_through_a_real_relay_and_recover() {
+        Python::initialize();
         use syncbond_relay_client::{RelayClient, TlsPolicy};
         use syncbond_relay_protocol::dto::CredentialScope;
         use syncbond_server::test_support::boot_relay;
