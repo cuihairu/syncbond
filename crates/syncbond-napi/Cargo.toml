@@ -17,3 +17,12 @@ serde_json = "1"
 # links it as an rlib and calls the same sb_* functions the other bindings
 # call, so the Node semantics cannot drift from C/Python/Go/Java/C#.
 syncbond-ffi = { path = "../syncbond-ffi" }
+
+[dev-dependencies]
+# A real relay, in-process, and the client that provisions it: the napi
+# relay driver's integration test drives the same channel + credentials the
+# Node e2e harness does. Test-only; nothing shipped embeds a relay.
+syncbond-server = { path = "../../apps/syncbond-server", features = ["test-support"] }
+syncbond-relay-client = { path = "../syncbond-relay-client" }
+syncbond-relay-protocol = { path = "../syncbond-relay-protocol" }
+tokio = { workspace = true, features = ["rt", "net", "time"] }

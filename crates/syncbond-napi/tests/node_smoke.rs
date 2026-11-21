@@ -1,7 +1,10 @@
 //! Node acceptance for the napi-rs binding: builds the addon (`napi build`)
 //! and runs the Node test suite. The suite exercises pairing, the full-duplex
 //! encrypted sync exchange (both halves concurrently), convergence, delete
-//! tombstoning, and invalidated-session rejection over the C ABI.
+//! tombstoning, and invalidated-session rejection over the C ABI, plus the
+//! relay driver e2e (two Node processes through a real relay channel,
+//! including a restart recovery) against an in-process relay this harness
+//! boots and points the suite at via environment variables.
 //!
 //! Skips (with a notice) when `node`/`npm` or the local `node_modules` (the
 //! napi CLI) is missing, so the plain `cargo test` job stays green on
@@ -58,5 +61,14 @@ fn node_smoke_passes() {
         .current_dir(&package));
     run(Command::new("node")
         .args(["--test", "src/index.test.js"])
+        .current_dir(&package));
+
+    // Point the relay e2e at a real relay: one booted in-process, held alive
+    // for the whole suite by keeping this handle bound.
+    let relay = syncbond_server::test_support::boot_relay();
+    run(Command::new("node")
+        .args(["--test", "src/relay.test.js"])
+        .env("SYNCBOND_TEST_RELAY", format!("http://{}", relay.address))
+        .env("SYNCBOND_TEST_ADMIN", relay.admin.clone())
         .current_dir(&package));
 }

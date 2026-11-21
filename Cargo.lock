@@ -2227,6 +2227,10 @@ dependencies = [
  "napi-derive",
  "serde_json",
  "syncbond-ffi",
+ "syncbond-relay-client",
+ "syncbond-relay-protocol",
+ "syncbond-server",
+ "tokio",
 ]
 
 [[package]]

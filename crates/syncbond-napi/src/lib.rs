@@ -13,8 +13,10 @@ use syncbond_ffi::abi;
 use syncbond_ffi::error::SB_STRATEGY_LWW_HLC;
 
 mod pairing;
+mod relay;
 
 pub use pairing::{NativePairingResult, NativePairingSession};
+pub use relay::{NativeRelayDriver, NativeRelayProgress};
 
 // --------------------------------------------------------------- helpers
 
