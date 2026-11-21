@@ -87,3 +87,37 @@ type Replicator struct {
 type Keyring struct {
 	ptr handle
 }
+
+// Relay TLS verification modes, mirroring the SB_TLS_* values.
+const (
+	TLSValidate      uint32 = 0
+	TLSValidateCA    uint32 = 1
+	TLSAcceptInvalid uint32 = 2
+)
+
+// Why a relay driver's loop ended, mirroring the SB_DRIVER_STOP_* values.
+const (
+	DriverStopNone      int32 = 0
+	DriverStopCancelled int32 = 1
+	DriverStopExhausted int32 = 2
+	DriverStopFatal     int32 = 3
+)
+
+// RelayDriver is one device's background sync session against a relay
+// channel. It owns the whole native session — the relay client, the runtime
+// and one worker thread that runs the core driver loop — plus the device
+// state; the host only configures, starts, stops and interleaves writes.
+type RelayDriver struct {
+	ptr handle
+}
+
+// RelayProgress holds the monotonic counters a running driver's worker has
+// accumulated; the values only grow while the driver runs.
+type RelayProgress struct {
+	Running       bool
+	Cycles        uint64
+	SentBatches   uint64
+	SentEnvelopes uint64
+	PagesPulled   uint64
+	Applied       uint64
+}

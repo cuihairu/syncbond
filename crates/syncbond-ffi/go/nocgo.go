@@ -82,3 +82,22 @@ func ConformanceRun(_ string) (string, error) { return "", cgoErr() }
 
 // SyncPair cannot run without the C ABI.
 func SyncPair(_, _ *Replicator, _, _ *Session) (uint32, uint32, error) { return 0, 0, cgoErr() }
+
+// ---------------------------------------------------------- relay driver
+
+func NewRelayDriver(_, _, _, _, _, _ string, _ uint64, _ []byte, _ string, _ uint64, _ uint32, _, _ []byte) (*RelayDriver, error) {
+	return nil, cgoErr()
+}
+
+func (_ *RelayDriver) Close()                                                        {}
+func (_ *RelayDriver) Config(_ uint16, _ int, _, _ uint64, _ uint32, _ uint64) error { return cgoErr() }
+func (_ *RelayDriver) Start() error                                                  { return cgoErr() }
+func (_ *RelayDriver) Stop() error                                                   { return cgoErr() }
+func (_ *RelayDriver) Write(_ string, _ []byte) error                                { return cgoErr() }
+func (_ *RelayDriver) Delete(_ string) error                                         { return cgoErr() }
+func (_ *RelayDriver) Get(_ string) ([]byte, error)                                  { return nil, cgoErr() }
+func (_ *RelayDriver) Running() bool                                                 { mustCgo(); return false }
+func (_ *RelayDriver) Progress() RelayProgress                                       { mustCgo(); return RelayProgress{} }
+func (_ *RelayDriver) StopReason() int32                                             { mustCgo(); return 0 }
+func (_ *RelayDriver) Error() error                                                  { mustCgo(); return nil }
+func (_ *RelayDriver) ExportState() ([]byte, error)                                  { return nil, cgoErr() }

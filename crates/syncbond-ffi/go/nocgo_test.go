@@ -18,6 +18,20 @@ func TestCgoDisabledFailsLoudly(t *testing.T) {
 		{"ImportKeyring", func() error { _, err := ImportKeyring("g", 1, make([]byte, 32)); return err }},
 		{"ConformanceRun", func() error { _, err := ConformanceRun("{}"); return err }},
 		{"SyncPair", func() error { _, _, err := SyncPair(nil, nil, nil, nil); return err }},
+		{"NewRelayDriver", func() error {
+			_, err := NewRelayDriver("http://127.0.0.1:1", "ch", "tok", "s", "c", "g", 1,
+				make([]byte, 32), "n", 100, TLSValidate, nil, nil)
+			return err
+		}},
+		{"RelayDriverGet", func() error {
+			var d *RelayDriver
+			_, err := d.Get("k")
+			return err
+		}},
+		{"RelayDriverStart", func() error {
+			var d *RelayDriver
+			return d.Start()
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

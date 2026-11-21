@@ -59,11 +59,19 @@ fn go_suite_passes() {
 
     let go_dir = manifest.join("go");
 
+    // Point the relay e2e at a real relay: one booted in-process, held alive
+    // for the whole suite by keeping this handle bound. The children the Go
+    // test spawns (`go run relay_child.go`) need no env of their own - they
+    // get the channel facts through their config file.
+    let relay = syncbond_server::test_support::boot_relay();
+
     run(Command::new("go")
         .args(["vet", "./..."])
         .current_dir(&go_dir));
     run(Command::new("go")
         .env("CGO_ENABLED", "1")
+        .env("SYNCBOND_TEST_RELAY", format!("http://{}", relay.address))
+        .env("SYNCBOND_TEST_ADMIN", relay.admin.clone())
         .args(["test", "./..."])
         .current_dir(&go_dir));
     // Without cgo the suite must still pass: every entry point fails loudly
