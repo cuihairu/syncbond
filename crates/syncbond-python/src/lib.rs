@@ -2,7 +2,9 @@
 //!
 //! The semantic surface is `syncbond-ffi`'s handle layer; this module only
 //! adds Python types, byte conversions and a threading wrapper for the
-//! full-duplex oplog exchange. It contains no protocol logic.
+//! full-duplex oplog exchange. The relay driver ([`relay`]) owns one native
+//! worker and releases the GIL across its blocking calls. It contains no
+//! protocol logic.
 
 use std::sync::{Arc, Mutex};
 
@@ -13,6 +15,10 @@ use pyo3::types::PyBytes;
 
 use syncbond_ffi::error::{FfiError, SB_ERR_NONE};
 use syncbond_ffi::handles;
+
+mod relay;
+
+pub use relay::{RelayDriver, RelayProgress};
 
 create_exception!(syncbond, Error, PyException, "syncbond failure");
 
@@ -571,6 +577,8 @@ mod tests {
                 "Replicator",
                 "Pair",
                 "Keyring",
+                "RelayDriver",
+                "RelayProgress",
                 "Error",
                 "sync_pair",
                 "pair_memory",
@@ -581,6 +589,13 @@ mod tests {
                 "LWW_HLC",
                 "OR_SET",
                 "PN_COUNTER",
+                "TLS_VALIDATE",
+                "TLS_VALIDATE_CA",
+                "TLS_ACCEPT_INVALID",
+                "DRIVER_STOP_NONE",
+                "DRIVER_STOP_CANCELLED",
+                "DRIVER_STOP_EXHAUSTED",
+                "DRIVER_STOP_FATAL",
             ] {
                 assert!(module.getattr(name).is_ok(), "{name} must be registered");
             }
@@ -599,6 +614,8 @@ fn syncbond(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<Replicator>()?;
     module.add_class::<Pair>()?;
     module.add_class::<Keyring>()?;
+    module.add_class::<RelayDriver>()?;
+    module.add_class::<RelayProgress>()?;
     module.add_function(wrap_pyfunction!(sync_pair, module)?)?;
     module.add_function(wrap_pyfunction!(pair_memory, module)?)?;
     module.add_function(wrap_pyfunction!(conformance_run, module)?)?;
@@ -609,5 +626,24 @@ fn syncbond(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("LWW_HLC", syncbond_ffi::error::SB_STRATEGY_LWW_HLC)?;
     module.add("OR_SET", syncbond_ffi::error::SB_STRATEGY_OR_SET)?;
     module.add("PN_COUNTER", syncbond_ffi::error::SB_STRATEGY_PN_COUNTER)?;
+    module.add("TLS_VALIDATE", syncbond_ffi::error::SB_TLS_VALIDATE)?;
+    module.add("TLS_VALIDATE_CA", syncbond_ffi::error::SB_TLS_VALIDATE_CA)?;
+    module.add(
+        "TLS_ACCEPT_INVALID",
+        syncbond_ffi::error::SB_TLS_ACCEPT_INVALID,
+    )?;
+    module.add("DRIVER_STOP_NONE", syncbond_ffi::error::SB_DRIVER_STOP_NONE)?;
+    module.add(
+        "DRIVER_STOP_CANCELLED",
+        syncbond_ffi::error::SB_DRIVER_STOP_CANCELLED,
+    )?;
+    module.add(
+        "DRIVER_STOP_EXHAUSTED",
+        syncbond_ffi::error::SB_DRIVER_STOP_EXHAUSTED,
+    )?;
+    module.add(
+        "DRIVER_STOP_FATAL",
+        syncbond_ffi::error::SB_DRIVER_STOP_FATAL,
+    )?;
     Ok(())
 }

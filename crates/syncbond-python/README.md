@@ -33,6 +33,33 @@ envelope = ring.seal("device-1", b"secret")
 ring.open(envelope)                      # -> b"secret"
 ```
 
+## Relay sync
+
+`syncbond.RelayDriver` owns one device's session against a relay channel and
+syncs it in the background: the driver runs its own worker thread, so the host
+only writes, reads, starts and stops, and the blocking calls release the GIL
+(`write`, `delete`, `get`, `export_state`, `stop`) — network waits never block
+other Python threads. Two devices that import the same group key converge
+through the relay; an exported state snapshot resumes a device exactly where
+it left off.
+
+```python
+driver = syncbond.RelayDriver(
+    relay_url, channel_id, channel_token,
+    server_id="relay-1", cursor_channel="ch", group_id="group-1",
+    key_epoch=1, group_key=key, node_id="device-a",
+    timeout_ms=5000, tls_mode=syncbond.TLS_VALIDATE,
+)
+driver.config(page_limit=32, max_pages_per_cycle=16,
+              initial_backoff_ms=500, max_backoff_ms=2000,
+              max_attempts=8, idle_interval_ms=1000)
+driver.start()
+driver.write("greeting", b"hello")
+state = driver.export_state()            # snapshot for a later resume
+driver.stop()                            # idempotent; joins the worker
+assert driver.stop_reason == syncbond.DRIVER_STOP_CANCELLED
+```
+
 ## Install
 
 ```sh

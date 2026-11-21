@@ -41,6 +41,15 @@ fn python_wheel_installs_and_pytest_passes() {
     let target = manifest.join("../../target/ffi-python");
     let dist = target.join("dist");
     std::fs::create_dir_all(&dist).expect("create dist dir");
+    // Clear stale wheels first: maturin tags them with the host manylinux
+    // level, so an old tag's wheel survives the rebuild and the "any .whl"
+    // lookup below would install a previous build over the new one.
+    for entry in std::fs::read_dir(&dist).expect("read dist dir") {
+        let entry = entry.expect("read dist entry");
+        if entry.path().extension().is_some_and(|ext| ext == "whl") {
+            std::fs::remove_file(entry.path()).expect("remove stale wheel");
+        }
+    }
 
     run(Command::new("maturin")
         .args(["build", "-m"])
@@ -59,6 +68,12 @@ fn python_wheel_installs_and_pytest_passes() {
 
     let site = target.join("site");
     std::fs::create_dir_all(&site).expect("create site dir");
+    // Drop a previous install: `pip install --target` overwrites but never
+    // removes, so a module file a newer build no longer ships would survive.
+    let package = site.join("syncbond");
+    if package.exists() {
+        std::fs::remove_dir_all(&package).expect("remove stale install");
+    }
     run(Command::new(python())
         .args(["-m", "pip", "install", "--quiet", "--upgrade", "--target"])
         .arg(&site)
@@ -73,6 +88,19 @@ fn python_wheel_installs_and_pytest_passes() {
         .arg(&manifest)
         .arg(manifest.join("tests/test_pair_sync.py"))
         .env("PYTHONPATH", &site));
+
+    // Point the relay e2e at a real relay: one booted in-process, held alive
+    // for the whole suite by keeping this handle bound. The child processes
+    // inherit PYTHONPATH, so the wheel the pytest imports is the one under
+    // test.
+    let relay = syncbond_server::test_support::boot_relay();
+    run(Command::new(python())
+        .args(["-m", "pytest", "-q", "--rootdir"])
+        .arg(&manifest)
+        .arg(manifest.join("tests/test_relay_sync.py"))
+        .env("PYTHONPATH", &site)
+        .env("SYNCBOND_TEST_RELAY", format!("http://{}", relay.address))
+        .env("SYNCBOND_TEST_ADMIN", relay.admin.clone()));
 
     let run_dir = target.join("py-example");
     std::fs::create_dir_all(&run_dir).expect("create out dir");

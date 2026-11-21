@@ -13,6 +13,18 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 pyo3 = { version = "0.29", features = ["abi3-py39"] }
 syncbond-ffi = { path = "../syncbond-ffi" }
+# Only the loop's pacing knobs: the driver takes them as syncbond-core's
+# DriverConfig, so the pacing numbers cross one typed boundary.
+syncbond-core = { path = "../syncbond-core" }
+
+[dev-dependencies]
+# A real relay, in-process, and the client that provisions it: the relay
+# driver's integration test drives the same channel + credentials the Python
+# e2e harness does. Test-only; nothing shipped embeds a relay.
+syncbond-server = { path = "../../apps/syncbond-server", features = ["test-support"] }
+syncbond-relay-client = { path = "../syncbond-relay-client" }
+syncbond-relay-protocol = { path = "../syncbond-relay-protocol" }
+tokio = { workspace = true, features = ["rt", "net", "time"] }
 
 [build-dependencies]
 pyo3-build-config = { version = "0.29" }
