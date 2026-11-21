@@ -17,6 +17,7 @@ pub mod outbox;
 pub mod pairing;
 pub mod pairing_driver;
 pub mod pairing_spake2;
+pub mod receive;
 pub mod relay;
 pub mod replication;
 pub mod storage;
@@ -40,6 +41,10 @@ pub use outbox::{
 };
 pub use pairing::{PairingError, PairingSession, Role};
 pub use pairing_driver::{DriverEvent, PairingDriver};
+pub use receive::{
+    apply_page, commit_receive, cursor_key, load_receive, ApplyReport, ReceiveError, ReceiveState,
+    ReceivedPage, ServerCursor,
+};
 pub use replication::{GcReport, ReplicationError, Replicator};
 pub use storage::{MemoryStorage, SyncState, SyncStorage};
 pub use transport::{MemoryTransport, Transport, TransportError};
