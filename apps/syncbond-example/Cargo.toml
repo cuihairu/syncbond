@@ -1,0 +1,27 @@
+[package]
+name = "syncbond-example"
+description = "Two-process syncbond example: a relay, two independent client processes, pairing, offline writes, restart sync"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "demo-client"
+path = "src/bin/demo-client.rs"
+
+[dependencies]
+syncbond-core = { path = "../../crates/syncbond-core" }
+syncbond-relay-client = { path = "../../crates/syncbond-relay-client" }
+# The outbox batches carry relay envelope DTOs, so the example's durable
+# outbox mirrors them.
+syncbond-relay-protocol = { path = "../../crates/syncbond-relay-protocol" }
+syncbond-transport-ws = { path = "../../crates/syncbond-transport-ws" }
+tokio = { workspace = true, features = ["net", "rt", "rt-multi-thread", "sync", "time", "macros"] }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+# The real relay, in-process (the same stack the binary runs), for the
+# acceptance test; the test provisions with the same client library.
+syncbond-server = { path = "../../apps/syncbond-server", features = ["test-support"] }

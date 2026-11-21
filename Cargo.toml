@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "apps/syncbond-server",
+    "apps/syncbond-example",
     "crates/syncbond-core",
     "crates/syncbond-relay-client",
     "crates/syncbond-relay-protocol",

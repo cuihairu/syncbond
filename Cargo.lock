@@ -2194,6 +2194,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "syncbond-example"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "syncbond-core",
+ "syncbond-relay-client",
+ "syncbond-relay-protocol",
+ "syncbond-server",
+ "syncbond-transport-ws",
+ "tokio",
+]
+
+[[package]]
 name = "syncbond-ffi"
 version = "0.1.0"
 dependencies = [
