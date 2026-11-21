@@ -21,7 +21,9 @@ syncbond-core = { path = "../syncbond-core" }
 # live in the C ABI layer; calling them here keeps the WASM surface on the
 # same contract the other languages consume. (The ABI's in-memory pairing
 # and sync functions use worker threads and are intentionally not exposed.)
-syncbond-ffi = { path = "../syncbond-ffi" }
+# The `relay` driver feature is off: it is a native tokio/net + rustls stack
+# that cannot build for wasm32-unknown-unknown.
+syncbond-ffi = { path = "../syncbond-ffi", default-features = false }
 wasm-bindgen = "0.2"
 serde_json = "1"
 

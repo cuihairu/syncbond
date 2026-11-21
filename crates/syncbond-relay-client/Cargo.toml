@@ -9,13 +9,16 @@ authors.workspace = true
 [dependencies]
 syncbond-core = { path = "../syncbond-core" }
 syncbond-relay-protocol = { path = "../syncbond-relay-protocol" }
-tokio = { workspace = true, features = ["net", "rt", "time"] }
+tokio = { workspace = true, features = ["net", "rt", "time", "io-util"] }
 # The same engine the relay serves with, pinned by the lockfile. rustls is
 # pulled with the `ring` provider (no aws-lc-rs build tools needed); TLS
 # validation is the point of this crate, so the stack is always on.
 rustls = { version = "0.23", default-features = false, features = ["std", "ring", "logging", "tls12"] }
 rustls-pki-types = "1"
-tokio-rustls = "0.26"
+# tokio-rustls's default features enable the aws-lc-rs provider on the shared
+# rustls and pull its C build tools in; the client pins the ring provider
+# explicitly (see tls.rs), so select ring here and leave aws-lc-rs out.
+tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "tls12", "ring"] }
 webpki-roots = "0.26"
 serde.workspace = true
 serde_json.workspace = true

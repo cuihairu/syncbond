@@ -31,6 +31,19 @@ pub const SB_PAIR_EVENT_FAILED: i32 = 2;
 /// `SB_ERR_VERSION_MISMATCH` so an old snapshot never silently loads.
 pub const SB_STATE_SNAPSHOT_VERSION: u32 = 1;
 
+/// How strictly the relay's certificate is checked (todo.md DSR-36).
+pub const SB_TLS_VALIDATE: u32 = 0;
+pub const SB_TLS_VALIDATE_CA: u32 = 1;
+pub const SB_TLS_ACCEPT_INVALID: u32 = 2;
+
+/// Why a relay driver's loop ended; `sb_relay_driver_stop_reason()` returns
+/// one of these, `SB_DRIVER_STOP_NONE` while the driver is running or before
+/// it ever ran.
+pub const SB_DRIVER_STOP_NONE: i32 = 0;
+pub const SB_DRIVER_STOP_CANCELLED: i32 = 1;
+pub const SB_DRIVER_STOP_EXHAUSTED: i32 = 2;
+pub const SB_DRIVER_STOP_FATAL: i32 = 3;
+
 /// A failure with a stable code (see syncbond.h) and a human-readable text.
 #[derive(Debug, Clone)]
 pub struct FfiError {

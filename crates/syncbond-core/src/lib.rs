@@ -53,7 +53,7 @@ pub use receive::{
 pub use replication::{GcReport, ReplicationError, Replicator};
 pub use storage::{MemoryStorage, SyncState, SyncStorage};
 pub use sync_driver::{
-    ChannelTransport, CycleReport, DriverConfig, DriverError, StopReason, SyncDriver,
+    run_sync, ChannelTransport, CycleReport, DriverConfig, DriverError, StopReason, SyncDriver,
     TransportFailure,
 };
 pub use transport::{MemoryTransport, Transport, TransportError};

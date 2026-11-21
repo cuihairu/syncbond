@@ -5,7 +5,13 @@
 //! management only: protocol logic stays in syncbond-core.
 
 use std::collections::{BTreeMap, HashSet};
+#[cfg(feature = "relay")]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+#[cfg(feature = "relay")]
+use std::thread::JoinHandle;
+#[cfg(feature = "relay")]
+use std::time::Duration;
 
 use syncbond_core::conflict::{LwwHlc, MergeStrategy, OrSetStrategy, PnCounterStrategy, Record};
 use syncbond_core::crypto::{
@@ -13,17 +19,30 @@ use syncbond_core::crypto::{
 };
 use syncbond_core::hlc::HlcStamp;
 use syncbond_core::identity::DeviceIdentity;
+#[cfg(feature = "relay")]
+use syncbond_core::outbox::{stage_operations, MemoryOutboxStore};
 use syncbond_core::pairing::{accept, pair, PairingError, PairingSession};
 use syncbond_core::pairing_driver::{DriverEvent, PairingDriver};
 use syncbond_core::receive::{cursor_key, ReceiveState as CoreReceiveState, ServerCursor};
 use syncbond_core::replication::{Operation, Replicator as CoreReplicator, SyncStats};
+#[cfg(feature = "relay")]
+use syncbond_core::storage::MemoryStorage;
 use syncbond_core::storage::SyncState;
+#[cfg(feature = "relay")]
+use syncbond_core::sync_driver::{run_sync, DriverConfig, StopReason, SyncDriver};
 use syncbond_core::transport::{MemoryTransport, Transport};
+#[cfg(feature = "relay")]
+use syncbond_relay_client::{DriverTransport, RelayClient, TlsPolicy};
 
 use crate::error::{
     FfiError, SB_ERR_VERSION_MISMATCH, SB_PAIR_EVENT_COMPLETED, SB_PAIR_EVENT_FAILED,
     SB_PAIR_EVENT_NONE, SB_PAIR_ROLE_INITIATOR, SB_PAIR_ROLE_RESPONDER, SB_STATE_SNAPSHOT_VERSION,
     SB_STRATEGY_LWW_HLC, SB_STRATEGY_OR_SET, SB_STRATEGY_PN_COUNTER,
+};
+#[cfg(feature = "relay")]
+use crate::error::{
+    SB_DRIVER_STOP_CANCELLED, SB_DRIVER_STOP_EXHAUSTED, SB_DRIVER_STOP_FATAL, SB_DRIVER_STOP_NONE,
+    SB_TLS_ACCEPT_INVALID, SB_TLS_VALIDATE, SB_TLS_VALIDATE_CA,
 };
 
 type Json = serde_json::Value;
@@ -392,23 +411,37 @@ impl Replicator {
         key_epoch: u64,
         receive: &ReceiveState,
     ) -> Result<Vec<u8>, FfiError> {
-        let state = self.0.snapshot_state(&identity.0, group_id, key_epoch);
-        let state = serde_json::to_value(&state)
-            .map_err(|error| FfiError::internal(format!("state is not serializable: {error}")))?;
-        let receive = serde_json::to_value(&receive.0).map_err(|error| {
-            FfiError::internal(format!("receive position is not serializable: {error}"))
-        })?;
-        let snapshot = Json::Object(
-            std::iter::once(("version".to_string(), Json::from(SB_STATE_SNAPSHOT_VERSION)))
-                .chain([
-                    ("state".to_string(), state),
-                    ("receive".to_string(), receive),
-                ])
-                .collect(),
-        );
-        serde_json::to_vec(&snapshot)
-            .map_err(|error| FfiError::internal(format!("snapshot is not serializable: {error}")))
+        build_snapshot(&self.0, &identity.0, group_id, key_epoch, &receive.0)
     }
+}
+
+/// Assemble the versioned snapshot blob (todo.md DSR-35): the replicator's
+/// committed state, the receive position that explains it, and the group
+/// facts the restored device needs. Shared by [`Replicator::export_snapshot`]
+/// and the relay driver's state export, so the two can never drift.
+pub(crate) fn build_snapshot(
+    replicator: &CoreReplicator,
+    identity: &DeviceIdentity,
+    group_id: &str,
+    key_epoch: u64,
+    receive: &CoreReceiveState,
+) -> Result<Vec<u8>, FfiError> {
+    let state = replicator.snapshot_state(identity, group_id, key_epoch);
+    let state = serde_json::to_value(&state)
+        .map_err(|error| FfiError::internal(format!("state is not serializable: {error}")))?;
+    let receive = serde_json::to_value(receive).map_err(|error| {
+        FfiError::internal(format!("receive position is not serializable: {error}"))
+    })?;
+    let snapshot = Json::Object(
+        std::iter::once(("version".to_string(), Json::from(SB_STATE_SNAPSHOT_VERSION)))
+            .chain([
+                ("state".to_string(), state),
+                ("receive".to_string(), receive),
+            ])
+            .collect(),
+    );
+    serde_json::to_vec(&snapshot)
+        .map_err(|error| FfiError::internal(format!("snapshot is not serializable: {error}")))
 }
 
 /// The receive-side pull position and dedup knowledge (todo.md DSR-35).
@@ -592,6 +625,417 @@ impl Keyring {
             },
         )
         .map_err(|error| FfiError::crypto(&error))
+    }
+}
+
+#[cfg(feature = "relay")]
+/// One device's session against one relay channel, driven from the C ABI
+/// (todo.md DSR-36).
+///
+/// The driver owns the network (a multi-thread tokio runtime, the relay
+/// HTTP client and the bridge that serves the core driver seam), the device
+/// state (replicator, receive position, keyring, identity, outbox, store)
+/// and one worker thread that runs the core driver loop. The worker locks
+/// the device state only while a cycle runs, releasing it during every
+/// backoff and idle wait, so the host can interleave [`RelayDriver::write`]
+/// and [`RelayDriver::delete`] between cycles; a concurrent call simply
+/// waits for the current cycle to finish.
+///
+/// Lifecycle is explicit and single-threaded from the host's side:
+/// - [`RelayDriver::new`] builds the runtime, the client and the transport.
+/// - [`RelayDriver::start`] spawns exactly one worker thread.
+/// - [`RelayDriver::stop`] cancels the loop and joins the thread; it is
+///   idempotent and safe on an already-stopped driver.
+/// - [`RelayDriver::drop`] stops first, so the runtime always outlives the
+///   worker that blocks on it.
+///
+/// Progress is polled, never delivered by callback: [`RelayDriver::running`]
+/// and [`RelayDriver::counters`] report what the worker has accumulated and
+/// [`RelayDriver::stop_reason`] reports why the loop ended. The worker never
+/// outlives the handle and no pointer into its frame is ever handed out, so
+/// the resource lifetime is bounded by the handle's own.
+pub struct RelayDriver {
+    // Held for its Drop only: the transport's Handle must stay valid until
+    // the worker thread joins, which `Drop` guarantees by stopping first.
+    #[allow(dead_code)]
+    runtime: tokio::runtime::Runtime,
+    transport: DriverTransport,
+    config: Mutex<DriverConfig>,
+    group: String,
+    key_epoch: u64,
+    server_id: String,
+    channel_id: String,
+    inner: Arc<Mutex<DriverInner>>,
+    progress: Arc<Mutex<DriverProgress>>,
+    outcome: Arc<Mutex<Option<StopOutcome>>>,
+    cancel: Arc<AtomicBool>,
+    thread: Mutex<Option<JoinHandle<()>>>,
+}
+
+#[cfg(feature = "relay")]
+/// The device state the worker locks around each cycle.
+struct DriverInner {
+    replicator: CoreReplicator,
+    receive: CoreReceiveState,
+    keyring: KeyRing,
+    identity: DeviceIdentity,
+    outbox: MemoryOutboxStore,
+    store: MemoryStorage,
+}
+
+/// Monotonic counters the host polls; a running driver keeps the numbers
+/// growing across cycles.
+#[cfg(feature = "relay")]
+#[derive(Default, Clone)]
+pub struct DriverProgress {
+    pub running: bool,
+    pub cycles: u64,
+    pub sent_batches: u64,
+    pub sent_envelopes: u64,
+    pub pages_pulled: u64,
+    pub applied: u64,
+}
+
+/// Why the worker loop ended, in C-friendly form.
+#[cfg(feature = "relay")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StopOutcome {
+    Cancelled,
+    Exhausted(String),
+    Fatal(String),
+}
+
+#[cfg(feature = "relay")]
+impl StopOutcome {
+    /// The `SB_DRIVER_STOP_*` code.
+    pub fn code(&self) -> i32 {
+        match self {
+            StopOutcome::Cancelled => SB_DRIVER_STOP_CANCELLED,
+            StopOutcome::Exhausted(_) => SB_DRIVER_STOP_EXHAUSTED,
+            StopOutcome::Fatal(_) => SB_DRIVER_STOP_FATAL,
+        }
+    }
+
+    fn from_reason(reason: StopReason) -> Self {
+        match reason {
+            StopReason::Cancelled => StopOutcome::Cancelled,
+            StopReason::Exhausted(error) => StopOutcome::Exhausted(error.to_string()),
+            StopReason::Fatal(error) => StopOutcome::Fatal(error.to_string()),
+        }
+    }
+}
+
+#[cfg(feature = "relay")]
+impl RelayDriver {
+    /// Build the driver over a live relay channel. `channel_id` and
+    /// `channel_token` are the relay's own id and the credential that
+    /// authorizes this device to append and pull it; `server_id` and
+    /// `cursor_channel` are the local cursor labels the receive position
+    /// uses (they may, but need not, mirror the relay names). The last four
+    /// handles transfer ownership to the driver and are freed with it.
+    // One explicit positional constructor for the C ABI; bundling the
+    // connection facts into a struct would add a handle without removing
+    // any of the facts.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        relay_url: &str,
+        channel_id: &str,
+        channel_token: &str,
+        server_id: &str,
+        cursor_channel: &str,
+        group_id: &str,
+        key_epoch: u64,
+        identity: Identity,
+        keyring: Keyring,
+        replicator: Replicator,
+        receive: ReceiveState,
+        timeout_ms: u64,
+        tls_mode: u32,
+        ca_der: &[u8],
+    ) -> Result<Self, FfiError> {
+        if channel_id.is_empty()
+            || channel_token.is_empty()
+            || server_id.is_empty()
+            || cursor_channel.is_empty()
+            || group_id.is_empty()
+        {
+            return Err(FfiError::input("driver ids must not be empty"));
+        }
+        if timeout_ms == 0 {
+            return Err(FfiError::input("timeout must be positive"));
+        }
+        let tls = match tls_mode {
+            SB_TLS_VALIDATE => TlsPolicy::Validate,
+            SB_TLS_VALIDATE_CA => {
+                if ca_der.is_empty() {
+                    return Err(FfiError::input("pinned CA must not be empty"));
+                }
+                TlsPolicy::ValidateCa(ca_der.to_vec())
+            }
+            SB_TLS_ACCEPT_INVALID => TlsPolicy::AcceptInvalid,
+            other => return Err(FfiError::input(format!("unknown tls mode {other}"))),
+        };
+        let client = RelayClient::new(relay_url, tls, Duration::from_millis(timeout_ms))
+            .map_err(|error| FfiError::input(format!("relay url: {error}")))?;
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| FfiError::internal(format!("relay runtime: {error}")))?;
+        let transport =
+            DriverTransport::new(client, channel_id, channel_token, runtime.handle().clone());
+
+        let Identity(identity) = identity;
+        let Keyring {
+            inner: keyring,
+            seen: _,
+        } = keyring;
+        let Replicator(replicator) = replicator;
+        let ReceiveState(receive) = receive;
+
+        Ok(Self {
+            runtime,
+            transport,
+            config: Mutex::new(DriverConfig::default()),
+            group: group_id.to_string(),
+            key_epoch,
+            server_id: server_id.to_string(),
+            channel_id: cursor_channel.to_string(),
+            inner: Arc::new(Mutex::new(DriverInner {
+                replicator,
+                receive,
+                keyring,
+                identity,
+                outbox: MemoryOutboxStore::default(),
+                store: MemoryStorage::new(),
+            })),
+            progress: Arc::new(Mutex::new(DriverProgress::default())),
+            outcome: Arc::new(Mutex::new(None)),
+            cancel: Arc::new(AtomicBool::new(false)),
+            thread: Mutex::new(None),
+        })
+    }
+
+    /// Replace the loop's pacing knobs; only effective before [`start`]
+    /// (the running thread already holds the config it started with).
+    ///
+    /// [`start`]: RelayDriver::start
+    pub fn set_config(&self, config: DriverConfig) {
+        *self.config.lock().unwrap() = config;
+    }
+
+    /// Spawn the worker thread. Idempotent per lifecycle: a second call
+    /// while running is an input error; after [`stop`] the driver may be
+    /// started again (it resumes from the state it holds).
+    ///
+    /// [`stop`]: RelayDriver::stop
+    pub fn start(&self) -> Result<(), FfiError> {
+        {
+            let thread = self.thread.lock().unwrap();
+            if thread.is_some() {
+                return Err(FfiError::input("driver is already running"));
+            }
+        }
+        self.cancel.store(false, Ordering::Relaxed);
+        *self.progress.lock().unwrap() = DriverProgress {
+            running: true,
+            ..DriverProgress::default()
+        };
+        *self.outcome.lock().unwrap() = None;
+
+        let inner = Arc::clone(&self.inner);
+        let progress = Arc::clone(&self.progress);
+        let outcome = Arc::clone(&self.outcome);
+        let cancel = Arc::clone(&self.cancel);
+        let transport = self.transport.clone();
+        let config = self.config.lock().unwrap().clone();
+        let group = self.group.clone();
+        let key_epoch = self.key_epoch;
+        let server_id = self.server_id.clone();
+        let channel_id = self.channel_id.clone();
+
+        let handle = std::thread::Builder::new()
+            .name("syncbond-relay-driver".to_string())
+            .spawn(move || {
+                let stop = run_sync(&config, &cancel, || {
+                    let report = {
+                        let mut guard = inner.lock().unwrap();
+                        let DriverInner {
+                            replicator,
+                            receive,
+                            keyring,
+                            identity,
+                            outbox,
+                            store,
+                        } = &mut *guard;
+                        let mut driver = SyncDriver {
+                            replicator,
+                            receive,
+                            store,
+                            keyring,
+                            identity,
+                            group: &group,
+                            key_epoch,
+                            outbox,
+                            transport: &transport,
+                            server_id: &server_id,
+                            channel_id: &channel_id,
+                            config: config.clone(),
+                        };
+                        driver.sync_once()
+                    };
+                    if let Ok(report) = &report {
+                        let mut p = progress.lock().unwrap();
+                        p.cycles += 1;
+                        p.sent_batches += report.sent_batches as u64;
+                        p.sent_envelopes += report.sent_envelopes as u64;
+                        p.pages_pulled += report.pages_pulled as u64;
+                        p.applied += report.applied as u64;
+                    }
+                    report
+                });
+                *outcome.lock().unwrap() = Some(StopOutcome::from_reason(stop));
+                progress.lock().unwrap().running = false;
+            })
+            .map_err(|error| FfiError::internal(format!("spawn relay driver thread: {error}")))?;
+        *self.thread.lock().unwrap() = Some(handle);
+        Ok(())
+    }
+
+    /// Cancel the loop and join the worker. Idempotent: stopping an
+    /// already-stopped driver is a no-op. The stop reason and any error
+    /// text remain queryable via [`stop_reason`] and [`stop_error`].
+    ///
+    /// [`stop_reason`]: RelayDriver::stop_reason
+    /// [`stop_error`]: RelayDriver::stop_error
+    pub fn stop(&self) -> Result<(), FfiError> {
+        self.cancel.store(true, Ordering::Relaxed);
+        let handle = self.thread.lock().unwrap().take();
+        if let Some(handle) = handle {
+            handle
+                .join()
+                .map_err(|_| FfiError::internal("relay driver thread panicked"))?;
+        }
+        Ok(())
+    }
+
+    /// Local write: stage and persist, so it survives a crash and the next
+    /// cycle sends it. Waits for any cycle currently holding the state.
+    pub fn write(&self, key: &str, payload: &[u8]) -> Result<(), FfiError> {
+        if key.is_empty() {
+            return Err(FfiError::input("key must not be empty"));
+        }
+        let mut guard = self.inner.lock().unwrap();
+        let op = guard
+            .replicator
+            .put(key, payload.to_vec())
+            .map_err(|error| FfiError::protocol(error.to_string()))?;
+        stage_operations(
+            &guard.outbox,
+            &[op],
+            &guard.keyring,
+            &guard.identity.device_id,
+        )
+        .map_err(|error| FfiError::protocol(error.to_string()))?;
+        let state = guard
+            .replicator
+            .snapshot_state(&guard.identity, &self.group, self.key_epoch);
+        syncbond_core::commit_receive(&guard.store, &state, &guard.receive)
+            .map_err(|error| FfiError::protocol(error.to_string()))?;
+        Ok(())
+    }
+
+    /// Local delete: the tombstone is staged and persisted like a write.
+    pub fn delete(&self, key: &str) -> Result<(), FfiError> {
+        if key.is_empty() {
+            return Err(FfiError::input("key must not be empty"));
+        }
+        let mut guard = self.inner.lock().unwrap();
+        let op = guard
+            .replicator
+            .delete(key)
+            .map_err(|error| FfiError::protocol(error.to_string()))?;
+        stage_operations(
+            &guard.outbox,
+            &[op],
+            &guard.keyring,
+            &guard.identity.device_id,
+        )
+        .map_err(|error| FfiError::protocol(error.to_string()))?;
+        let state = guard
+            .replicator
+            .snapshot_state(&guard.identity, &self.group, self.key_epoch);
+        syncbond_core::commit_receive(&guard.store, &state, &guard.receive)
+            .map_err(|error| FfiError::protocol(error.to_string()))?;
+        Ok(())
+    }
+
+    /// Payload of a live record; `None` when missing or tombstoned.
+    pub fn get(&self, key: &str) -> Option<Vec<u8>> {
+        let guard = self.inner.lock().unwrap();
+        guard
+            .replicator
+            .get(key)
+            .filter(|record| !record.deleted)
+            .map(|record| record.payload.clone())
+    }
+
+    pub fn running(&self) -> bool {
+        self.progress.lock().unwrap().running
+    }
+
+    /// `(cycles, sent_batches, sent_envelopes, pages_pulled, applied)`.
+    pub fn counters(&self) -> (u64, u64, u64, u64, u64) {
+        let progress = self.progress.lock().unwrap();
+        (
+            progress.cycles,
+            progress.sent_batches,
+            progress.sent_envelopes,
+            progress.pages_pulled,
+            progress.applied,
+        )
+    }
+
+    /// `SB_DRIVER_STOP_NONE` while running or before it ever ran.
+    pub fn stop_reason(&self) -> i32 {
+        self.outcome
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(StopOutcome::code)
+            .unwrap_or(SB_DRIVER_STOP_NONE)
+    }
+
+    /// The stop error text, when the loop ended with one. A deliberate
+    /// stop (or a driver that has not ended) is `None`.
+    pub fn stop_error(&self) -> Option<String> {
+        match self.outcome.lock().unwrap().as_ref() {
+            Some(StopOutcome::Cancelled) | None => None,
+            Some(StopOutcome::Exhausted(message)) | Some(StopOutcome::Fatal(message)) => {
+                Some(message.clone())
+            }
+        }
+    }
+
+    /// The device state plus the receive position, as one versioned snapshot
+    /// (the same blob `sb_state_export` writes).
+    pub fn export_state(&self) -> Result<Vec<u8>, FfiError> {
+        let guard = self.inner.lock().unwrap();
+        build_snapshot(
+            &guard.replicator,
+            &guard.identity,
+            &self.group,
+            self.key_epoch,
+            &guard.receive,
+        )
+    }
+}
+
+#[cfg(feature = "relay")]
+impl Drop for RelayDriver {
+    fn drop(&mut self) {
+        // Join the worker before the runtime is dropped: a worker mid-`block_on`
+        // must never outlive the runtime it blocks on.
+        let _ = self.stop();
     }
 }
 

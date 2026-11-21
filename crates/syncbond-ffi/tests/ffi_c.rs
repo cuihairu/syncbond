@@ -113,3 +113,11 @@ fn pure_c_program_drives_separated_pairing_ends() {
 fn pure_c_program_restores_a_replicated_state() {
     compile_and_run_c("state_snapshot.c", "state_snapshot", &[]);
 }
+
+/// Acceptance (DSR-36): a pure C program configures, starts, writes to and
+/// stops a relay driver - the worker thread's lifecycle and the interleaved
+/// writes happen entirely through the C surface.
+#[test]
+fn pure_c_program_drives_the_relay_driver() {
+    compile_and_run_c("relay_driver.c", "relay_driver", &[]);
+}

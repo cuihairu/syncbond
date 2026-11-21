@@ -827,3 +827,353 @@ fn state_snapshot_boundary() {
     unsafe { sb_identity_free(identity) };
     unsafe { sb_receive_state_free(std::ptr::null_mut()) };
 }
+
+#[cfg(feature = "relay")]
+#[test]
+fn relay_driver_boundary() {
+    use syncbond_ffi::error::{
+        SB_DRIVER_STOP_CANCELLED, SB_DRIVER_STOP_NONE, SB_TLS_VALIDATE, SB_TLS_VALIDATE_CA,
+    };
+
+    let url = CString::new("http://127.0.0.1:1").unwrap();
+    let channel = CString::new("ch").unwrap();
+    let token = CString::new("token").unwrap();
+    let server = CString::new("relay-1").unwrap();
+    let cursor = CString::new("c").unwrap();
+    let group = CString::new("g").unwrap();
+    let key = CString::new("note/1").unwrap();
+
+    // Failures before ownership transfer keep the handles alive.
+    let identity = sb_identity_generate();
+    let keyring = unsafe { sb_keyring_new(group.as_ptr()) };
+    let replicator = unsafe { sb_replicator_new(CString::new("n").unwrap().as_ptr(), 0) };
+    let receive = sb_receive_state_new();
+    assert_eq!(
+        unsafe {
+            sb_relay_driver_new(
+                std::ptr::null(),
+                channel.as_ptr(),
+                token.as_ptr(),
+                server.as_ptr(),
+                cursor.as_ptr(),
+                group.as_ptr(),
+                0,
+                identity,
+                keyring,
+                replicator,
+                receive,
+                100,
+                SB_TLS_VALIDATE,
+                std::ptr::null(),
+                0,
+            )
+        },
+        std::ptr::null_mut()
+    );
+    assert_eq!(sb_last_error_code(), SB_ERR_INPUT);
+
+    // Failures after ownership transfer consume the handles: fresh ones are
+    // passed below and never freed by the caller.
+    let consumed = unsafe {
+        sb_relay_driver_new(
+            url.as_ptr(),
+            CString::new("").unwrap().as_ptr(),
+            token.as_ptr(),
+            server.as_ptr(),
+            cursor.as_ptr(),
+            group.as_ptr(),
+            0,
+            sb_identity_generate(),
+            sb_keyring_new(group.as_ptr()),
+            sb_replicator_new(CString::new("n").unwrap().as_ptr(), 0),
+            sb_receive_state_new(),
+            100,
+            SB_TLS_VALIDATE,
+            std::ptr::null(),
+            0,
+        )
+    };
+    assert!(consumed.is_null());
+    assert_eq!(sb_last_error_code(), SB_ERR_INPUT);
+
+    let zero_config = unsafe {
+        sb_relay_driver_new(
+            url.as_ptr(),
+            channel.as_ptr(),
+            token.as_ptr(),
+            server.as_ptr(),
+            cursor.as_ptr(),
+            group.as_ptr(),
+            0,
+            sb_identity_generate(),
+            sb_keyring_new(group.as_ptr()),
+            sb_replicator_new(CString::new("n").unwrap().as_ptr(), 0),
+            sb_receive_state_new(),
+            0,
+            SB_TLS_VALIDATE,
+            std::ptr::null(),
+            0,
+        )
+    };
+    assert!(zero_config.is_null());
+    assert_eq!(sb_last_error_code(), SB_ERR_INPUT);
+
+    let bad_tls = unsafe {
+        sb_relay_driver_new(
+            url.as_ptr(),
+            channel.as_ptr(),
+            token.as_ptr(),
+            server.as_ptr(),
+            cursor.as_ptr(),
+            group.as_ptr(),
+            0,
+            sb_identity_generate(),
+            sb_keyring_new(group.as_ptr()),
+            sb_replicator_new(CString::new("n").unwrap().as_ptr(), 0),
+            sb_receive_state_new(),
+            100,
+            9,
+            std::ptr::null(),
+            0,
+        )
+    };
+    assert!(bad_tls.is_null());
+    assert_eq!(sb_last_error_code(), SB_ERR_INPUT);
+
+    let no_ca = unsafe {
+        sb_relay_driver_new(
+            url.as_ptr(),
+            channel.as_ptr(),
+            token.as_ptr(),
+            server.as_ptr(),
+            cursor.as_ptr(),
+            group.as_ptr(),
+            0,
+            sb_identity_generate(),
+            sb_keyring_new(group.as_ptr()),
+            sb_replicator_new(CString::new("n").unwrap().as_ptr(), 0),
+            sb_receive_state_new(),
+            100,
+            SB_TLS_VALIDATE_CA,
+            std::ptr::null(),
+            0,
+        )
+    };
+    assert!(no_ca.is_null());
+    assert_eq!(sb_last_error_code(), SB_ERR_INPUT);
+
+    unsafe {
+        sb_receive_state_free(receive);
+        sb_replicator_free(replicator);
+        sb_keyring_free(keyring);
+        sb_identity_free(identity);
+    }
+
+    // A live driver over a dead port: construction succeeds, the queries
+    // answer, and the lifecycle is start / stop / free.
+    let driver = unsafe {
+        sb_relay_driver_new(
+            url.as_ptr(),
+            channel.as_ptr(),
+            token.as_ptr(),
+            server.as_ptr(),
+            cursor.as_ptr(),
+            group.as_ptr(),
+            1,
+            sb_identity_generate(),
+            sb_keyring_new(group.as_ptr()),
+            sb_replicator_new(CString::new("local").unwrap().as_ptr(), 0),
+            sb_receive_state_new(),
+            100,
+            SB_TLS_VALIDATE,
+            std::ptr::null(),
+            0,
+        )
+    };
+    assert!(!driver.is_null());
+
+    // Null handle arguments are input errors.
+    assert_eq!(
+        unsafe { sb_relay_driver_start(std::ptr::null_mut()) },
+        SB_ERR_INPUT
+    );
+    assert_eq!(
+        unsafe { sb_relay_driver_stop(std::ptr::null_mut()) },
+        SB_ERR_INPUT
+    );
+    assert_eq!(
+        unsafe { sb_relay_driver_running(std::ptr::null()) },
+        SB_ERR_INPUT
+    );
+    assert_eq!(
+        unsafe { sb_relay_driver_stop_reason(std::ptr::null()) },
+        SB_DRIVER_STOP_NONE,
+        "the null fallback of stop_reason is NONE"
+    );
+    assert!(unsafe { sb_relay_driver_error(std::ptr::null()) }.is_null());
+    let mut progress = sb_relay_progress_t {
+        running: 9,
+        cycles: 9,
+        sent_batches: 9,
+        sent_envelopes: 9,
+        pages_pulled: 9,
+        applied: 9,
+    };
+    assert_eq!(
+        unsafe { sb_relay_driver_progress(std::ptr::null(), &mut progress) },
+        SB_ERR_INPUT
+    );
+    assert_eq!(
+        unsafe { sb_relay_driver_progress(driver, std::ptr::null_mut()) },
+        SB_ERR_INPUT
+    );
+    assert_eq!(
+        unsafe { sb_relay_driver_get(driver, key.as_ptr(), std::ptr::null_mut()) },
+        SB_ERR_INPUT
+    );
+    assert_eq!(
+        unsafe { sb_relay_driver_export_state(driver, std::ptr::null_mut()) },
+        SB_ERR_INPUT
+    );
+
+    // Before the first start: no progress, no stop reason, no error text.
+    assert_eq!(unsafe { sb_relay_driver_running(driver) }, 0);
+    assert_eq!(
+        unsafe { sb_relay_driver_stop_reason(driver) },
+        SB_DRIVER_STOP_NONE
+    );
+    assert!(unsafe { sb_relay_driver_error(driver) }.is_null());
+    assert_eq!(
+        unsafe { sb_relay_driver_progress(driver, &mut progress) },
+        SB_ERR_NONE
+    );
+    assert_eq!(
+        (
+            progress.running,
+            progress.cycles,
+            progress.sent_batches,
+            progress.sent_envelopes,
+            progress.pages_pulled,
+            progress.applied
+        ),
+        (0, 0, 0, 0, 0, 0)
+    );
+
+    // Config bounds are validated.
+    assert_eq!(
+        unsafe { sb_relay_driver_config(driver, 0, 8, 1, 2, 5, 1) },
+        SB_ERR_INPUT
+    );
+    assert_eq!(
+        unsafe { sb_relay_driver_config(driver, 2, 8, 2, 1, 5, 1) },
+        SB_ERR_INPUT,
+        "max_backoff below the initial backoff is refused"
+    );
+    assert_eq!(
+        unsafe { sb_relay_driver_config(driver, 2, 8, 1, 2, 1000, 1) },
+        SB_ERR_NONE
+    );
+
+    // Local writes stage and read back; the key lifecycle is absent-get ->
+    // write -> get -> delete -> absent.
+    let mut payload = sb_buffer_t {
+        data: std::ptr::null_mut(),
+        len: 0,
+        cap: 0,
+    };
+    assert_eq!(
+        unsafe { sb_relay_driver_get(driver, key.as_ptr(), &mut payload) },
+        SB_RESULT_ABSENT
+    );
+    assert_eq!(
+        unsafe { sb_relay_driver_write(driver, key.as_ptr(), b"one".as_ptr(), 3) },
+        SB_ERR_NONE
+    );
+    assert_eq!(
+        unsafe { sb_relay_driver_write(driver, std::ptr::null(), b"one".as_ptr(), 3) },
+        SB_ERR_INPUT
+    );
+    assert_eq!(
+        unsafe { sb_relay_driver_write(driver, key.as_ptr(), std::ptr::null(), 0) },
+        SB_ERR_NONE,
+        "an empty payload is a valid write"
+    );
+    assert_eq!(
+        unsafe { sb_relay_driver_get(driver, key.as_ptr(), &mut payload) },
+        SB_ERR_NONE
+    );
+    assert_eq!(
+        unsafe { std::slice::from_raw_parts(payload.data, payload.len) },
+        b""
+    );
+    unsafe { sb_free_buffer(&payload) };
+    assert_eq!(
+        unsafe { sb_relay_driver_delete(driver, key.as_ptr()) },
+        SB_ERR_NONE
+    );
+    assert_eq!(
+        unsafe { sb_relay_driver_delete(driver, std::ptr::null()) },
+        SB_ERR_INPUT
+    );
+    assert_eq!(
+        unsafe { sb_relay_driver_get(driver, key.as_ptr(), &mut payload) },
+        SB_RESULT_ABSENT,
+        "the tombstone wins"
+    );
+
+    // The state export is the same snapshot blob sb_state_export writes.
+    let mut snapshot = sb_buffer_t {
+        data: std::ptr::null_mut(),
+        len: 0,
+        cap: 0,
+    };
+    assert_eq!(
+        unsafe { sb_relay_driver_export_state(driver, &mut snapshot) },
+        SB_ERR_NONE
+    );
+    assert!(snapshot.len > 0);
+    let mut restored: *mut sb_replicator = std::ptr::null_mut();
+    let mut restored_receive: *mut sb_receive_state = std::ptr::null_mut();
+    assert_eq!(
+        unsafe {
+            sb_state_import(
+                snapshot.data,
+                snapshot.len,
+                0,
+                &mut restored,
+                &mut restored_receive,
+            )
+        },
+        SB_ERR_NONE
+    );
+    assert_eq!(string(unsafe { sb_replicator_node_id(restored) }), "local");
+    unsafe {
+        sb_free_buffer(&snapshot);
+        sb_replicator_free(restored);
+        sb_receive_state_free(restored_receive);
+    }
+
+    // Start: running immediately, a second start is refused, and stop joins.
+    assert_eq!(unsafe { sb_relay_driver_start(driver) }, SB_ERR_NONE);
+    assert_eq!(unsafe { sb_relay_driver_running(driver) }, 1);
+    assert_eq!(unsafe { sb_relay_driver_start(driver) }, SB_ERR_INPUT);
+    assert_eq!(unsafe { sb_relay_driver_stop(driver) }, SB_ERR_NONE);
+    assert_eq!(unsafe { sb_relay_driver_running(driver) }, 0);
+    assert_eq!(
+        unsafe { sb_relay_driver_stop_reason(driver) },
+        SB_DRIVER_STOP_CANCELLED
+    );
+    assert!(
+        unsafe { sb_relay_driver_error(driver) }.is_null(),
+        "a deliberate stop is clean: no error text"
+    );
+    // Stop is idempotent.
+    assert_eq!(unsafe { sb_relay_driver_stop(driver) }, SB_ERR_NONE);
+
+    // A driver may start again after a stop, and freeing a running one
+    // stops the worker first (the join must not hang).
+    assert_eq!(unsafe { sb_relay_driver_start(driver) }, SB_ERR_NONE);
+    assert_eq!(unsafe { sb_relay_driver_running(driver) }, 1);
+    unsafe { sb_relay_driver_free(driver) };
+    unsafe { sb_relay_driver_free(std::ptr::null_mut()) };
+}

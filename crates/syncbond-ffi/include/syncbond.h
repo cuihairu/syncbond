@@ -67,6 +67,17 @@ extern "C" {
  * rest - the library never encrypts its own storage. */
 #define SB_STATE_SNAPSHOT_CONTAINS_SECRET 1u
 
+/* How strictly the relay's certificate is checked (SB_TLS_MODE_*). */
+#define SB_TLS_VALIDATE 0u
+#define SB_TLS_VALIDATE_CA 1u
+#define SB_TLS_ACCEPT_INVALID 2u
+
+/* Why a relay driver's loop ended (sb_relay_driver_stop_reason()). */
+#define SB_DRIVER_STOP_NONE 0      /* running, or never started */
+#define SB_DRIVER_STOP_CANCELLED 1  /* stopped by sb_relay_driver_stop() */
+#define SB_DRIVER_STOP_EXHAUSTED 2  /* max consecutive transient failures */
+#define SB_DRIVER_STOP_FATAL 3      /* an error retrying cannot fix */
+
 typedef struct sb_identity sb_identity;
 typedef struct sb_pair_end sb_pair_end;
 typedef struct sb_pair_result sb_pair_result;
@@ -74,6 +85,7 @@ typedef struct sb_session sb_session;
 typedef struct sb_replicator sb_replicator;
 typedef struct sb_receive_state sb_receive_state;
 typedef struct sb_keyring sb_keyring;
+typedef struct sb_relay_driver sb_relay_driver;
 
 /* Caller-owned byte buffer. Release with sb_free_buffer(). */
 typedef struct sb_buffer {
@@ -81,6 +93,17 @@ typedef struct sb_buffer {
     size_t len;
     size_t cap;
 } sb_buffer_t;
+
+/* Monotonic progress a relay driver's worker has accumulated (filled by
+ * sb_relay_driver_progress()). The counters only grow while the driver runs. */
+typedef struct sb_relay_progress {
+    uint32_t running;
+    uint64_t cycles;
+    uint64_t sent_batches;
+    uint64_t sent_envelopes;
+    uint64_t pages_pulled;
+    uint64_t applied;
+} sb_relay_progress_t;
 
 /* ---------------------------------------------------------------- version */
 
@@ -315,6 +338,74 @@ const char *sb_keyring_seal_json(const sb_keyring *keyring, const char *sender_d
  * version, group, epoch, replay and AEAD checks in that order. */
 int sb_keyring_open_json(const sb_keyring *keyring, const char *envelope_json,
                          sb_buffer_t *out_payload);
+
+/* ----------------------------------------------------------- relay driver */
+
+/* Build a driver over one live relay channel. `channel_id` and
+ * `channel_token` are the relay's own id and the credential that authorizes
+ * this device to append and pull it; `server_id` and `cursor_channel` are
+ * the local cursor labels the receive position uses (they may, but need
+ * not, mirror the relay names). `tls_mode` is one of the SB_TLS_* values;
+ * SB_TLS_VALIDATE_CA requires `ca_der`/`ca_len` to hold exactly one pinned
+ * CA (DER). Ownership of `identity`, `keyring`, `replicator` and `receive`
+ * transfers to the driver on success AND on failure - they are freed either
+ * way, and the pointers must not be used again. The caller frees the driver
+ * with sb_relay_driver_free(). */
+sb_relay_driver *sb_relay_driver_new(const char *relay_url, const char *channel_id,
+                                     const char *channel_token, const char *server_id,
+                                     const char *cursor_channel, const char *group_id,
+                                     uint64_t key_epoch, sb_identity *identity,
+                                     sb_keyring *keyring, sb_replicator *replicator,
+                                     sb_receive_state *receive, uint64_t timeout_ms,
+                                     uint32_t tls_mode, const uint8_t *ca_der, size_t ca_len);
+
+/* Stops the worker (joining it) and frees the driver. Accepts NULL. */
+void sb_relay_driver_free(sb_relay_driver *driver);
+
+/* Replace the loop's pacing knobs; only effective before start(). All the
+ * count bounds must be positive and max_backoff_ms >= initial_backoff_ms. */
+int sb_relay_driver_config(sb_relay_driver *driver, uint16_t page_limit,
+                           size_t max_pages_per_cycle, uint64_t initial_backoff_ms,
+                           uint64_t max_backoff_ms, uint32_t max_attempts,
+                           uint64_t idle_interval_ms);
+
+/* Spawn the worker thread. A second start() while running is an input error;
+ * after stop() the driver may be started again. */
+int sb_relay_driver_start(sb_relay_driver *driver);
+
+/* Cancel the loop and join the worker; idempotent. The stop reason stays
+ * queryable after this. */
+int sb_relay_driver_stop(sb_relay_driver *driver);
+
+/* Stage a local write; it is sealed, recorded and persisted, so a crash
+ * loses nothing and the next cycle sends it. Waits for any running cycle. */
+int sb_relay_driver_write(sb_relay_driver *driver, const char *key,
+                          const uint8_t *payload, size_t len);
+
+/* Stage a local delete (a causal tombstone), like sb_relay_driver_write. */
+int sb_relay_driver_delete(sb_relay_driver *driver, const char *key);
+
+/* The live payload for a key. SB_ERR_NONE fills *out, SB_RESULT_ABSENT when
+ * the key has no live value, a negative SB_ERR_* code on a bad call. */
+int sb_relay_driver_get(const sb_relay_driver *driver, const char *key, sb_buffer_t *out);
+
+/* 1 while the worker is running, 0 otherwise. */
+int sb_relay_driver_running(const sb_relay_driver *driver);
+
+/* Fill the monotonic progress counters (and the running flag). */
+int sb_relay_driver_progress(const sb_relay_driver *driver, sb_relay_progress_t *out);
+
+/* One of the SB_DRIVER_STOP_* values; SB_DRIVER_STOP_NONE while running. */
+int sb_relay_driver_stop_reason(const sb_relay_driver *driver);
+
+/* The text of the error that ended the loop; NULL when it ended cleanly. The
+ * text is owned; free it with sb_free_string(). */
+const char *sb_relay_driver_error(const sb_relay_driver *driver);
+
+/* The device state plus the receive position as one versioned snapshot, the
+ * same blob sb_state_export writes (and a PRIVATE one - see
+ * SB_STATE_SNAPSHOT_CONTAINS_SECRET). */
+int sb_relay_driver_export_state(const sb_relay_driver *driver, sb_buffer_t *out_snapshot);
 
 /* ------------------------------------------------------- conformance runs */
 

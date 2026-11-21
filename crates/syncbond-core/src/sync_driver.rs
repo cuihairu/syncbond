@@ -259,48 +259,66 @@ impl SyncDriver<'_> {
     /// successful cycle resets the failure count; the backoff doubles
     /// per failure and never passes [`DriverConfig::max_backoff`].
     pub fn run(&mut self, cancel: &AtomicBool) -> StopReason {
-        let mut backoff = self.config.initial_backoff;
-        let mut failures = 0u32;
-        loop {
-            if cancel.load(Ordering::Relaxed) {
-                return StopReason::Cancelled;
+        let config = self.config.clone();
+        run_sync(&config, cancel, || self.sync_once())
+    }
+}
+
+/// The bounded patience loop behind [`SyncDriver::run`], factored out so a
+/// driver that must release its state between cycles (e.g. a C-bound driver
+/// that also accepts writes) shares the same cancel / backoff / exhaustion
+/// semantics instead of re-deriving them.
+///
+/// `cycle` runs each round and returns what it did; the loop counts a
+/// non-fatal error as a failure, doubles the backoff per failure up to
+/// [`DriverConfig::max_backoff`], ends with [`StopReason::Exhausted`] after
+/// [`DriverConfig::max_attempts`] consecutive ones, and observes the cancel
+/// flag before every cycle and in small slices during every wait.
+pub fn run_sync<F>(config: &DriverConfig, cancel: &AtomicBool, mut cycle: F) -> StopReason
+where
+    F: FnMut() -> Result<CycleReport, DriverError>,
+{
+    let mut backoff = config.initial_backoff;
+    let mut failures = 0u32;
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return StopReason::Cancelled;
+        }
+        match cycle() {
+            Ok(_) => {
+                failures = 0;
+                backoff = config.initial_backoff;
             }
-            match self.sync_once() {
-                Ok(_) => {
-                    failures = 0;
-                    backoff = self.config.initial_backoff;
+            Err(error) if error.is_fatal() => return StopReason::Fatal(error),
+            Err(error) => {
+                failures += 1;
+                if failures >= config.max_attempts {
+                    return StopReason::Exhausted(error);
                 }
-                Err(error) if error.is_fatal() => return StopReason::Fatal(error),
-                Err(error) => {
-                    failures += 1;
-                    if failures >= self.config.max_attempts {
-                        return StopReason::Exhausted(error);
-                    }
-                    if self.wait(cancel, backoff) {
-                        return StopReason::Cancelled;
-                    }
-                    backoff = (backoff * 2).min(self.config.max_backoff);
+                if wait(cancel, backoff) {
+                    return StopReason::Cancelled;
                 }
+                backoff = (backoff * 2).min(config.max_backoff);
             }
-            if self.wait(cancel, self.config.idle_interval) {
-                return StopReason::Cancelled;
-            }
+        }
+        if wait(cancel, config.idle_interval) {
+            return StopReason::Cancelled;
         }
     }
+}
 
-    /// Sleep `total` in small slices; true when the cancel flag was
-    /// observed during the wait.
-    fn wait(&self, cancel: &AtomicBool, total: Duration) -> bool {
-        let deadline = Instant::now() + total;
-        loop {
-            if cancel.load(Ordering::Relaxed) {
-                return true;
-            }
-            let now = Instant::now();
-            if now >= deadline {
-                return false;
-            }
-            std::thread::sleep(CANCEL_POLL.min(deadline - now));
+/// Sleep `total` in small slices; true when the cancel flag was observed
+/// during the wait.
+fn wait(cancel: &AtomicBool, total: Duration) -> bool {
+    let deadline = Instant::now() + total;
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return true;
         }
+        let now = Instant::now();
+        if now >= deadline {
+            return false;
+        }
+        std::thread::sleep(CANCEL_POLL.min(deadline - now));
     }
 }

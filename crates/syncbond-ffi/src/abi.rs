@@ -7,12 +7,21 @@
 
 use std::ffi::{c_char, c_int, CStr, CString};
 use std::mem::ManuallyDrop;
+#[cfg(feature = "relay")]
+use std::time::Duration;
 
+#[cfg(feature = "relay")]
+use syncbond_core::sync_driver::DriverConfig;
+
+#[cfg(feature = "relay")]
+use crate::error::SB_DRIVER_STOP_NONE;
 use crate::error::{
     set_last_error, FfiError, SB_ERR_INPUT, SB_ERR_INTERNAL, SB_ERR_NONE, SB_ERR_PROTOCOL,
     SB_RESULT_ABSENT,
 };
 use crate::handles as h;
+#[cfg(feature = "relay")]
+use crate::sb_relay_driver;
 use crate::{
     sb_identity, sb_keyring, sb_pair_end, sb_pair_result, sb_receive_state, sb_replicator,
     sb_session, SYNCBOND_ABI_VERSION,
@@ -1113,6 +1122,315 @@ pub unsafe extern "C" fn sb_keyring_open_json(
 }
 
 /* --------------------------------------------------------- conformance runs */
+
+/* ------------------------------------------------------------- relay driver */
+
+#[cfg(feature = "relay")]
+/// Progress of a running relay driver; layout matches `sb_relay_progress_t`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct sb_relay_progress_t {
+    pub running: u32,
+    pub cycles: u64,
+    pub sent_batches: u64,
+    pub sent_envelopes: u64,
+    pub pages_pulled: u64,
+    pub applied: u64,
+}
+
+/// # Safety
+///
+/// All string args NUL-terminated; `identity`, `keyring`, `replicator` and
+/// `receive` must be live handles, and ownership of the four transfers to
+/// the driver on success *and* on failure (they are freed either way).
+/// `ca_der` readable for `ca_len` bytes.
+#[no_mangle]
+#[cfg(feature = "relay")]
+pub unsafe extern "C" fn sb_relay_driver_new(
+    relay_url: *const c_char,
+    channel_id: *const c_char,
+    channel_token: *const c_char,
+    server_id: *const c_char,
+    cursor_channel: *const c_char,
+    group_id: *const c_char,
+    key_epoch: u64,
+    identity: *mut sb_identity,
+    keyring: *mut sb_keyring,
+    replicator: *mut sb_replicator,
+    receive: *mut sb_receive_state,
+    timeout_ms: u64,
+    tls_mode: u32,
+    ca_der: *const u8,
+    ca_len: usize,
+) -> *mut sb_relay_driver {
+    call(std::ptr::null_mut(), || {
+        let relay_url = unsafe { string_arg(relay_url, "relay url")? };
+        let channel_id = unsafe { string_arg(channel_id, "channel id")? };
+        let channel_token = unsafe { string_arg(channel_token, "channel token")? };
+        let server_id = unsafe { string_arg(server_id, "server id")? };
+        let cursor_channel = unsafe { string_arg(cursor_channel, "cursor channel id")? };
+        let group_id = unsafe { string_arg(group_id, "group id")? };
+        if identity.is_null() || keyring.is_null() || replicator.is_null() || receive.is_null() {
+            return Err(FfiError::input("driver handles must not be null"));
+        }
+        let ca_der = unsafe { bytes_arg(ca_der, ca_len, "pinned ca")? };
+        let identity = *unsafe { Box::from_raw(identity) };
+        let keyring = *unsafe { Box::from_raw(keyring) };
+        let replicator = *unsafe { Box::from_raw(replicator) };
+        let receive = *unsafe { Box::from_raw(receive) };
+        let driver = h::RelayDriver::new(
+            relay_url,
+            channel_id,
+            channel_token,
+            server_id,
+            cursor_channel,
+            group_id,
+            key_epoch,
+            identity,
+            keyring,
+            replicator,
+            receive,
+            timeout_ms,
+            tls_mode,
+            ca_der,
+        )?;
+        Ok(Box::into_raw(Box::new(driver)))
+    })
+}
+
+/// # Safety
+///
+/// accepts a handle this library returned.
+#[no_mangle]
+#[cfg(feature = "relay")]
+pub unsafe extern "C" fn sb_relay_driver_free(driver: *mut sb_relay_driver) {
+    run(|| {
+        if driver.is_null() {
+            return Ok(());
+        }
+        unsafe {
+            drop(Box::from_raw(driver));
+        }
+        Ok(())
+    })
+}
+
+/// # Safety
+///
+/// `driver` must be a live handle. Knobs only take effect before `start`.
+#[no_mangle]
+#[cfg(feature = "relay")]
+pub unsafe extern "C" fn sb_relay_driver_config(
+    driver: *mut sb_relay_driver,
+    page_limit: u16,
+    max_pages_per_cycle: usize,
+    initial_backoff_ms: u64,
+    max_backoff_ms: u64,
+    max_attempts: u32,
+    idle_interval_ms: u64,
+) -> c_int {
+    call(SB_ERR_INPUT, || {
+        let driver = unsafe { mut_handle(driver, "relay driver")? };
+        if page_limit == 0 || max_pages_per_cycle == 0 || max_attempts == 0 {
+            return Err(FfiError::input("driver config bounds must be positive"));
+        }
+        if initial_backoff_ms == 0 || max_backoff_ms < initial_backoff_ms || idle_interval_ms == 0 {
+            return Err(FfiError::input(
+                "driver config waits must be positive and ordered",
+            ));
+        }
+        driver.set_config(DriverConfig {
+            page_limit,
+            max_pages_per_cycle,
+            initial_backoff: Duration::from_millis(initial_backoff_ms),
+            max_backoff: Duration::from_millis(max_backoff_ms),
+            max_attempts,
+            idle_interval: Duration::from_millis(idle_interval_ms),
+        });
+        Ok(SB_ERR_NONE)
+    })
+}
+
+/// # Safety
+///
+/// `driver` must be a live handle. Spawns the worker thread.
+#[no_mangle]
+#[cfg(feature = "relay")]
+pub unsafe extern "C" fn sb_relay_driver_start(driver: *mut sb_relay_driver) -> c_int {
+    call(SB_ERR_INPUT, || {
+        unsafe { mut_handle(driver, "relay driver")? }.start()?;
+        Ok(SB_ERR_NONE)
+    })
+}
+
+/// # Safety
+///
+/// `driver` must be a live handle. Cancels and joins the worker; idempotent.
+#[no_mangle]
+#[cfg(feature = "relay")]
+pub unsafe extern "C" fn sb_relay_driver_stop(driver: *mut sb_relay_driver) -> c_int {
+    call(SB_ERR_INPUT, || {
+        unsafe { mut_handle(driver, "relay driver")? }.stop()?;
+        Ok(SB_ERR_NONE)
+    })
+}
+
+/// # Safety
+///
+/// `driver` must be a live handle; `key` NUL-terminated; `payload` readable
+/// for `len` bytes.
+#[no_mangle]
+#[cfg(feature = "relay")]
+pub unsafe extern "C" fn sb_relay_driver_write(
+    driver: *mut sb_relay_driver,
+    key: *const c_char,
+    payload: *const u8,
+    len: usize,
+) -> c_int {
+    call(SB_ERR_INPUT, || {
+        let driver = unsafe { mut_handle(driver, "relay driver")? };
+        let key = unsafe { string_arg(key, "key")? };
+        let payload = unsafe { bytes_arg(payload, len, "payload")? };
+        driver.write(key, payload)?;
+        Ok(SB_ERR_NONE)
+    })
+}
+
+/// # Safety
+///
+/// `driver` must be a live handle; `key` NUL-terminated.
+#[no_mangle]
+#[cfg(feature = "relay")]
+pub unsafe extern "C" fn sb_relay_driver_delete(
+    driver: *mut sb_relay_driver,
+    key: *const c_char,
+) -> c_int {
+    call(SB_ERR_INPUT, || {
+        let driver = unsafe { mut_handle(driver, "relay driver")? };
+        let key = unsafe { string_arg(key, "key")? };
+        driver.delete(key)?;
+        Ok(SB_ERR_NONE)
+    })
+}
+
+/// # Safety
+///
+/// `driver` must be a live handle; `key` NUL-terminated; `out` must not be
+/// NULL. `SB_RESULT_ABSENT` when the key has no live value.
+#[no_mangle]
+#[cfg(feature = "relay")]
+pub unsafe extern "C" fn sb_relay_driver_get(
+    driver: *const sb_relay_driver,
+    key: *const c_char,
+    out: *mut sb_buffer_t,
+) -> c_int {
+    call(SB_ERR_INPUT, || {
+        let driver = unsafe { const_handle(driver, "relay driver")? };
+        let key = unsafe { string_arg(key, "key")? };
+        if out.is_null() {
+            return Err(FfiError::input("output buffer must not be null"));
+        }
+        match driver.get(key) {
+            Some(payload) => Ok(unsafe { into_buffer(out, payload) }),
+            None => Ok(SB_RESULT_ABSENT),
+        }
+    })
+}
+
+/// # Safety
+///
+/// `driver` must be a live handle. Returns 1 while the worker is running.
+#[no_mangle]
+#[cfg(feature = "relay")]
+pub unsafe extern "C" fn sb_relay_driver_running(driver: *const sb_relay_driver) -> c_int {
+    call(SB_ERR_INPUT, || {
+        Ok(
+            if unsafe { const_handle(driver, "relay driver")? }.running() {
+                1
+            } else {
+                0
+            },
+        )
+    })
+}
+
+/// # Safety
+///
+/// `driver` must be a live handle; `out` must not be NULL.
+#[no_mangle]
+#[cfg(feature = "relay")]
+pub unsafe extern "C" fn sb_relay_driver_progress(
+    driver: *const sb_relay_driver,
+    out: *mut sb_relay_progress_t,
+) -> c_int {
+    call(SB_ERR_INPUT, || {
+        let driver = unsafe { const_handle(driver, "relay driver")? };
+        if out.is_null() {
+            return Err(FfiError::input("output progress must not be null"));
+        }
+        let (cycles, sent_batches, sent_envelopes, pages_pulled, applied) = driver.counters();
+        unsafe {
+            *out = sb_relay_progress_t {
+                running: u32::from(driver.running()),
+                cycles,
+                sent_batches,
+                sent_envelopes,
+                pages_pulled,
+                applied,
+            };
+        }
+        Ok(SB_ERR_NONE)
+    })
+}
+
+/// # Safety
+///
+/// `driver` must be a live handle. `SB_DRIVER_STOP_NONE` while running or
+/// before it ever ran.
+#[no_mangle]
+#[cfg(feature = "relay")]
+pub unsafe extern "C" fn sb_relay_driver_stop_reason(driver: *const sb_relay_driver) -> c_int {
+    call(SB_DRIVER_STOP_NONE, || {
+        Ok(unsafe { const_handle(driver, "relay driver")? }.stop_reason())
+    })
+}
+
+/// # Safety
+///
+/// `driver` must be a live handle. The text is owned; free with
+/// `sb_free_string`. NULL when the loop ended without an error.
+#[no_mangle]
+#[cfg(feature = "relay")]
+pub unsafe extern "C" fn sb_relay_driver_error(driver: *const sb_relay_driver) -> *const c_char {
+    call(std::ptr::null(), || {
+        let message = unsafe { const_handle(driver, "relay driver")? }.stop_error();
+        Ok(match message {
+            Some(message) => into_string(message),
+            None => std::ptr::null(),
+        })
+    })
+}
+
+/// # Safety
+///
+/// `driver` must be a live handle; `out` must not be NULL.
+#[no_mangle]
+#[cfg(feature = "relay")]
+pub unsafe extern "C" fn sb_relay_driver_export_state(
+    driver: *const sb_relay_driver,
+    out: *mut sb_buffer_t,
+) -> c_int {
+    call(SB_ERR_INPUT, || {
+        let driver = unsafe { const_handle(driver, "relay driver")? };
+        if out.is_null() {
+            return Err(FfiError::input("output buffer must not be null"));
+        }
+        let blob = driver.export_state()?;
+        Ok(unsafe { into_buffer(out, blob) })
+    })
+}
+
+/* ------------------------------------------------------- conformance runs */
 
 /// # Safety
 ///
