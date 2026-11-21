@@ -19,6 +19,7 @@
 
 import { writeFileSync } from "node:fs";
 import { readFileSync } from "node:fs";
+import { Worker } from "node:worker_threads";
 import { NativeRelayDriver } from "./native/binding.js";
 
 function fail(message) {
@@ -72,6 +73,30 @@ const ticker = setInterval(() => {
   maxStallMs = Math.max(maxStallMs, now - lastTick);
   lastTick = now;
 }, 1);
+// A reference clock on its own OS thread separates the two causes of a long
+// gap: OS-level CPU starvation stalls the main ticker and the reference
+// together (the relative gap stays near zero, a pass), while a main thread
+// genuinely blocked inside a native call leaves the reference ticking (the
+// relative gap is the block, a fail). Without it a loaded box trips the probe
+// on scheduler delay that has nothing to do with the binding.
+let refReport;
+const refReady = new Promise((resolve) => {
+  refReport = resolve;
+});
+const reference = new Worker(
+  [
+    "const { parentPort } = require('node:worker_threads');",
+    "let last = Date.now(), max = 0;",
+    "const t = setInterval(() => {",
+    "  const now = Date.now();",
+    "  if (now - last > max) max = now - last;",
+    "  last = now;",
+    "}, 1);",
+    "parentPort.on('message', () => { clearInterval(t); parentPort.postMessage(max); parentPort.close(); });",
+  ].join("\n"),
+  { eval: true },
+);
+reference.once("message", (maxRefGapMs) => refReport(maxRefGapMs));
 
 await driver.start();
 for (const [key, value] of config.writes) {
@@ -108,8 +133,26 @@ for (const [key, expected] of config.expect) {
 if (!converged) {
   fail(`did not converge on ${config.expect.map(([key]) => key).join(", ")}`);
 }
-if (maxStallMs >= 250) {
-  fail(`the JS main thread stalled ${maxStallMs}ms during the sync`);
+// The relative stall: the main-thread gap minus the reference thread's own
+// gap. OS starvation drives both up together so the load does not trip the
+// probe; a main thread blocked inside a native call leaves the reference
+// ticking, so the relative one is the block.
+reference.postMessage("report");
+const referenceGapMs = await refReady;
+const stallMs = Math.max(0, maxStallMs - referenceGapMs);
+if (stallMs >= 250) {
+  fail(`the JS main thread stalled ${stallMs}ms during the sync`);
+}
+
+// The push must have left the process before stop, or a restarted peer never
+// sees the write: a device converges on its own staged write before the
+// worker actually sends it. The Go child guards the same way (relay_child.go).
+const pushDeadline = Date.now() + 5000;
+while (driver.progress().sentBatches === 0 && Date.now() < pushDeadline) {
+  await new Promise((resolve) => setTimeout(resolve, 2));
+}
+if (driver.progress().sentBatches === 0) {
+  fail("the worker never pushed a batch");
 }
 
 // Cancel the loop and join the worker before reading the outcome, so the
@@ -132,6 +175,7 @@ writeFileSync(
     phase,
     node: config.node,
     maxStallMs,
+    referenceGapMs,
     converged,
     progress: {
       running: progress.running,
