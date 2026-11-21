@@ -35,6 +35,15 @@ final class Native {
     static final int STRATEGY_OR_SET = 1;
     static final int STRATEGY_PN_COUNTER = 2;
 
+    static final int TLS_VALIDATE = 0;
+    static final int TLS_VALIDATE_CA = 1;
+    static final int TLS_ACCEPT_INVALID = 2;
+
+    static final int DRIVER_STOP_NONE = 0;
+    static final int DRIVER_STOP_CANCELLED = 1;
+    static final int DRIVER_STOP_EXHAUSTED = 2;
+    static final int DRIVER_STOP_FATAL = 3;
+
     static {
         load();
     }
@@ -136,4 +145,35 @@ final class Native {
 
     // ---------------------------------------------------------- conformance
     static native String conformanceRun(String fixtureJson);
+
+    // ------------------------------------------------------- receive state
+    static native long receiveStateNew();
+    static native void receiveStateFree(long handle);
+
+    // --------------------------------------------------------- state import
+    /** Restores {replicator, receive}; throws on a version mismatch. */
+    static native long[] stateImport(byte[] blob, int strategy);
+
+    // ------------------------------------------------------- relay driver
+    static native long relayDriverNew(String relayUrl, String channelId,
+                                      String channelToken, String serverId, String cursorChannel,
+                                      String groupId, long keyEpoch, long identity, long keyring,
+                                      long replicator, long receive, long timeoutMs, int tlsMode,
+                                      byte[] caDer);
+    static native void relayDriverFree(long handle);
+    static native int relayDriverConfig(long handle, int pageLimit, long maxPagesPerCycle,
+                                        long initialBackoffMs, long maxBackoffMs, long maxAttempts,
+                                        long idleIntervalMs);
+    static native int relayDriverStart(long handle);
+    static native int relayDriverStop(long handle);
+    static native int relayDriverWrite(long handle, String key, byte[] payload);
+    static native int relayDriverDelete(long handle, String key);
+    /** null when the key has no live value; throws on other failures. */
+    static native byte[] relayDriverGet(long handle, String key);
+    static native int relayDriverRunning(long handle);
+    /** {running, cycles, sentBatches, sentEnvelopes, pagesPulled, applied}. */
+    static native long[] relayDriverProgress(long handle);
+    static native int relayDriverStopReason(long handle);
+    static native String relayDriverError(long handle);
+    static native byte[] relayDriverExportState(long handle);
 }

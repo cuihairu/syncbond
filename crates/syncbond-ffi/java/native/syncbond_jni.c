@@ -534,6 +534,219 @@ JNIEXPORT jbyteArray JNICALL Java_syncbond_Native_keyringOpenJson(
     return take_buffer(env, &out);
 }
 
+/* ------------------------------------------------------- receive state */
+
+JNIEXPORT jlong JNICALL Java_syncbond_Native_receiveStateNew(JNIEnv* env, jclass cls) {
+    (void)cls;
+    sb_receive_state* handle = sb_receive_state_new();
+    if (handle == NULL) {
+        return throw_last(env, sb_last_error_code());
+    }
+    return (jlong)(intptr_t)handle;
+}
+
+JNIEXPORT void JNICALL Java_syncbond_Native_receiveStateFree(JNIEnv* env, jclass cls, jlong handle) {
+    (void)env; (void)cls;
+    sb_receive_state_free((sb_receive_state*)(intptr_t)handle);
+}
+
+/* --------------------------------------------------------- state import */
+
+JNIEXPORT jlongArray JNICALL Java_syncbond_Native_stateImport(
+    JNIEnv* env, jclass cls, jbyteArray blob, jint strategy) {
+    (void)cls;
+    size_t len = 0;
+    uint8_t* data = java_bytes(env, blob, &len);
+    sb_replicator* replicator = NULL;
+    sb_receive_state* receive = NULL;
+    int code = sb_state_import(data, len, (uint32_t)strategy, &replicator, &receive);
+    free(data);
+    if (code != SB_ERR_NONE) {
+        return (jlongArray)throw_last(env, sb_last_error_code());
+    }
+    jlongArray out = (*env)->NewLongArray(env, 2);
+    if (out == NULL) {
+        sb_replicator_free(replicator);
+        sb_receive_state_free(receive);
+        return NULL; /* NewLongArray already threw */
+    }
+    jlong handles[2] = { (jlong)(intptr_t)replicator, (jlong)(intptr_t)receive };
+    (*env)->SetLongArrayRegion(env, out, 0, 2, handles);
+    return out;
+}
+
+/* ------------------------------------------------------- relay driver */
+
+JNIEXPORT jlong JNICALL Java_syncbond_Native_relayDriverNew(
+    JNIEnv* env, jclass cls, jstring relay_url, jstring channel_id, jstring channel_token,
+    jstring server_id, jstring cursor_channel, jstring group_id, jlong key_epoch,
+    jlong identity, jlong keyring, jlong replicator, jlong receive, jlong timeout_ms,
+    jint tls_mode, jbyteArray ca_der) {
+    (void)cls;
+    char* owned_url = java_string(env, relay_url);
+    char* owned_channel = java_string(env, channel_id);
+    char* owned_token = java_string(env, channel_token);
+    char* owned_server = java_string(env, server_id);
+    char* owned_cursor = java_string(env, cursor_channel);
+    char* owned_group = java_string(env, group_id);
+    size_t ca_len = 0;
+    uint8_t* ca = java_bytes(env, ca_der, &ca_len);
+    sb_relay_driver* driver = sb_relay_driver_new(
+        owned_url, owned_channel, owned_token, owned_server, owned_cursor, owned_group,
+        (uint64_t)key_epoch, (sb_identity*)(intptr_t)identity, (sb_keyring*)(intptr_t)keyring,
+        (sb_replicator*)(intptr_t)replicator, (sb_receive_state*)(intptr_t)receive,
+        (uint64_t)timeout_ms, (uint32_t)tls_mode, ca, ca_len);
+    free(owned_url);
+    free(owned_channel);
+    free(owned_token);
+    free(owned_server);
+    free(owned_cursor);
+    free(owned_group);
+    free(ca);
+    if (driver == NULL) {
+        return throw_last(env, sb_last_error_code());
+    }
+    return (jlong)(intptr_t)driver;
+}
+
+JNIEXPORT void JNICALL Java_syncbond_Native_relayDriverFree(JNIEnv* env, jclass cls, jlong handle) {
+    (void)env; (void)cls;
+    sb_relay_driver_free((sb_relay_driver*)(intptr_t)handle);
+}
+
+JNIEXPORT jint JNICALL Java_syncbond_Native_relayDriverConfig(
+    JNIEnv* env, jclass cls, jlong handle, jint page_limit, jlong max_pages_per_cycle,
+    jlong initial_backoff_ms, jlong max_backoff_ms, jlong max_attempts, jlong idle_interval_ms) {
+    (void)cls;
+    int code = sb_relay_driver_config(
+        (sb_relay_driver*)(intptr_t)handle, (uint16_t)page_limit, (size_t)max_pages_per_cycle,
+        (uint64_t)initial_backoff_ms, (uint64_t)max_backoff_ms, (uint32_t)max_attempts,
+        (uint64_t)idle_interval_ms);
+    if (code != SB_ERR_NONE) {
+        return (jint)throw_last(env, sb_last_error_code());
+    }
+    return (jint)code;
+}
+
+JNIEXPORT jint JNICALL Java_syncbond_Native_relayDriverStart(JNIEnv* env, jclass cls, jlong handle) {
+    (void)cls;
+    int code = sb_relay_driver_start((sb_relay_driver*)(intptr_t)handle);
+    if (code != SB_ERR_NONE) {
+        return (jint)throw_last(env, sb_last_error_code());
+    }
+    return (jint)code;
+}
+
+JNIEXPORT jint JNICALL Java_syncbond_Native_relayDriverStop(JNIEnv* env, jclass cls, jlong handle) {
+    (void)cls;
+    int code = sb_relay_driver_stop((sb_relay_driver*)(intptr_t)handle);
+    if (code != SB_ERR_NONE) {
+        return (jint)throw_last(env, sb_last_error_code());
+    }
+    return (jint)code;
+}
+
+JNIEXPORT jint JNICALL Java_syncbond_Native_relayDriverWrite(
+    JNIEnv* env, jclass cls, jlong handle, jstring key, jbyteArray payload) {
+    (void)cls;
+    char* owned_key = java_string(env, key);
+    size_t len = 0;
+    uint8_t* data = java_bytes(env, payload, &len);
+    int code = sb_relay_driver_write(
+        (sb_relay_driver*)(intptr_t)handle, owned_key, data, len);
+    free(data);
+    free(owned_key);
+    if (code != SB_ERR_NONE) {
+        return (jint)throw_last(env, sb_last_error_code());
+    }
+    return (jint)code;
+}
+
+JNIEXPORT jint JNICALL Java_syncbond_Native_relayDriverDelete(
+    JNIEnv* env, jclass cls, jlong handle, jstring key) {
+    (void)cls;
+    char* owned_key = java_string(env, key);
+    int code = sb_relay_driver_delete((sb_relay_driver*)(intptr_t)handle, owned_key);
+    free(owned_key);
+    if (code != SB_ERR_NONE) {
+        return (jint)throw_last(env, sb_last_error_code());
+    }
+    return (jint)code;
+}
+
+JNIEXPORT jbyteArray JNICALL Java_syncbond_Native_relayDriverGet(
+    JNIEnv* env, jclass cls, jlong handle, jstring key) {
+    (void)cls;
+    char* owned_key = java_string(env, key);
+    sb_buffer_t out = {0};
+    int code = sb_relay_driver_get((sb_relay_driver*)(intptr_t)handle, owned_key, &out);
+    free(owned_key);
+    if (code == SB_RESULT_ABSENT) {
+        return NULL;
+    }
+    if (code != SB_ERR_NONE) {
+        return (jbyteArray)throw_last(env, sb_last_error_code());
+    }
+    return take_buffer(env, &out);
+}
+
+JNIEXPORT jint JNICALL Java_syncbond_Native_relayDriverRunning(
+    JNIEnv* env, jclass cls, jlong handle) {
+    (void)env; (void)cls;
+    return (jint)sb_relay_driver_running((sb_relay_driver*)(intptr_t)handle);
+}
+
+JNIEXPORT jlongArray JNICALL Java_syncbond_Native_relayDriverProgress(
+    JNIEnv* env, jclass cls, jlong handle) {
+    (void)cls;
+    sb_relay_progress_t progress;
+    if (sb_relay_driver_progress((sb_relay_driver*)(intptr_t)handle, &progress) != SB_ERR_NONE) {
+        return (jlongArray)throw_last(env, sb_last_error_code());
+    }
+    jlongArray out = (*env)->NewLongArray(env, 6);
+    if (out == NULL) {
+        return NULL; /* NewLongArray already threw */
+    }
+    jlong values[6] = {
+        (jlong)progress.running,
+        (jlong)progress.cycles,
+        (jlong)progress.sent_batches,
+        (jlong)progress.sent_envelopes,
+        (jlong)progress.pages_pulled,
+        (jlong)progress.applied,
+    };
+    (*env)->SetLongArrayRegion(env, out, 0, 6, values);
+    return out;
+}
+
+JNIEXPORT jint JNICALL Java_syncbond_Native_relayDriverStopReason(
+    JNIEnv* env, jclass cls, jlong handle) {
+    (void)env; (void)cls;
+    return (jint)sb_relay_driver_stop_reason((sb_relay_driver*)(intptr_t)handle);
+}
+
+JNIEXPORT jstring JNICALL Java_syncbond_Native_relayDriverError(
+    JNIEnv* env, jclass cls, jlong handle) {
+    (void)cls;
+    /* NULL is the legitimate "ended without an error" result here, unlike
+     * take_string's NULL-means-failure convention, so handle it directly. */
+    const char* owned = sb_relay_driver_error((sb_relay_driver*)(intptr_t)handle);
+    if (owned == NULL) {
+        return NULL;
+    }
+    return take_string(env, owned);
+}
+
+JNIEXPORT jbyteArray JNICALL Java_syncbond_Native_relayDriverExportState(
+    JNIEnv* env, jclass cls, jlong handle) {
+    (void)cls;
+    sb_buffer_t out = {0};
+    if (sb_relay_driver_export_state((sb_relay_driver*)(intptr_t)handle, &out) != SB_ERR_NONE) {
+        return (jbyteArray)throw_last(env, sb_last_error_code());
+    }
+    return take_buffer(env, &out);
+}
+
 /* ---------------------------------------------------------- conformance */
 
 JNIEXPORT jstring JNICALL Java_syncbond_Native_conformanceRun(

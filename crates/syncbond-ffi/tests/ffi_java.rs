@@ -62,11 +62,19 @@ fn java_suite_passes() {
     let _ = std::fs::remove_file(java_dir.join("build/libs/libsyncbond_java.so"));
     let _ = std::fs::remove_file(java_dir.join("build/libs/libsyncbond_ffi.so"));
 
-    // The JUnit suite compiles the JNI shim and runs the 13 tests. The
+    // Point the relay e2e at a real relay: one booted in-process, held alive
+    // for the whole suite by keeping this handle bound. The children the Java
+    // test spawns need no env of their own - they get the channel facts
+    // through their config properties.
+    let relay = syncbond_server::test_support::boot_relay();
+
+    // The JUnit suite compiles the JNI shim and runs the 18 tests. The
     // Gradle wrapper (8.14.3) is used so the build is reproducible across
     // hosts; a bare `gradle` on PATH may be too old for the JUnit BOM.
     run(Command::new("./gradlew")
         .args(["--no-daemon", "test"])
+        .env("SYNCBOND_TEST_RELAY", format!("http://{}", relay.address))
+        .env("SYNCBOND_TEST_ADMIN", relay.admin.clone())
         .current_dir(&java_dir));
     // Local publication proves the artifact is pullable without any remote.
     run(Command::new("./gradlew")
