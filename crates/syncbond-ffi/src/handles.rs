@@ -13,11 +13,16 @@ use syncbond_core::crypto::{
 };
 use syncbond_core::hlc::HlcStamp;
 use syncbond_core::identity::DeviceIdentity;
-use syncbond_core::pairing::{accept, pair, PairingSession};
+use syncbond_core::pairing::{accept, pair, PairingError, PairingSession};
+use syncbond_core::pairing_driver::{DriverEvent, PairingDriver};
 use syncbond_core::replication::{Operation, Replicator as CoreReplicator, SyncStats};
 use syncbond_core::transport::{MemoryTransport, Transport};
 
-use crate::error::{FfiError, SB_STRATEGY_LWW_HLC, SB_STRATEGY_OR_SET, SB_STRATEGY_PN_COUNTER};
+use crate::error::{
+    FfiError, SB_PAIR_EVENT_COMPLETED, SB_PAIR_EVENT_FAILED, SB_PAIR_EVENT_NONE,
+    SB_PAIR_ROLE_INITIATOR, SB_PAIR_ROLE_RESPONDER, SB_STRATEGY_LWW_HLC, SB_STRATEGY_OR_SET,
+    SB_STRATEGY_PN_COUNTER,
+};
 
 type Json = serde_json::Value;
 
@@ -110,6 +115,117 @@ impl Session {
 
     pub fn invalidate(&self) {
         self.0.invalidate();
+    }
+}
+
+/// One end of an externally driven pairing exchange (todo.md DSR-34).
+///
+/// The host owns the wire and the event loop: it pulls the outbound protocol
+/// frames with [`PairEnd::pop_outgoing`], feeds the inbound ones with
+/// [`PairEnd::push`], and advances the machine with [`PairEnd::poll`] until
+/// it reports [`SB_PAIR_EVENT_COMPLETED`] (take the session) or
+/// [`SB_PAIR_EVENT_FAILED`] (read the reason). Both ends start from the
+/// caller's existing [`Identity`], unlike [`PairResult::memory`] which
+/// generates two fresh identities inside one call.
+pub struct PairEnd {
+    driver: PairingDriver,
+    /// Set when poll observes [`DriverEvent::Completed`]; `take_session`
+    /// moves it to the caller once.
+    session: Option<PairingSession>,
+    /// Set when poll observes [`DriverEvent::Failed`]; `failure` reads it.
+    failure: Option<String>,
+}
+
+impl PairEnd {
+    /// Start one end of the exchange from the caller's identity. `code` is
+    /// required (both ends must be handed the same issued code) and is
+    /// normalized exactly as [`PairResult::memory`] normalizes it, so a
+    /// lower-case entry pairs with the upper-case issued code.
+    pub fn new(identity: &Identity, role: i32, code: &str) -> Result<Self, FfiError> {
+        if role != SB_PAIR_ROLE_INITIATOR && role != SB_PAIR_ROLE_RESPONDER {
+            return Err(FfiError::input(format!("unknown pairing role {role}")));
+        }
+        // The driver needs a transport only for the session it assembles at
+        // completion; the pairing frames themselves cross this handle, so
+        // the loopback peer end is dropped on purpose. The session's
+        // application channel is the host's to wire (its own frames, or the
+        // relay driver), and must never silently look connected.
+        let (own, _peer) = MemoryTransport::pair();
+        let driver = match role {
+            SB_PAIR_ROLE_INITIATOR => {
+                PairingDriver::initiator(code, &identity.0, own as Arc<dyn Transport>)
+            }
+            _ => PairingDriver::responder(code, &identity.0, own as Arc<dyn Transport>),
+        }
+        .map_err(|error| match error {
+            PairingError::Code(bad) => FfiError::input(format!("pairing code: {bad}")),
+            other => FfiError::from(other),
+        })?;
+        Ok(Self {
+            driver,
+            session: None,
+            failure: None,
+        })
+    }
+
+    /// The next frame the machine wants on the wire, if any.
+    pub fn pop_outgoing(&mut self) -> Option<Vec<u8>> {
+        self.driver.pop_outgoing()
+    }
+
+    /// Feed one frame received from the wire. Ok even when the frame is a
+    /// protocol violation — the violation becomes a [`SB_PAIR_EVENT_FAILED`]
+    /// poll plus one queued abort frame, so the host's drain-send-poll loop
+    /// delivers the goodbye without special-casing. Err means the exchange
+    /// was already finished: the frame arrived too late, which is a host
+    /// bug, not a peer one.
+    pub fn push(&mut self, frame: &[u8]) -> Result<(), FfiError> {
+        self.driver.push(frame).map_err(FfiError::from)
+    }
+
+    /// Advance the machine and report what it found, exactly once.
+    pub fn poll(&mut self) -> i32 {
+        match self.driver.poll() {
+            None => SB_PAIR_EVENT_NONE,
+            Some(DriverEvent::Completed(session)) => {
+                self.session = Some(session);
+                SB_PAIR_EVENT_COMPLETED
+            }
+            Some(DriverEvent::Failed(error)) => {
+                self.failure = Some(error.to_string());
+                SB_PAIR_EVENT_FAILED
+            }
+        }
+    }
+
+    /// Queue the goodbye frame (best effort, once), for a host that gives up
+    /// for transport reasons.
+    pub fn abort(&mut self) {
+        self.driver.abort();
+    }
+
+    /// Whether the exchange reached its terminal transition. Finished ends
+    /// refuse further frames, so a host routing inbound frames by state
+    /// gates on this before calling [`PairEnd::push`].
+    pub fn is_finished(&self) -> bool {
+        self.driver.is_finished()
+    }
+
+    /// The failure the poll reported, if any; `None` while the exchange is
+    /// still live or after it completed.
+    pub fn failure(&self) -> Option<String> {
+        self.failure.clone()
+    }
+
+    /// Take the completed session; ownership moves to the caller (free with
+    /// `sb_session_free`). Only available once a [`SB_PAIR_EVENT_COMPLETED`]
+    /// poll has handed the session over.
+    pub fn take_session(&mut self) -> Result<Session, FfiError> {
+        let session = self
+            .session
+            .take()
+            .ok_or_else(|| FfiError::input("no completed session available"))?;
+        Ok(Session(Arc::new(session)))
     }
 }
 

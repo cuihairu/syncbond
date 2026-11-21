@@ -17,6 +17,15 @@ pub const SB_STRATEGY_LWW_HLC: u32 = 0;
 pub const SB_STRATEGY_OR_SET: u32 = 1;
 pub const SB_STRATEGY_PN_COUNTER: u32 = 2;
 
+/// Which side the externally driven pairing exchange plays.
+pub const SB_PAIR_ROLE_INITIATOR: i32 = 0;
+pub const SB_PAIR_ROLE_RESPONDER: i32 = 1;
+
+/// What a `sb_pair_end_poll()` found; exactly one event is delivered per call.
+pub const SB_PAIR_EVENT_NONE: i32 = 0;
+pub const SB_PAIR_EVENT_COMPLETED: i32 = 1;
+pub const SB_PAIR_EVENT_FAILED: i32 = 2;
+
 /// A failure with a stable code (see syncbond.h) and a human-readable text.
 #[derive(Debug, Clone)]
 pub struct FfiError {

@@ -4,7 +4,11 @@
 
 use std::ffi::{CStr, CString};
 use syncbond_ffi::abi::*;
-use syncbond_ffi::error::{SB_ERR_INPUT, SB_ERR_INTERNAL, SB_ERR_NONE, SB_RESULT_ABSENT};
+use syncbond_ffi::error::{
+    SB_ERR_INPUT, SB_ERR_INTERNAL, SB_ERR_NONE, SB_ERR_PROTOCOL, SB_PAIR_EVENT_COMPLETED,
+    SB_PAIR_EVENT_NONE, SB_PAIR_ROLE_INITIATOR, SB_PAIR_ROLE_RESPONDER, SB_RESULT_ABSENT,
+};
+use syncbond_ffi::sb_pair_end;
 
 fn string(ptr: *const std::ffi::c_char) -> String {
     if ptr.is_null() {
@@ -168,6 +172,176 @@ fn pairing_boundary() {
     );
     unsafe { sb_session_free(std::ptr::null_mut()) };
     unsafe { sb_pair_result_free(std::ptr::null_mut()) };
+}
+
+/// One wire round over raw handles: drain both outboxes, hand every frame to
+/// the other end unless that end already finished (a finished end refuses
+/// frames, so the host stops feeding it), and report whether both ends
+/// reached a terminal transition.
+fn pair_end_round(a: *mut sb_pair_end, b: *mut sb_pair_end) -> bool {
+    let mut out = sb_buffer_t {
+        data: std::ptr::null_mut(),
+        len: 0,
+        cap: 0,
+    };
+    let mut to_b = Vec::new();
+    let mut to_a = Vec::new();
+    while unsafe { sb_pair_end_pop_outgoing(a, &mut out) } == SB_ERR_NONE {
+        to_b.push(unsafe { std::slice::from_raw_parts(out.data, out.len) }.to_vec());
+        unsafe { sb_free_buffer(&out) };
+    }
+    while unsafe { sb_pair_end_pop_outgoing(b, &mut out) } == SB_ERR_NONE {
+        to_a.push(unsafe { std::slice::from_raw_parts(out.data, out.len) }.to_vec());
+        unsafe { sb_free_buffer(&out) };
+    }
+    for frame in to_b {
+        if unsafe { sb_pair_end_is_finished(b) } == 0 {
+            assert_eq!(
+                unsafe { sb_pair_end_push(b, frame.as_ptr(), frame.len()) },
+                SB_ERR_NONE,
+                "a live end accepts frames"
+            );
+        }
+    }
+    for frame in to_a {
+        if unsafe { sb_pair_end_is_finished(a) } == 0 {
+            assert_eq!(
+                unsafe { sb_pair_end_push(a, frame.as_ptr(), frame.len()) },
+                SB_ERR_NONE,
+                "a live end accepts frames"
+            );
+        }
+    }
+    unsafe { sb_pair_end_is_finished(a) == 1 && sb_pair_end_is_finished(b) == 1 }
+}
+
+#[test]
+fn pair_end_boundary() {
+    let code = CString::new("K7Q2M4").unwrap();
+    let ia = sb_identity_generate();
+    let ib = sb_identity_generate();
+    let initiator = unsafe { sb_pair_end_new(ia, SB_PAIR_ROLE_INITIATOR, code.as_ptr()) };
+    let responder = unsafe { sb_pair_end_new(ib, SB_PAIR_ROLE_RESPONDER, code.as_ptr()) };
+    assert!(!initiator.is_null() && !responder.is_null());
+
+    // The initiator opens with pA at once; the responder is silent until it.
+    let mut out = sb_buffer_t {
+        data: std::ptr::null_mut(),
+        len: 0,
+        cap: 0,
+    };
+    assert_eq!(
+        unsafe { sb_pair_end_pop_outgoing(initiator, &mut out) },
+        SB_ERR_NONE
+    );
+    assert_eq!(unsafe { *out.data }, 0x01, "pA is the first frame");
+    assert_eq!(
+        unsafe { sb_pair_end_pop_outgoing(responder, &mut out) },
+        SB_RESULT_ABSENT,
+        "the responder emits nothing before pA"
+    );
+    assert_eq!(
+        unsafe { sb_pair_end_push(responder, out.data, out.len) },
+        SB_ERR_NONE
+    );
+    unsafe { sb_free_buffer(&out) };
+
+    // Drive to the terminal transition: at most six protocol frames.
+    let mut rounds = 0;
+    while !pair_end_round(initiator, responder) {
+        rounds += 1;
+        assert!(rounds <= 6, "the exchange wedged after {rounds} rounds");
+    }
+    assert_eq!(
+        unsafe { sb_pair_end_poll(initiator) },
+        SB_PAIR_EVENT_COMPLETED
+    );
+    assert_eq!(
+        unsafe { sb_pair_end_poll(responder) },
+        SB_PAIR_EVENT_COMPLETED
+    );
+    assert_eq!(
+        unsafe { sb_pair_end_poll(initiator) },
+        SB_PAIR_EVENT_NONE,
+        "polling is one-shot"
+    );
+    assert!(unsafe { sb_pair_end_failure(initiator) }.is_null());
+
+    // The sessions hand over, agree on the group and cross-match the peers.
+    let session_a = unsafe { sb_pair_end_take_session(initiator) };
+    let session_b = unsafe { sb_pair_end_take_session(responder) };
+    assert!(!session_a.is_null() && !session_b.is_null());
+    assert_eq!(
+        string(unsafe { sb_session_group_id(session_a) }),
+        string(unsafe { sb_session_group_id(session_b) })
+    );
+    let ida = string(unsafe { sb_identity_device_id(ia) });
+    let idb = string(unsafe { sb_identity_device_id(ib) });
+    assert_eq!(string(unsafe { sb_session_peer_device_id(session_a) }), idb);
+    assert_eq!(string(unsafe { sb_session_peer_device_id(session_b) }), ida);
+    assert!(
+        unsafe { sb_pair_end_take_session(initiator) }.is_null(),
+        "the session hands over once"
+    );
+
+    // A finished end refuses a late frame: a host bug, mapped to the
+    // protocol code rather than a peer violation.
+    let late = [0x01u8, 1];
+    assert_eq!(
+        unsafe { sb_pair_end_push(initiator, late.as_ptr(), late.len()) },
+        SB_ERR_PROTOCOL
+    );
+
+    // Argument and null handling: every entry point fails closed with the
+    // input code before any frame exists. (Kept before the frees below: the
+    // handles are still live here.)
+    let mistyped = CString::new("K7Q2M!").unwrap();
+    assert!(unsafe { sb_pair_end_new(ia, 42, code.as_ptr()) }.is_null());
+    assert_eq!(sb_last_error_code(), SB_ERR_INPUT);
+    assert!(unsafe { sb_pair_end_new(ia, SB_PAIR_ROLE_INITIATOR, mistyped.as_ptr()) }.is_null());
+    assert_eq!(sb_last_error_code(), SB_ERR_INPUT);
+    assert!(
+        unsafe { sb_pair_end_new(std::ptr::null(), SB_PAIR_ROLE_INITIATOR, code.as_ptr()) }
+            .is_null()
+    );
+    assert_eq!(sb_last_error_code(), SB_ERR_INPUT);
+    assert_eq!(
+        unsafe { sb_pair_end_pop_outgoing(std::ptr::null_mut(), &mut out) },
+        SB_ERR_INPUT
+    );
+    assert_eq!(
+        unsafe { sb_pair_end_pop_outgoing(initiator, std::ptr::null_mut()) },
+        SB_ERR_INPUT
+    );
+    // A null frame is a caller error: the return carries the entry point's
+    // fallback code, the precise SB_ERR_INPUT lands in the error slot.
+    assert_eq!(
+        unsafe { sb_pair_end_push(initiator, std::ptr::null(), 1) },
+        SB_ERR_PROTOCOL
+    );
+    assert_eq!(sb_last_error_code(), SB_ERR_INPUT);
+    assert_eq!(
+        unsafe { sb_pair_end_poll(std::ptr::null_mut()) },
+        SB_ERR_INPUT
+    );
+    assert_eq!(
+        unsafe { sb_pair_end_abort(std::ptr::null_mut()) },
+        SB_ERR_INPUT
+    );
+    assert_eq!(
+        unsafe { sb_pair_end_is_finished(std::ptr::null()) },
+        SB_ERR_INPUT
+    );
+    assert!(unsafe { sb_pair_end_failure(std::ptr::null()) }.is_null());
+    assert!(unsafe { sb_pair_end_take_session(std::ptr::null_mut()) }.is_null());
+    unsafe { sb_pair_end_free(std::ptr::null_mut()) };
+
+    unsafe { sb_session_free(session_a) };
+    unsafe { sb_session_free(session_b) };
+    unsafe { sb_pair_end_free(initiator) };
+    unsafe { sb_pair_end_free(responder) };
+    unsafe { sb_identity_free(ia) };
+    unsafe { sb_identity_free(ib) };
 }
 
 #[test]

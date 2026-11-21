@@ -38,12 +38,10 @@ fn header_compiles_under_strict_warnings() {
         .arg(include.join("syncbond.h")));
 }
 
-/// Acceptance: a pure C program completes pair/sync end to end.
-#[test]
-fn pure_c_program_completes_pair_and_sync() {
+/// Build the cdylib into its own target dir so the nested cargo does not
+/// wait on the outer test build's lock; returns (libdir, out_dir).
+fn build_cdylib() -> (PathBuf, PathBuf) {
     let manifest = manifest_dir();
-    // Build the cdylib into its own target dir so the nested cargo does not
-    // wait on the outer test build's lock.
     let target = manifest.join("../../target/ffi-c");
     let status = Command::new(cargo_bin())
         .args(["build", "-p", "syncbond-ffi"])
@@ -51,16 +49,21 @@ fn pure_c_program_completes_pair_and_sync() {
         .status()
         .expect("failed to run cargo build");
     assert!(status.success(), "nested cargo build failed");
-
     let libdir = target.join("debug");
     let out_dir = target.join("c-example");
     std::fs::create_dir_all(&out_dir).expect("create out dir");
-    let exe = out_dir.join("pair_sync");
+    (libdir, out_dir)
+}
 
+/// Compile one pure C example against the built cdylib and run it.
+fn compile_and_run_c(source: &str, exe_name: &str, args: &[&std::path::Path]) {
+    let manifest = manifest_dir();
+    let (libdir, out_dir) = build_cdylib();
+    let exe = out_dir.join(exe_name);
     run(Command::new("gcc")
         .args(["-Wall", "-Werror", "-o"])
         .arg(&exe)
-        .arg(manifest.join("examples/pair_sync.c"))
+        .arg(manifest.join("examples").join(source))
         .arg("-I")
         .arg(manifest.join("include"))
         .arg("-L")
@@ -72,9 +75,33 @@ fn pure_c_program_completes_pair_and_sync() {
     // Pin the library search path to the freshly built cdylib: the test
     // runner's inherited LD_LIBRARY_PATH (target/debug) would otherwise load
     // a stale shared library over the one just built here.
-    run(Command::new(&exe)
+    let mut command = Command::new(&exe);
+    command
         .env("LD_LIBRARY_PATH", &libdir)
-        .arg(manifest.join("fixtures/conformance.json"))
-        .arg(manifest.join("fixtures/conformance.expected.json"))
-        .current_dir(&out_dir));
+        .current_dir(&out_dir);
+    for arg in args {
+        command.arg(arg);
+    }
+    run(&mut command);
+}
+
+/// Acceptance: a pure C program completes pair/sync end to end.
+#[test]
+fn pure_c_program_completes_pair_and_sync() {
+    compile_and_run_c(
+        "pair_sync.c",
+        "pair_sync",
+        &[
+            &manifest_dir().join("fixtures/conformance.json"),
+            &manifest_dir().join("fixtures/conformance.expected.json"),
+        ],
+    );
+}
+
+/// Acceptance (DSR-34): a pure C program starts two separated pairing ends
+/// from two existing identities, routes the protocol frames itself, and
+/// exercises cancel, late-frame, ownership and error semantics.
+#[test]
+fn pure_c_program_drives_separated_pairing_ends() {
+    compile_and_run_c("pair_frames.c", "pair_frames", &[]);
 }

@@ -17,6 +17,8 @@ pub const SYNCBOND_ABI_VERSION: u32 = 1;
 #[allow(non_camel_case_types)]
 pub type sb_identity = handles::Identity;
 #[allow(non_camel_case_types)]
+pub type sb_pair_end = handles::PairEnd;
+#[allow(non_camel_case_types)]
 pub type sb_pair_result = handles::PairResult;
 #[allow(non_camel_case_types)]
 pub type sb_session = handles::Session;

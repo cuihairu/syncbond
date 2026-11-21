@@ -48,7 +48,17 @@ extern "C" {
 #define SB_STRATEGY_OR_SET 1u
 #define SB_STRATEGY_PN_COUNTER 2u
 
+/* Roles accepted by sb_pair_end_new(). */
+#define SB_PAIR_ROLE_INITIATOR 0
+#define SB_PAIR_ROLE_RESPONDER 1
+
+/* Events returned by sb_pair_end_poll(); exactly one is delivered per call. */
+#define SB_PAIR_EVENT_NONE 0        /* the exchange needs more input */
+#define SB_PAIR_EVENT_COMPLETED 1   /* sb_pair_end_take_session() yields it */
+#define SB_PAIR_EVENT_FAILED 2      /* sb_pair_end_failure() carries the why */
+
 typedef struct sb_identity sb_identity;
+typedef struct sb_pair_end sb_pair_end;
 typedef struct sb_pair_result sb_pair_result;
 typedef struct sb_session sb_session;
 typedef struct sb_replicator sb_replicator;
@@ -102,6 +112,63 @@ const char *sb_pair_result_code(const sb_pair_result *result);
 /* Each call returns a fresh handle: the caller must free both. */
 sb_session *sb_pair_result_initiator(const sb_pair_result *result);
 sb_session *sb_pair_result_responder(const sb_pair_result *result);
+
+/* ------------------------------------------------- externally driven pair */
+
+/* One end of a pairing exchange whose frames the host drives. Unlike
+ * sb_pair_memory() this starts from an identity the caller already holds, so
+ * two ends can be started by two separate holders, and the handshake crosses
+ * whatever channel the host puts its own frames on.
+ *
+ * `role` is a SB_PAIR_ROLE_* value and `code` must be the same issued code on
+ * both ends (normalized the way sb_pair_memory() normalizes it, so a
+ * lower-case entry pairs with the upper-case issued one); NULL, an unknown
+ * role or a mistyped code fail before any frame exists.
+ *
+ * The driving loop is: pop the outbound frames and put them on the wire,
+ * poll, and when that returns SB_PAIR_EVENT_NONE wait for the host's own
+ * next inbound frame and feed it with sb_pair_end_push(). Once
+ * SB_PAIR_EVENT_COMPLETED shows up, stop feeding pairing frames and take the
+ * session; SB_PAIR_EVENT_FAILED reports the exchange as over. */
+sb_pair_end *sb_pair_end_new(const sb_identity *identity, int role, const char *code);
+
+void sb_pair_end_free(sb_pair_end *end);
+
+/* Pop the next outbound protocol frame. SB_ERR_NONE fills *out_frame,
+ * SB_RESULT_ABSENT means the outbox is currently empty, a negative SB_ERR_*
+ * code means the call itself was bad. */
+int sb_pair_end_pop_outgoing(sb_pair_end *end, sb_buffer_t *out_frame);
+
+/* Feed one inbound protocol frame. Returns SB_ERR_NONE even when the frame
+ * violates the protocol: the violation becomes a SB_PAIR_EVENT_FAILED poll
+ * plus one queued abort frame, so the host's drain-send-poll loop delivers
+ * the goodbye without special-casing. A frame after the exchange finished is
+ * a host bug and returns SB_ERR_PROTOCOL. */
+int sb_pair_end_push(sb_pair_end *end, const uint8_t *frame, size_t len);
+
+/* Advance the machine; returns a SB_PAIR_EVENT_* value, or a negative
+ * SB_ERR_* code when the handle is bad. Polling is one-shot per event. */
+int sb_pair_end_poll(sb_pair_end *end);
+
+/* Give up for transport reasons: queue the goodbye frame once. */
+int sb_pair_end_abort(sb_pair_end *end);
+
+/* 1 once the exchange reached its terminal transition (completed or failed).
+ * A finished end refuses further frames, so a host routing inbound frames by
+ * state checks this before sb_pair_end_push(). */
+int sb_pair_end_is_finished(const sb_pair_end *end);
+
+/* The failure a SB_PAIR_EVENT_FAILED poll reported, or NULL while the
+ * exchange is live, completed, or failed before this call. */
+const char *sb_pair_end_failure(const sb_pair_end *end);
+
+/* Take the completed session; ownership moves to the caller, free it with
+ * sb_session_free(). NULL plus sb_last_error() when the exchange has not
+ * handed a session over yet (or it was already taken). The session's
+ * application channel is not wired to a transport here: this interface
+ * exposes the pairing frames, and a host that wants application traffic
+ * drives it itself or uses the relay driver on top. */
+sb_session *sb_pair_end_take_session(sb_pair_end *end);
 
 void sb_session_free(sb_session *session);
 

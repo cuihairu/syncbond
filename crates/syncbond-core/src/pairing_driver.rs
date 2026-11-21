@@ -197,6 +197,13 @@ impl PairingDriver {
         self.event.is_some()
     }
 
+    /// Whether the exchange reached its terminal transition (completed or
+    /// failed). Once true, protocol frames are refused, so a host routing
+    /// inbound frames by state knows to send them to the session instead.
+    pub fn is_finished(&self) -> bool {
+        self.finished.load(Ordering::SeqCst)
+    }
+
     /// Run one step of the machine; a protocol error here ends the driver.
     /// The drain-and-refuse discipline is the blocking path's: oversize
     /// first, peer abort second, expected type third, version last.

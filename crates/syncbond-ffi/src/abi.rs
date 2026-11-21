@@ -9,11 +9,13 @@ use std::ffi::{c_char, c_int, CStr, CString};
 use std::mem::ManuallyDrop;
 
 use crate::error::{
-    set_last_error, FfiError, SB_ERR_INPUT, SB_ERR_INTERNAL, SB_ERR_NONE, SB_RESULT_ABSENT,
+    set_last_error, FfiError, SB_ERR_INPUT, SB_ERR_INTERNAL, SB_ERR_NONE, SB_ERR_PROTOCOL,
+    SB_RESULT_ABSENT,
 };
 use crate::handles as h;
 use crate::{
-    sb_identity, sb_keyring, sb_pair_result, sb_replicator, sb_session, SYNCBOND_ABI_VERSION,
+    sb_identity, sb_keyring, sb_pair_end, sb_pair_result, sb_replicator, sb_session,
+    SYNCBOND_ABI_VERSION,
 };
 
 /// Byte buffer handed back to the caller; layout matches `sb_buffer_t`.
@@ -335,6 +337,139 @@ pub unsafe extern "C" fn sb_pair_result_responder(
         Ok(Box::into_raw(Box::new(h::Session(
             result.responder.clone(),
         ))))
+    })
+}
+
+/* ------------------------------------------- externally driven pairing */
+
+/// # Safety
+///
+/// `identity` must be a live handle; `code` a NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn sb_pair_end_new(
+    identity: *const sb_identity,
+    role: c_int,
+    code: *const c_char,
+) -> *mut sb_pair_end {
+    call(std::ptr::null_mut(), || {
+        let identity = unsafe { const_handle(identity, "identity")? };
+        let code = unsafe { string_arg(code, "pairing code")? };
+        Ok(Box::into_raw(Box::new(h::PairEnd::new(
+            identity, role, code,
+        )?)))
+    })
+}
+
+/// # Safety
+///
+/// accepts a handle this library returned.
+#[no_mangle]
+pub unsafe extern "C" fn sb_pair_end_free(end: *mut sb_pair_end) {
+    run(|| {
+        if end.is_null() {
+            return Ok(());
+        }
+        unsafe {
+            drop(Box::from_raw(end));
+        }
+        Ok(())
+    })
+}
+
+/// # Safety
+///
+/// `out` must not be NULL; the frame releases with `sb_free_buffer()`.
+#[no_mangle]
+pub unsafe extern "C" fn sb_pair_end_pop_outgoing(
+    end: *mut sb_pair_end,
+    out: *mut sb_buffer_t,
+) -> c_int {
+    call(SB_ERR_INPUT, || {
+        let end = unsafe { mut_handle(end, "pair end")? };
+        if out.is_null() {
+            return Err(FfiError::input("output buffer must not be null"));
+        }
+        match end.pop_outgoing() {
+            Some(frame) => Ok(unsafe { into_buffer(out, frame) }),
+            None => Ok(SB_RESULT_ABSENT),
+        }
+    })
+}
+
+/// # Safety
+///
+/// `frame` must be readable for `len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn sb_pair_end_push(
+    end: *mut sb_pair_end,
+    frame: *const u8,
+    len: usize,
+) -> c_int {
+    call(SB_ERR_PROTOCOL, || {
+        let end = unsafe { mut_handle(end, "pair end")? };
+        let frame = unsafe { bytes_arg(frame, len, "frame")? };
+        end.push(frame)?;
+        Ok(SB_ERR_NONE)
+    })
+}
+
+/// # Safety
+///
+/// `end` must be a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn sb_pair_end_poll(end: *mut sb_pair_end) -> c_int {
+    call(SB_ERR_INPUT, || {
+        Ok(unsafe { mut_handle(end, "pair end")? }.poll())
+    })
+}
+
+/// # Safety
+///
+/// `end` must be a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn sb_pair_end_abort(end: *mut sb_pair_end) -> c_int {
+    call(SB_ERR_INPUT, || {
+        unsafe { mut_handle(end, "pair end")? }.abort();
+        Ok(SB_ERR_NONE)
+    })
+}
+
+/// # Safety
+///
+/// `end` must be a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn sb_pair_end_is_finished(end: *const sb_pair_end) -> c_int {
+    call(SB_ERR_INPUT, || {
+        Ok(if unsafe { const_handle(end, "pair end")? }.is_finished() {
+            1
+        } else {
+            0
+        })
+    })
+}
+
+/// # Safety
+///
+/// `end` must be a live handle; the text frees with `sb_free_string()`.
+#[no_mangle]
+pub unsafe extern "C" fn sb_pair_end_failure(end: *const sb_pair_end) -> *const c_char {
+    call(std::ptr::null(), || {
+        let end = unsafe { const_handle(end, "pair end")? };
+        match end.failure() {
+            Some(text) => Ok(into_string(text)),
+            None => Ok(std::ptr::null()),
+        }
+    })
+}
+
+/// # Safety
+///
+/// `end` must be a live handle; the session frees with `sb_session_free()`.
+#[no_mangle]
+pub unsafe extern "C" fn sb_pair_end_take_session(end: *mut sb_pair_end) -> *mut sb_session {
+    call(std::ptr::null_mut(), || {
+        let end = unsafe { mut_handle(end, "pair end")? };
+        Ok(Box::into_raw(Box::new(end.take_session()?)))
     })
 }
 
