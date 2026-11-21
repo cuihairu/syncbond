@@ -14,8 +14,8 @@ use crate::error::{
 };
 use crate::handles as h;
 use crate::{
-    sb_identity, sb_keyring, sb_pair_end, sb_pair_result, sb_replicator, sb_session,
-    SYNCBOND_ABI_VERSION,
+    sb_identity, sb_keyring, sb_pair_end, sb_pair_result, sb_receive_state, sb_replicator,
+    sb_session, SYNCBOND_ABI_VERSION,
 };
 
 /// Byte buffer handed back to the caller; layout matches `sb_buffer_t`.
@@ -817,6 +817,180 @@ pub unsafe extern "C" fn sb_replicator_gc_tombstones(
     call(SB_ERR_INTERNAL, || {
         let replicator = unsafe { mut_handle(replicator, "replicator")? };
         Ok(replicator.gc_tombstones(now_ms, older_than_ms)? as c_int)
+    })
+}
+
+/* --------------------------------- state snapshot and receive position */
+
+/// # Safety
+///
+/// allocation failure is reported through `sb_last_error()`.
+#[no_mangle]
+pub extern "C" fn sb_receive_state_new() -> *mut sb_receive_state {
+    call(std::ptr::null_mut(), || {
+        Ok(Box::into_raw(Box::new(h::ReceiveState::new())))
+    })
+}
+
+/// # Safety
+///
+/// accepts a handle this library returned.
+#[no_mangle]
+pub unsafe extern "C" fn sb_receive_state_free(state: *mut sb_receive_state) {
+    run(|| {
+        if state.is_null() {
+            return Ok(());
+        }
+        unsafe {
+            drop(Box::from_raw(state));
+        }
+        Ok(())
+    })
+}
+
+/// # Safety
+///
+/// `state` must be a live handle; both ids NUL-terminated.
+#[no_mangle]
+pub unsafe extern "C" fn sb_receive_state_server_cursor(
+    state: *mut sb_receive_state,
+    server_id: *const c_char,
+    channel_id: *const c_char,
+    server_seq: u64,
+) -> c_int {
+    call(SB_ERR_INPUT, || {
+        let state = unsafe { mut_handle(state, "receive state")? };
+        let server_id = unsafe { string_arg(server_id, "server id")? };
+        let channel_id = unsafe { string_arg(channel_id, "channel id")? };
+        state.set_server_cursor(server_id, channel_id, server_seq)?;
+        Ok(SB_ERR_NONE)
+    })
+}
+
+/// # Safety
+///
+/// `state` must be a live handle; `node_id` NUL-terminated.
+#[no_mangle]
+pub unsafe extern "C" fn sb_receive_state_source_cursor(
+    state: *mut sb_receive_state,
+    node_id: *const c_char,
+    seq: u64,
+) -> c_int {
+    call(SB_ERR_INPUT, || {
+        let state = unsafe { mut_handle(state, "receive state")? };
+        let node_id = unsafe { string_arg(node_id, "node id")? };
+        state.set_source_cursor(node_id, seq)?;
+        Ok(SB_ERR_NONE)
+    })
+}
+
+/// # Safety
+///
+/// `state` must be a live handle; `message_id` NUL-terminated.
+#[no_mangle]
+pub unsafe extern "C" fn sb_receive_state_seen(
+    state: *mut sb_receive_state,
+    message_id: *const c_char,
+) -> c_int {
+    call(SB_ERR_INPUT, || {
+        let state = unsafe { mut_handle(state, "receive state")? };
+        let message_id = unsafe { string_arg(message_id, "message id")? };
+        state.mark_seen(message_id)?;
+        Ok(SB_ERR_NONE)
+    })
+}
+
+/// # Safety
+///
+/// `state` must be a live handle; both ids NUL-terminated. `out_seq` must
+/// not be NULL.
+#[no_mangle]
+pub unsafe extern "C" fn sb_receive_state_server_seq(
+    state: *const sb_receive_state,
+    server_id: *const c_char,
+    channel_id: *const c_char,
+    out_seq: *mut u64,
+) -> c_int {
+    call(SB_ERR_INPUT, || {
+        let state = unsafe { const_handle(state, "receive state")? };
+        let server_id = unsafe { string_arg(server_id, "server id")? };
+        let channel_id = unsafe { string_arg(channel_id, "channel id")? };
+        if out_seq.is_null() {
+            return Err(FfiError::input("output sequence must not be null"));
+        }
+        match state.server_seq(server_id, channel_id) {
+            Some(seq) => {
+                unsafe {
+                    *out_seq = seq;
+                }
+                Ok(SB_ERR_NONE)
+            }
+            None => Ok(SB_RESULT_ABSENT),
+        }
+    })
+}
+
+/// # Safety
+///
+/// `state` must be a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn sb_receive_state_json(state: *const sb_receive_state) -> *const c_char {
+    call(std::ptr::null(), || {
+        Ok(into_string(
+            unsafe { const_handle(state, "receive state")? }.json(),
+        ))
+    })
+}
+
+/// # Safety
+///
+/// `replicator`, `identity`, `receive` must be live handles; `group_id`
+/// NUL-terminated; `out` must not be NULL.
+#[no_mangle]
+pub unsafe extern "C" fn sb_state_export(
+    replicator: *const sb_replicator,
+    identity: *const sb_identity,
+    group_id: *const c_char,
+    key_epoch: u64,
+    receive: *const sb_receive_state,
+    out: *mut sb_buffer_t,
+) -> c_int {
+    call(SB_ERR_INPUT, || {
+        let replicator = unsafe { const_handle(replicator, "replicator")? };
+        let identity = unsafe { const_handle(identity, "identity")? };
+        let group_id = unsafe { string_arg(group_id, "group id")? };
+        let receive = unsafe { const_handle(receive, "receive state")? };
+        if out.is_null() {
+            return Err(FfiError::input("output buffer must not be null"));
+        }
+        let blob = replicator.export_snapshot(identity, group_id, key_epoch, receive)?;
+        Ok(unsafe { into_buffer(out, blob) })
+    })
+}
+
+/// # Safety
+///
+/// `blob` readable for `len` bytes; `out_replicator` and `out_receive` must
+/// not be NULL and must point at initialized handles.
+#[no_mangle]
+pub unsafe extern "C" fn sb_state_import(
+    blob: *const u8,
+    len: usize,
+    strategy: u32,
+    out_replicator: *mut *mut sb_replicator,
+    out_receive: *mut *mut sb_receive_state,
+) -> c_int {
+    call(SB_ERR_INPUT, || {
+        let blob = unsafe { bytes_arg(blob, len, "snapshot blob")? };
+        if out_replicator.is_null() || out_receive.is_null() {
+            return Err(FfiError::input("output handles must not be null"));
+        }
+        let (replicator, receive) = h::import_snapshot(blob, strategy)?;
+        unsafe {
+            *out_replicator = Box::into_raw(Box::new(replicator));
+            *out_receive = Box::into_raw(Box::new(receive));
+        }
+        Ok(SB_ERR_NONE)
     })
 }
 

@@ -26,6 +26,11 @@ pub const SB_PAIR_EVENT_NONE: i32 = 0;
 pub const SB_PAIR_EVENT_COMPLETED: i32 = 1;
 pub const SB_PAIR_EVENT_FAILED: i32 = 2;
 
+/// The snapshot format `sb_state_export` writes and `sb_state_import` checks.
+/// Bump it when the on-disk layout changes; import refuses anything else with
+/// `SB_ERR_VERSION_MISMATCH` so an old snapshot never silently loads.
+pub const SB_STATE_SNAPSHOT_VERSION: u32 = 1;
+
 /// A failure with a stable code (see syncbond.h) and a human-readable text.
 #[derive(Debug, Clone)]
 pub struct FfiError {

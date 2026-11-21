@@ -105,3 +105,11 @@ fn pure_c_program_completes_pair_and_sync() {
 fn pure_c_program_drives_separated_pairing_ends() {
     compile_and_run_c("pair_frames.c", "pair_frames", &[]);
 }
+
+/// Acceptance (DSR-35): a pure C program exports a device's committed state
+/// and receive cursors, restores them into fresh handles, loses no remote
+/// data, and hits the snapshot's version and input validation.
+#[test]
+fn pure_c_program_restores_a_replicated_state() {
+    compile_and_run_c("state_snapshot.c", "state_snapshot", &[]);
+}

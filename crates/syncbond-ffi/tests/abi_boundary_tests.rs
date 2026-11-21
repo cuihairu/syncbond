@@ -5,10 +5,13 @@
 use std::ffi::{CStr, CString};
 use syncbond_ffi::abi::*;
 use syncbond_ffi::error::{
-    SB_ERR_INPUT, SB_ERR_INTERNAL, SB_ERR_NONE, SB_ERR_PROTOCOL, SB_PAIR_EVENT_COMPLETED,
-    SB_PAIR_EVENT_NONE, SB_PAIR_ROLE_INITIATOR, SB_PAIR_ROLE_RESPONDER, SB_RESULT_ABSENT,
+    SB_ERR_INPUT, SB_ERR_INTERNAL, SB_ERR_NONE, SB_ERR_PROTOCOL, SB_ERR_VERSION_MISMATCH,
+    SB_PAIR_EVENT_COMPLETED, SB_PAIR_EVENT_NONE, SB_PAIR_ROLE_INITIATOR, SB_PAIR_ROLE_RESPONDER,
+    SB_RESULT_ABSENT,
 };
 use syncbond_ffi::sb_pair_end;
+use syncbond_ffi::sb_receive_state;
+use syncbond_ffi::sb_replicator;
 
 fn string(ptr: *const std::ffi::c_char) -> String {
     if ptr.is_null() {
@@ -573,4 +576,254 @@ fn keyring_and_conformance_boundary() {
     assert!(unsafe { sb_conformance_run(std::ptr::null()) }.is_null());
     assert_eq!(sb_last_error_code(), SB_ERR_INPUT);
     unsafe { sb_keyring_free(std::ptr::null_mut()) };
+}
+
+#[test]
+fn state_snapshot_boundary() {
+    let node = CString::new("node-a").unwrap();
+    let group = CString::new("group-9").unwrap();
+    let replicator = unsafe { sb_replicator_new(node.as_ptr(), 0) };
+    assert!(!replicator.is_null());
+    let identity = sb_identity_generate();
+    let receive = sb_receive_state_new();
+    assert!(!receive.is_null());
+    let server = CString::new("relay-1").unwrap();
+    let channel = CString::new("channel-a").unwrap();
+    let source = CString::new("node-b").unwrap();
+    let seen = CString::new("msg-1").unwrap();
+    assert_eq!(
+        unsafe { sb_receive_state_server_cursor(receive, server.as_ptr(), channel.as_ptr(), 9) },
+        SB_ERR_NONE
+    );
+    assert_eq!(
+        unsafe { sb_receive_state_source_cursor(receive, source.as_ptr(), 12) },
+        SB_ERR_NONE
+    );
+    assert_eq!(
+        unsafe { sb_receive_state_seen(receive, seen.as_ptr()) },
+        SB_ERR_NONE
+    );
+
+    // Export the snapshot, then import it back into two fresh handles.
+    let mut snapshot = sb_buffer_t {
+        data: std::ptr::null_mut(),
+        len: 0,
+        cap: 0,
+    };
+    assert_eq!(
+        unsafe {
+            sb_state_export(
+                replicator,
+                identity,
+                group.as_ptr(),
+                2,
+                receive,
+                &mut snapshot,
+            )
+        },
+        SB_ERR_NONE
+    );
+    assert!(snapshot.len > 0);
+    let mut restored: *mut sb_replicator = std::ptr::null_mut();
+    let mut restored_receive: *mut sb_receive_state = std::ptr::null_mut();
+    assert_eq!(
+        unsafe {
+            sb_state_import(
+                snapshot.data,
+                snapshot.len,
+                0,
+                &mut restored,
+                &mut restored_receive,
+            )
+        },
+        SB_ERR_NONE
+    );
+    assert!(!restored.is_null() && !restored_receive.is_null());
+    assert_eq!(string(unsafe { sb_replicator_node_id(restored) }), "node-a");
+    let mut seq = 0u64;
+    assert_eq!(
+        unsafe {
+            sb_receive_state_server_seq(
+                restored_receive,
+                server.as_ptr(),
+                channel.as_ptr(),
+                &mut seq,
+            )
+        },
+        SB_ERR_NONE
+    );
+    assert_eq!(seq, 9);
+    let receive_json = string(unsafe { sb_receive_state_json(restored_receive) });
+    assert!(receive_json.contains("relay-1"), "{receive_json}");
+
+    // A wrong version is refused, and the precise code rides the error slot.
+    let wrong = CString::new(r#"{"version":999,"state":{},"receive":{}}"#).unwrap();
+    let mut bad_rep: *mut sb_replicator = std::ptr::null_mut();
+    let mut bad_recv: *mut sb_receive_state = std::ptr::null_mut();
+    assert_eq!(
+        unsafe {
+            sb_state_import(
+                wrong.as_ptr() as *const u8,
+                wrong.as_bytes().len(),
+                0,
+                &mut bad_rep,
+                &mut bad_recv,
+            )
+        },
+        SB_ERR_INPUT
+    );
+    assert_eq!(sb_last_error_code(), SB_ERR_VERSION_MISMATCH);
+    assert!(bad_rep.is_null() && bad_recv.is_null());
+
+    // Truncated and unreadable blobs fail closed with SB_ERR_INPUT.
+    assert_eq!(
+        unsafe { sb_state_import(std::ptr::null(), 0, 0, &mut bad_rep, &mut bad_recv) },
+        SB_ERR_INPUT
+    );
+    let garbage = CString::new("not a snapshot").unwrap();
+    assert_eq!(
+        unsafe {
+            sb_state_import(
+                garbage.as_ptr() as *const u8,
+                garbage.as_bytes().len(),
+                0,
+                &mut bad_rep,
+                &mut bad_recv,
+            )
+        },
+        SB_ERR_INPUT
+    );
+
+    // Null arguments fail closed without touching the out handles.
+    assert_eq!(
+        unsafe {
+            sb_state_export(
+                std::ptr::null(),
+                identity,
+                group.as_ptr(),
+                0,
+                receive,
+                &mut snapshot,
+            )
+        },
+        SB_ERR_INPUT
+    );
+    assert_eq!(
+        unsafe {
+            sb_state_export(
+                replicator,
+                std::ptr::null(),
+                group.as_ptr(),
+                0,
+                receive,
+                &mut snapshot,
+            )
+        },
+        SB_ERR_INPUT
+    );
+    assert_eq!(
+        unsafe {
+            sb_state_export(
+                replicator,
+                identity,
+                group.as_ptr(),
+                0,
+                std::ptr::null(),
+                &mut snapshot,
+            )
+        },
+        SB_ERR_INPUT
+    );
+    assert_eq!(
+        unsafe {
+            sb_state_export(
+                replicator,
+                identity,
+                std::ptr::null(),
+                0,
+                receive,
+                &mut snapshot,
+            )
+        },
+        SB_ERR_INPUT
+    );
+    assert_eq!(
+        unsafe {
+            sb_state_export(
+                replicator,
+                identity,
+                group.as_ptr(),
+                0,
+                receive,
+                std::ptr::null_mut(),
+            )
+        },
+        SB_ERR_INPUT
+    );
+    assert_eq!(
+        unsafe {
+            sb_state_import(
+                snapshot.data,
+                snapshot.len,
+                0,
+                std::ptr::null_mut(),
+                &mut restored_receive,
+            )
+        },
+        SB_ERR_INPUT
+    );
+    assert_eq!(
+        unsafe {
+            sb_state_import(
+                snapshot.data,
+                snapshot.len,
+                0,
+                &mut restored,
+                std::ptr::null_mut(),
+            )
+        },
+        SB_ERR_INPUT
+    );
+    assert_eq!(
+        unsafe {
+            sb_receive_state_server_cursor(
+                std::ptr::null_mut(),
+                server.as_ptr(),
+                channel.as_ptr(),
+                1,
+            )
+        },
+        SB_ERR_INPUT
+    );
+    assert_eq!(
+        unsafe {
+            sb_receive_state_server_seq(receive, std::ptr::null(), channel.as_ptr(), &mut seq)
+        },
+        SB_ERR_INPUT
+    );
+    assert_eq!(
+        unsafe {
+            sb_receive_state_server_seq(
+                receive,
+                server.as_ptr(),
+                channel.as_ptr(),
+                std::ptr::null_mut(),
+            )
+        },
+        SB_ERR_INPUT
+    );
+    assert!(unsafe { sb_receive_state_json(std::ptr::null()) }.is_null());
+    assert_eq!(sb_last_error_code(), SB_ERR_INPUT);
+    // A live handle still answers (it was filled by the earlier export).
+    let live_json = unsafe { sb_receive_state_json(receive) };
+    assert!(!live_json.is_null());
+    sb_free_string(live_json);
+
+    unsafe { sb_free_buffer(&snapshot) };
+    unsafe { sb_receive_state_free(receive) };
+    unsafe { sb_receive_state_free(restored_receive) };
+    unsafe { sb_replicator_free(replicator) };
+    unsafe { sb_replicator_free(restored) };
+    unsafe { sb_identity_free(identity) };
+    unsafe { sb_receive_state_free(std::ptr::null_mut()) };
 }

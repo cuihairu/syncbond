@@ -25,4 +25,6 @@ pub type sb_session = handles::Session;
 #[allow(non_camel_case_types)]
 pub type sb_replicator = handles::Replicator;
 #[allow(non_camel_case_types)]
+pub type sb_receive_state = handles::ReceiveState;
+#[allow(non_camel_case_types)]
 pub type sb_keyring = handles::Keyring;

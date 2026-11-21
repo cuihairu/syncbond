@@ -57,11 +57,22 @@ extern "C" {
 #define SB_PAIR_EVENT_COMPLETED 1   /* sb_pair_end_take_session() yields it */
 #define SB_PAIR_EVENT_FAILED 2      /* sb_pair_end_failure() carries the why */
 
+/* Snapshot format written by sb_state_export() and checked by
+ * sb_state_import(); anything else is refused with SB_ERR_VERSION_MISMATCH. */
+#define SB_STATE_SNAPSHOT_VERSION 1u
+
+/* The snapshot blob is PRIVATE material: it embeds the device identity's
+ * Ed25519 secret key, so a leaked snapshot forges that device's identity and
+ * opens its sessions. Store it behind protected storage or encrypt it at
+ * rest - the library never encrypts its own storage. */
+#define SB_STATE_SNAPSHOT_CONTAINS_SECRET 1u
+
 typedef struct sb_identity sb_identity;
 typedef struct sb_pair_end sb_pair_end;
 typedef struct sb_pair_result sb_pair_result;
 typedef struct sb_session sb_session;
 typedef struct sb_replicator sb_replicator;
+typedef struct sb_receive_state sb_receive_state;
 typedef struct sb_keyring sb_keyring;
 
 /* Caller-owned byte buffer. Release with sb_free_buffer(). */
@@ -227,6 +238,59 @@ const char *sb_replicator_gc_barriers_json(const sb_replicator *replicator);
  * also causally dominated by every known replica. Returns the number of keys
  * collected, or a negative SB_ERR_* code. */
 int sb_replicator_gc_tombstones(sb_replicator *replicator, uint64_t now_ms, uint64_t older_than_ms);
+
+/* ------------------------------------- state snapshot and receive position */
+
+/* The receive-side pull position: which server sequence each (server,
+ * channel) last committed, the highest local cursor per replica, and the
+ * already-opened message ids. Together these are the "游标" of the snapshot:
+ * without them a restart re-pulls (and re-applies) every remote operation
+ * already seen. */
+sb_receive_state *sb_receive_state_new(void);
+
+void sb_receive_state_free(sb_receive_state *state);
+
+/* Record the server-assigned sequence the next pull starts after. */
+int sb_receive_state_server_cursor(sb_receive_state *state, const char *server_id,
+                                   const char *channel_id, uint64_t server_seq);
+
+/* Record the highest local cursor seen for one replica's "<node>:<n>" ids. */
+int sb_receive_state_source_cursor(sb_receive_state *state, const char *node_id, uint64_t seq);
+
+/* Record one already-opened envelope so a redelivery is a no-op. */
+int sb_receive_state_seen(sb_receive_state *state, const char *message_id);
+
+/* The last committed server sequence for one (server, channel).
+ * SB_ERR_NONE fills *out_seq, SB_RESULT_ABSENT when it has never been
+ * pulled, a negative SB_ERR_* code when the call itself was bad. */
+int sb_receive_state_server_seq(const sb_receive_state *state, const char *server_id,
+                                const char *channel_id, uint64_t *out_seq);
+
+/* Canonical dump of the whole position; deterministic, so a round trip can
+ * be compared byte for byte. */
+const char *sb_receive_state_json(const sb_receive_state *state);
+
+/* Export the replicator's committed state together with a receive position as
+ * one versioned snapshot blob. The committed state carries the oplog (hence
+ * every applied record and tombstone), the local write cursor, the HLC
+ * high-water and the GC barriers - so a restart replays exactly what was
+ * committed and never invents a cursor ahead of its data. `group_id` and
+ * `key_epoch` are the caller's group facts, which the replicator itself does
+ * not hold. The snapshot embeds the device identity: see
+ * SB_STATE_SNAPSHOT_CONTAINS_SECRET - guard the blob accordingly. */
+int sb_state_export(const sb_replicator *replicator, const sb_identity *identity,
+                    const char *group_id, uint64_t key_epoch,
+                    const sb_receive_state *receive, sb_buffer_t *out_snapshot);
+
+/* Rebuild a replicator and a receive position from a snapshot blob. The
+ * strategy must be the one the original used (the snapshot does not store
+ * it). A version other than SB_STATE_SNAPSHOT_VERSION returns SB_ERR_INPUT
+ * with sb_last_error_code() == SB_ERR_VERSION_MISMATCH; an unreadable or
+ * inconsistent blob returns SB_ERR_INPUT. The caller frees both handles, and
+ * the restored replicator replays the committed oplog so no record that was
+ * committed before the snapshot is lost. */
+int sb_state_import(const uint8_t *blob, size_t len, uint32_t strategy,
+                    sb_replicator **out_replicator, sb_receive_state **out_receive);
 
 /* ------------------------------------------------------------ key material */
 

@@ -15,13 +15,15 @@ use syncbond_core::hlc::HlcStamp;
 use syncbond_core::identity::DeviceIdentity;
 use syncbond_core::pairing::{accept, pair, PairingError, PairingSession};
 use syncbond_core::pairing_driver::{DriverEvent, PairingDriver};
+use syncbond_core::receive::{cursor_key, ReceiveState as CoreReceiveState, ServerCursor};
 use syncbond_core::replication::{Operation, Replicator as CoreReplicator, SyncStats};
+use syncbond_core::storage::SyncState;
 use syncbond_core::transport::{MemoryTransport, Transport};
 
 use crate::error::{
-    FfiError, SB_PAIR_EVENT_COMPLETED, SB_PAIR_EVENT_FAILED, SB_PAIR_EVENT_NONE,
-    SB_PAIR_ROLE_INITIATOR, SB_PAIR_ROLE_RESPONDER, SB_STRATEGY_LWW_HLC, SB_STRATEGY_OR_SET,
-    SB_STRATEGY_PN_COUNTER,
+    FfiError, SB_ERR_VERSION_MISMATCH, SB_PAIR_EVENT_COMPLETED, SB_PAIR_EVENT_FAILED,
+    SB_PAIR_EVENT_NONE, SB_PAIR_ROLE_INITIATOR, SB_PAIR_ROLE_RESPONDER, SB_STATE_SNAPSHOT_VERSION,
+    SB_STRATEGY_LWW_HLC, SB_STRATEGY_OR_SET, SB_STRATEGY_PN_COUNTER,
 };
 
 type Json = serde_json::Value;
@@ -372,6 +374,157 @@ impl Replicator {
             .collect();
         serde_json::to_string(&barriers).expect("dump serialization is infallible")
     }
+
+    /// Serialize the replicator's committed state together with a receive
+    /// position into one versioned snapshot blob (todo.md DSR-35).
+    ///
+    /// The committed state is whatever the last `commit_receive` persisted:
+    /// oplog (hence every applied record and tombstone), the local write
+    /// cursor, the HLC high-water and the garbage-collection barriers — so a
+    /// restart replays exactly what was committed and never invents a cursor
+    /// ahead of its data. `identity`, `group_id` and `key_epoch` are the
+    /// caller's group facts: the replicator does not hold them, and the
+    /// snapshot embeds them so the restored device can open what it pulled.
+    pub fn export_snapshot(
+        &self,
+        identity: &Identity,
+        group_id: &str,
+        key_epoch: u64,
+        receive: &ReceiveState,
+    ) -> Result<Vec<u8>, FfiError> {
+        let state = self.0.snapshot_state(&identity.0, group_id, key_epoch);
+        let state = serde_json::to_value(&state)
+            .map_err(|error| FfiError::internal(format!("state is not serializable: {error}")))?;
+        let receive = serde_json::to_value(&receive.0).map_err(|error| {
+            FfiError::internal(format!("receive position is not serializable: {error}"))
+        })?;
+        let snapshot = Json::Object(
+            std::iter::once(("version".to_string(), Json::from(SB_STATE_SNAPSHOT_VERSION)))
+                .chain([
+                    ("state".to_string(), state),
+                    ("receive".to_string(), receive),
+                ])
+                .collect(),
+        );
+        serde_json::to_vec(&snapshot)
+            .map_err(|error| FfiError::internal(format!("snapshot is not serializable: {error}")))
+    }
+}
+
+/// The receive-side pull position and dedup knowledge (todo.md DSR-35).
+///
+/// Kept apart from [`Replicator`] because it moves with a pulled page rather
+/// than with a local write, and that is exactly what makes it worth carrying
+/// in the snapshot: without it a restart would re-pull (and re-apply) every
+/// remote operation it had already seen.
+#[derive(Default)]
+pub struct ReceiveState(pub CoreReceiveState);
+
+impl ReceiveState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The server-assigned sequence the next pull must start after, for one
+    /// (server, channel). Upserts, so a page that goes further back still
+    /// records itself.
+    pub fn set_server_cursor(
+        &mut self,
+        server_id: &str,
+        channel_id: &str,
+        server_seq: u64,
+    ) -> Result<(), FfiError> {
+        if server_id.is_empty() || channel_id.is_empty() {
+            return Err(FfiError::input("server and channel ids must not be empty"));
+        }
+        self.0.server_cursors.insert(
+            cursor_key(server_id, channel_id),
+            ServerCursor {
+                server_id: server_id.to_string(),
+                channel_id: channel_id.to_string(),
+                server_seq,
+            },
+        );
+        Ok(())
+    }
+
+    /// The highest local cursor seen for one replica's `"<node>:<n>"` op ids.
+    pub fn set_source_cursor(&mut self, node_id: &str, seq: u64) -> Result<(), FfiError> {
+        if node_id.is_empty() {
+            return Err(FfiError::input("node id must not be empty"));
+        }
+        self.0.source_cursors.insert(node_id.to_string(), seq);
+        Ok(())
+    }
+
+    /// Record one already-opened envelope so a redelivery is a no-op.
+    pub fn mark_seen(&mut self, message_id: &str) -> Result<(), FfiError> {
+        if message_id.is_empty() {
+            return Err(FfiError::input("message id must not be empty"));
+        }
+        self.0.seen_message_ids.insert(message_id.to_string());
+        Ok(())
+    }
+
+    /// `None` when this (server, channel) has never been pulled.
+    pub fn server_seq(&self, server_id: &str, channel_id: &str) -> Option<u64> {
+        self.0
+            .cursor_for(server_id, channel_id)
+            .map(|cursor| cursor.server_seq)
+    }
+
+    pub fn seen(&self, message_id: &str) -> bool {
+        self.0.seen_message_ids.contains(message_id)
+    }
+
+    /// Canonical dump; deterministic because the maps and the set are
+    /// ordered, so a round trip can be compared byte for byte.
+    pub fn json(&self) -> String {
+        serde_json::to_string(&self.0).expect("receive state serialization is infallible")
+    }
+}
+
+/// One versioned snapshot: the replicator's committed state and the receive
+/// position that explains it, moved together (todo.md DSR-35).
+///
+/// **This blob is private material.** The embedded `SyncState` carries the
+/// device identity's Ed25519 secret key, so a snapshot leak forges that
+/// device's identity and opens its sessions. Store it behind the
+/// application's protected storage or encrypt it at rest — the SDK never
+/// encrypts its own storage.
+///
+/// Laid out as `{"version": N, "state": ..., "receive": ...}` so a future
+/// format change bumps the version without a schema of its own.
+pub fn import_snapshot(blob: &[u8], strategy: u32) -> Result<(Replicator, ReceiveState), FfiError> {
+    let snapshot: Json = serde_json::from_slice(blob)
+        .map_err(|error| FfiError::input(format!("snapshot is unreadable: {error}")))?;
+    let version = snapshot
+        .get("version")
+        .and_then(Json::as_u64)
+        .ok_or_else(|| FfiError::input("snapshot has no version"))?;
+    if version != u64::from(SB_STATE_SNAPSHOT_VERSION) {
+        return Err(FfiError::new(
+            SB_ERR_VERSION_MISMATCH,
+            format!("snapshot version {version} is not this build's {SB_STATE_SNAPSHOT_VERSION}"),
+        ));
+    }
+    let state: SyncState = serde_json::from_value(
+        snapshot
+            .get("state")
+            .cloned()
+            .ok_or_else(|| FfiError::input("snapshot has no state"))?,
+    )
+    .map_err(|error| FfiError::input(format!("snapshot state is unreadable: {error}")))?;
+    let receive: CoreReceiveState = serde_json::from_value(
+        snapshot
+            .get("receive")
+            .cloned()
+            .ok_or_else(|| FfiError::input("snapshot has no receive position"))?,
+    )
+    .map_err(|error| FfiError::input(format!("receive position is unreadable: {error}")))?;
+    let core = CoreReplicator::from_state(&state, Replicator::strategy(strategy)?)
+        .map_err(|error| FfiError::protocol(format!("snapshot state is inconsistent: {error}")))?;
+    Ok((Replicator(core), ReceiveState(receive)))
 }
 
 /// Group key material with replay tracking for one device.
