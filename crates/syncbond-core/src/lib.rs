@@ -21,6 +21,7 @@ pub mod receive;
 pub mod relay;
 pub mod replication;
 pub mod storage;
+pub mod sync_driver;
 pub mod transport;
 
 pub use batch::{from_wire, open_operations, seal_operations, to_wire, BatchError};
@@ -47,6 +48,10 @@ pub use receive::{
 };
 pub use replication::{GcReport, ReplicationError, Replicator};
 pub use storage::{MemoryStorage, SyncState, SyncStorage};
+pub use sync_driver::{
+    ChannelTransport, CycleReport, DriverConfig, DriverError, StopReason, SyncDriver,
+    TransportFailure,
+};
 pub use transport::{MemoryTransport, Transport, TransportError};
 
 #[cfg(feature = "lan")]

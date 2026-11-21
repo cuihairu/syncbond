@@ -190,7 +190,7 @@ pub fn apply_page(
 /// Commit `state` and `receive` as one blob. `state` is the caller's
 /// `replicator.snapshot_state(...)`: oplog, HLC high-water and the local
 /// write cursor in there, receive cursors and dedup ids in `receive`.
-pub fn commit_receive<S: SyncStorage>(
+pub fn commit_receive<S: SyncStorage + ?Sized>(
     store: &S,
     state: &SyncState,
     receive: &ReceiveState,

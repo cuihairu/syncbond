@@ -146,7 +146,7 @@ pub fn stage_operations(
 /// An empty outbox drains to `Ok(0)` without calling `send`.
 pub fn drain<S, F, E>(store: &S, mut send: F) -> Result<usize, DrainFailure<E>>
 where
-    S: OutboxStore,
+    S: OutboxStore + ?Sized,
     F: FnMut(&OutboxBatch) -> Result<Vec<EnvelopeAck>, E>,
 {
     let pending = store.pending().map_err(DrainFailure::Storage)?;

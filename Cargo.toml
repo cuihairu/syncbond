@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "apps/syncbond-server",
     "crates/syncbond-core",
+    "crates/syncbond-relay-client",
     "crates/syncbond-relay-protocol",
     "crates/syncbond-transport-ws",
     "crates/syncbond-ffi",

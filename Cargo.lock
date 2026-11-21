@@ -2221,6 +2221,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "syncbond-relay-client"
+version = "0.1.0"
+dependencies = [
+ "rustls",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "syncbond-core",
+ "syncbond-relay-protocol",
+ "syncbond-server",
+ "thiserror",
+ "tokio",
+ "tokio-rustls",
+ "webpki-roots 0.26.11",
+]
+
+[[package]]
 name = "syncbond-relay-protocol"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,26 @@
+[package]
+name = "syncbond-relay-client"
+description = "HTTP client for the syncbond relay channel contract: channel provisioning, append, pull, TLS validation, and the bridge into the core sync driver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+syncbond-core = { path = "../syncbond-core" }
+syncbond-relay-protocol = { path = "../syncbond-relay-protocol" }
+tokio = { workspace = true, features = ["net", "rt", "time"] }
+# The same engine the relay serves with, pinned by the lockfile. rustls is
+# pulled with the `ring` provider (no aws-lc-rs build tools needed); TLS
+# validation is the point of this crate, so the stack is always on.
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "logging", "tls12"] }
+rustls-pki-types = "1"
+tokio-rustls = "0.26"
+webpki-roots = "0.26"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# The real relay, in-process, for integration tests.
+syncbond-server = { path = "../../apps/syncbond-server", features = ["test-support"] }
