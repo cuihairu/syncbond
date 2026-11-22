@@ -78,6 +78,22 @@ struct ServerProcess {
 
 impl ServerProcess {
     fn start(root: &Path) -> Self {
+        // `free_port()` returns a number whose probe socket is already
+        // dropped, and a sibling suite probing at the same moment can be
+        // handed that same number. Our child then loses the bind and exits,
+        // so the listener that answers is a *foreign* relay holding a
+        // different admin credential — the first admin call comes back 401
+        // "admin credential required". A live child is the only proof the
+        // port is ours, so a fresh port fixes every collision.
+        for _ in 0..8 {
+            if let Some(server) = Self::start_once(root) {
+                return server;
+            }
+        }
+        panic!("no free relay port: every candidate was claimed by another server");
+    }
+
+    fn start_once(root: &Path) -> Option<Self> {
         let data_dir = root.join("server-data");
         std::fs::create_dir_all(&data_dir).expect("create the data directory");
         let port = free_port();
@@ -91,31 +107,43 @@ impl ServerProcess {
             "shutdownTimeoutSeconds": 5,
         });
         std::fs::write(&config_path, config.to_string()).expect("write the config");
-        let child = Command::new(env!("CARGO_BIN_EXE_syncbond-server"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_syncbond-server"))
             .arg(&config_path)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .expect("the relay binary starts");
         // Readiness is the listener accepting plus the bootstrap admin
-        // credential on disk — never before both.
+        // credential on disk — never before both. The store writes the
+        // credential before it binds, so a listening socket plus a
+        // credential is not yet proof that either came from *this* child:
+        // hold the port a moment and require the child to still be alive.
         let admin_path = syncbond_server::sqlite::admin_credential_path(&data_dir.join("relay.db"));
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {
             let listening = TcpStream::connect(("127.0.0.1", port)).is_ok();
             let admin_ready = admin_path.exists();
             if listening && admin_ready {
-                break;
+                for _ in 0..5 {
+                    if child.try_wait().is_ok_and(|status| status.is_some()) {
+                        return None;
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                let admin =
+                    std::fs::read_to_string(&admin_path).expect("admin credential readable");
+                return Some(Self {
+                    child: Some(child),
+                    address: format!("127.0.0.1:{port}"),
+                    data_dir,
+                    admin: admin.trim().to_owned(),
+                });
+            }
+            if child.try_wait().is_ok_and(|status| status.is_some()) {
+                return None;
             }
             assert!(Instant::now() < deadline, "the relay never became ready");
             std::thread::sleep(Duration::from_millis(20));
-        }
-        let admin = std::fs::read_to_string(&admin_path).expect("admin credential readable");
-        Self {
-            child: Some(child),
-            address: format!("127.0.0.1:{port}"),
-            data_dir,
-            admin: admin.trim().to_owned(),
         }
     }
 
