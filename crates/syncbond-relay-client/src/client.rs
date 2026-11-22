@@ -4,8 +4,8 @@
 use std::time::Duration;
 
 use syncbond_relay_protocol::dto::{
-    AppendAck, AppendRequest, ChannelCreated, CredentialIssued, CredentialScope, Envelope,
-    IssueCredentialRequest, PullRequest, PullResponse,
+    AppendAck, AppendRequest, ChannelCreated, CredentialIssued, CredentialRevoked, CredentialScope,
+    Envelope, IssueCredentialRequest, PullRequest, PullResponse,
 };
 use syncbond_relay_protocol::RELAY_PROTOCOL_VERSION;
 
@@ -144,6 +144,32 @@ impl RelayClient {
         )
         .await?;
         http::expect_json(&self.location, response, 201, "credential issuance")
+    }
+
+    /// `DELETE /v1/channels/{channel_id}/credentials/{credential_id}`
+    /// (admin): revoke one credential. Revocation is a persisted flag the
+    /// authorize path re-reads, so a revoked token is refused from then on
+    /// and an already-revoked one still answers 200. The route is a
+    /// body-less DELETE; there is no body to carry a request id, so the
+    /// echoed id stays empty (the server reads it from `X-Request-Id`,
+    /// which a body-less client need not send).
+    pub async fn revoke_credential(
+        &self,
+        admin_token: &str,
+        channel_id: &str,
+        credential_id: &str,
+    ) -> Result<CredentialRevoked, RelayClientError> {
+        let response = http::request(
+            &self.location,
+            &self.tls,
+            "DELETE",
+            &format!("/v1/channels/{channel_id}/credentials/{credential_id}"),
+            Some(admin_token),
+            None,
+            self.timeout,
+        )
+        .await?;
+        http::expect_json(&self.location, response, 200, "credential revocation")
     }
 
     /// `POST /v1/channels/{channel_id}/append`: acks come back only for

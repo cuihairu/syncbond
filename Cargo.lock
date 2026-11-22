@@ -2197,6 +2197,7 @@ dependencies = [
 name = "syncbond-example"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
  "serde",
  "serde_json",
  "syncbond-core",
@@ -2205,6 +2206,7 @@ dependencies = [
  "syncbond-server",
  "syncbond-transport-ws",
  "tokio",
+ "tokio-tungstenite",
 ]
 
 [[package]]

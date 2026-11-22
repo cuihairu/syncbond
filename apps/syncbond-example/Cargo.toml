@@ -25,3 +25,9 @@ serde_json.workspace = true
 # The real relay, in-process (the same stack the binary runs), for the
 # acceptance test; the test provisions with the same client library.
 syncbond-server = { path = "../../apps/syncbond-server", features = ["test-support"] }
+# The auth/revocation suite subscribes to the real events stream (a
+# WebSocket the credential is revoked away from), so it speaks the wire
+# protocol directly.
+tokio-tungstenite = "0.29"
+# The events stream is a futures stream; the suite reads it with StreamExt.
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
