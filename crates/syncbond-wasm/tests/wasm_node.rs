@@ -4,6 +4,11 @@
 //! save/load round-trip, the cross-language conformance runner, and the
 //! explicit in-memory degradation path when IndexedDB is absent.
 //!
+//! The relay e2e suite (todo.md DSR-44) additionally boots a real relay
+//! in-process and runs `src/wasm.relay.test.js` against it — two browser
+//! contexts pairing over a relay room, syncing encrypted operations through
+//! a real channel, and recovering from IndexedDB.
+//!
 //! Skips (with a notice) when `wasm-pack` or `node` is not on PATH, so the
 //! plain `cargo test` job can run on machines without the wasm toolchain.
 
@@ -58,5 +63,14 @@ fn wasm_node_suite_passes() {
     // Run the wasm-specific Node suite.
     run(Command::new("node")
         .args(["--test", "src/wasm.test.js"])
+        .current_dir(&package));
+
+    // The relay e2e: a relay booted in-process, held alive for the whole
+    // suite by keeping this handle bound.
+    let relay = syncbond_server::test_support::boot_relay();
+    run(Command::new("node")
+        .args(["--test", "src/wasm.relay.test.js"])
+        .env("SYNCBOND_TEST_RELAY", format!("http://{}", relay.address))
+        .env("SYNCBOND_TEST_ADMIN", relay.admin.clone())
         .current_dir(&package));
 }

@@ -9,7 +9,10 @@
 //! owns the wire and the event loop), **remote operation handling** (apply a
 //! wire op and advance the receive position), **full state recovery** (the
 //! versioned snapshot with the receive position, importable with the host
-//! clock), the tombstone GC entry point, and the cross-language conformance
+//! clock), the **envelope keyring** (seal a wire op into a relay envelope and
+//! open a pulled page back, advancing the receive position with it — the
+//! encryption half of the relay sync, DSR-44), the **pairing code generator**,
+//! the tombstone GC entry point, and the cross-language conformance
 //! runner (thread-free). The in-memory `PairResult` and the relay driver
 //! are threaded and are intentionally not exposed; the application wires its
 //! own transport (WebRTC/WebSocket, DSR-44) and feeds frames in and out.
@@ -18,8 +21,10 @@
 //! store and reports the limitation explicitly (see `packages/ts-bindings`
 //! `src/wasm/wrapper.js`).
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
+use syncbond_core::batch::open_operations;
 use syncbond_core::conflict::LwwHlc;
 use syncbond_core::identity::DeviceIdentity;
 use syncbond_core::replication::{decode_state, encode_state, Operation, Replicator};
@@ -27,6 +32,7 @@ use syncbond_ffi::error::{
     SB_PAIR_EVENT_COMPLETED, SB_PAIR_EVENT_FAILED, SB_PAIR_ROLE_INITIATOR, SB_PAIR_ROLE_RESPONDER,
 };
 use syncbond_ffi::handles::{self, PairEnd};
+use syncbond_relay_protocol::dto::Envelope;
 use wasm_bindgen::prelude::*;
 
 // ----------------------------------------------------------- identity
@@ -209,14 +215,20 @@ impl WasmReplicator {
         }
     }
 
+    /// Write one record; returns the operation as wire JSON so the host can
+    /// seal it into an envelope (todo.md DSR-44). The op has already been
+    /// applied locally.
     #[wasm_bindgen]
-    pub fn put(&mut self, key: String, payload: Vec<u8>) -> Result<(), JsValue> {
-        self.inner.put(key, payload).map(|_| ()).map_err(js_error)
+    pub fn put(&mut self, key: String, payload: Vec<u8>) -> Result<String, JsValue> {
+        let op = self.inner.put(key, payload).map_err(js_error)?;
+        serde_json::to_string(&op).map_err(js_error)
     }
 
+    /// Tombstone one record; returns the operation as wire JSON (see `put`).
     #[wasm_bindgen]
-    pub fn delete(&mut self, key: String) -> Result<(), JsValue> {
-        self.inner.delete(key).map(|_| ()).map_err(js_error)
+    pub fn delete(&mut self, key: String) -> Result<String, JsValue> {
+        let op = self.inner.delete(key).map_err(js_error)?;
+        serde_json::to_string(&op).map_err(js_error)
     }
 
     /// Payload of a live record; tombstoned (deleted) or absent keys read as
@@ -416,6 +428,99 @@ impl WasmReceiveState {
     }
 }
 
+// --------------------------------------------------------------- keyring
+
+/// One device's group key (todo.md DSR-44). `seal` turns a wire op JSON into
+/// an encrypted relay envelope; `open_batch` decrypts a pulled page back into
+/// op JSONs and advances the caller's receive position with the message ids
+/// it opened, so a redelivery is a no-op even across a refresh (the receive
+/// position rides in the snapshot).
+///
+/// The key material is provisioned by the pairing session or out of band; a
+/// device only ever seals and opens — it never derives or distributes keys.
+#[wasm_bindgen]
+pub struct WasmKeyring {
+    inner: handles::Keyring,
+}
+
+#[wasm_bindgen]
+impl WasmKeyring {
+    /// A keyring with a fresh random key at epoch 0 (the pairing initiator's
+    /// side); the responder's side imports the exchanged key material.
+    #[wasm_bindgen(constructor)]
+    pub fn new(group_id: String) -> WasmKeyring {
+        WasmKeyring {
+            inner: handles::Keyring::new(&group_id),
+        }
+    }
+
+    /// Rebuild a keyring from explicit key material (a rotated key handed to
+    /// this device). `key` must be the 32-byte session key.
+    #[wasm_bindgen]
+    pub fn import(group_id: String, epoch: f64, key: Vec<u8>) -> Result<WasmKeyring, JsValue> {
+        handles::Keyring::import(&group_id, epoch as u64, &key)
+            .map(|inner| WasmKeyring { inner })
+            .map_err(ffi_error)
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn group_id(&self) -> String {
+        self.inner.inner.group_id.clone()
+    }
+
+    #[wasm_bindgen]
+    pub fn epoch(&self) -> f64 {
+        self.inner.epoch() as f64
+    }
+
+    /// Seal one operation payload under this keyring's current epoch, as the
+    /// relay wire envelope (camelCase + base64url). The output is directly
+    /// appendable to a relay channel.
+    #[wasm_bindgen]
+    pub fn seal(&self, sender_device_id: String, plaintext: Vec<u8>) -> String {
+        self.inner.seal_json(&sender_device_id, &plaintext)
+    }
+
+    /// Open one relay page back into operation payloads. Envelopes whose
+    /// message id the receive position already records are skipped as
+    /// redeliveries; the ids of the ones actually opened are marked seen
+    /// only after the whole batch decrypts, so a page that fails leaves the
+    /// receive position untouched (the host then re-pulls from its committed
+    /// cursor and fails again for the same reason).
+    #[wasm_bindgen]
+    pub fn open_batch(
+        &self,
+        envelope_jsons: Vec<String>,
+        receive: &mut WasmReceiveState,
+    ) -> Result<Vec<String>, JsValue> {
+        let mut fresh: Vec<Envelope> = Vec::new();
+        for json in &envelope_jsons {
+            let envelope: Envelope = serde_json::from_str(json)
+                .map_err(|error| js_error(format!("invalid envelope json: {error}")))?;
+            if receive
+                .inner
+                .0
+                .seen_message_ids
+                .contains(&envelope.message_id)
+            {
+                continue; // a redelivery the receive position already saw
+            }
+            fresh.push(envelope);
+        }
+        if fresh.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut replay = HashSet::new();
+        let operations = open_operations(&fresh, &self.inner.inner, &mut replay)
+            .map_err(|error| js_error(error.to_string()))?;
+        receive.inner.0.seen_message_ids.extend(replay);
+        operations
+            .iter()
+            .map(|op| serde_json::to_string(op).map_err(js_error))
+            .collect()
+    }
+}
+
 // ------------------------------------------------------ conformance / versions
 
 /// Runs a cross-language conformance fixture through the same canonical
@@ -485,6 +590,13 @@ pub fn strategy_or_set() -> u32 {
 #[wasm_bindgen]
 pub fn strategy_pn_counter() -> u32 {
     syncbond_ffi::error::SB_STRATEGY_PN_COUNTER
+}
+
+/// A fresh pairing code for the host to display and send out of band; both
+/// ends of an exchange are handed the same code.
+#[wasm_bindgen]
+pub fn generate_pairing_code() -> String {
+    syncbond_core::codes::generate_code()
 }
 
 // --------------------------------------------------------------- helpers

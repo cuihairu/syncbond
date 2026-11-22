@@ -135,7 +135,10 @@ function wrap(node, nodeId, db, mode, persistenceWarning) {
       return node.record_count;
     },
     gcTombstones(nowMs, olderThanMs) {
-      return node.gcTombstones(nowMs, olderThanMs);
+      // wasm-bindgen generates snake_case for both methods and getters; the
+      // napi path is camelCase, so the wrapper is the one place the two
+      // spellings reconcile.
+      return node.gc_tombstones(nowMs, olderThanMs);
     },
     save() {
       return node.save();
