@@ -117,6 +117,17 @@ jobs:
       - run: pnpm --filter @syncbond/bindings-ts build
       - run: pnpm --filter @syncbond/bindings-ts build:wasm
       - run: pnpm --filter @syncbond/bindings-ts test
+      # DSR-53: the Node and browser-WASM relay e2e harnesses skip in the
+      # `rust` job (no napi CLI or wasm-pack there), and the `node --test`
+      # run above skips its relay suites without a relay — so each harness
+      # runs here, as its own step and its own result. Each harness boots a
+      # real relay, points the language suite at it over real sockets, and
+      # the suite drives two independent processes / browser contexts; the
+      # cross-language conformance runner never substitutes for this.
+      - name: Node relay e2e (two Node processes over a real relay)
+        run: cargo test -p syncbond-napi --test node_smoke
+      - name: Browser-WASM relay e2e (two browser contexts over a real relay)
+        run: cargo test -p syncbond-wasm --test wasm_node
       - run: pnpm -r typecheck
       - run: pnpm --filter @syncbond/docs build
       - run: node scripts/verify-docs-links.mjs
