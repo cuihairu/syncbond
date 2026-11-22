@@ -144,15 +144,19 @@ if (stallMs >= 250) {
   fail(`the JS main thread stalled ${stallMs}ms during the sync`);
 }
 
-// The push must have left the process before stop, or a restarted peer never
-// sees the write: a device converges on its own staged write before the
-// worker actually sends it. The Go child guards the same way (relay_child.go).
+// Every write must reach the relay before this device may report success,
+// or a peer can wait forever: a device converges on its own staged write
+// (it is visible locally) before the worker ships it, so `sentBatches > 0`
+// alone would let b/1 look delivered while it sits unsent in the outbox.
+// Each write seals exactly one envelope, so the relay must ack one per
+// write. The C++ child guards the same way (relay_child.cpp).
+const expectedEnvelopes = config.writes.length;
 const pushDeadline = Date.now() + 5000;
-while (driver.progress().sentBatches === 0 && Date.now() < pushDeadline) {
+while (driver.progress().sentEnvelopes < expectedEnvelopes && Date.now() < pushDeadline) {
   await new Promise((resolve) => setTimeout(resolve, 2));
 }
-if (driver.progress().sentBatches === 0) {
-  fail("the worker never pushed a batch");
+if (driver.progress().sentEnvelopes < expectedEnvelopes) {
+  fail(`only ${driver.progress().sentEnvelopes} of ${expectedEnvelopes} write envelopes reached the relay`);
 }
 
 // Cancel the loop and join the worker before reading the outcome, so the

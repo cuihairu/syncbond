@@ -134,18 +134,22 @@ internal static class Program
             (long tickerGapMs, long referenceGapMs) = probes.Stop();
             long stallMs = Math.Max(0, tickerGapMs - referenceGapMs);
 
-            // The push must have left the process before stop, or a restarted
-            // peer never sees the write: a device converges on its own staged
-            // write before the worker actually sends it. The Go, Node and Java
-            // children guard the same way.
+            // Every write must reach the relay before this device may report
+            // success, or a peer can wait forever: a device converges on its
+            // own staged write (it is visible locally) before the worker
+            // ships it, so `SentBatches > 0` alone would let b/1 look
+            // delivered while it sits unsent in the outbox. Each write seals
+            // exactly one envelope, so the relay must ack one per write. The
+            // C++ child guards the same way (relay_child.cpp).
+            ulong expected = (ulong)config.Writes.Length;
             long pushDeadline = NowMs() + 5000;
-            while (driver.Progress.SentBatches == 0 && NowMs() < pushDeadline)
+            while (driver.Progress.SentEnvelopes < expected && NowMs() < pushDeadline)
             {
                 Thread.Sleep(2);
             }
-            if (driver.Progress.SentBatches == 0)
+            if (driver.Progress.SentEnvelopes < expected)
             {
-                Fail(phase, "the worker never pushed a batch");
+                Fail(phase, $"only {driver.Progress.SentEnvelopes} of {expected} write envelopes reached the relay");
             }
 
             Dictionary<string, string?> got = new();

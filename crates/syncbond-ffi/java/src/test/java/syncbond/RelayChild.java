@@ -97,17 +97,22 @@ public final class RelayChild {
             long mainGapMs = gaps[0];
             long referenceGapMs = gaps[1];
 
-            // The push must have left the process before stop, or a
-            // restarted peer never sees the write: a device converges on its
-            // own staged write before the worker actually sends it. The Go and
-            // Node children guard the same way (relay_child.go, relay-child.js).
+            // Every write must reach the relay before this device may report
+            // success, or a peer can wait forever: a device converges on its
+            // own staged write (it is visible locally) before the worker
+            // ships it, so `sentBatches > 0` alone would let b/1 look
+            // delivered while it sits unsent in the outbox. Each write seals
+            // exactly one envelope, so the relay must ack one per write. The
+            // C++ child guards the same way (relay_child.cpp).
+            long expected = writes.size();
             long pushDeadline = System.currentTimeMillis() + 5000;
-            while (driver.progress().sentBatches == 0
+            while (driver.progress().sentEnvelopes < expected
                     && System.currentTimeMillis() < pushDeadline) {
                 sleep(2);
             }
-            if (driver.progress().sentBatches == 0) {
-                fail(phase, "the worker never pushed a batch");
+            if (driver.progress().sentEnvelopes < expected) {
+                fail(phase, "only " + driver.progress().sentEnvelopes + " of " + expected
+                        + " write envelopes reached the relay");
             }
 
             StringBuilder got = new StringBuilder();

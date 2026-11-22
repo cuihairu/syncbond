@@ -181,15 +181,20 @@ func main() {
 		time.Sleep(5 * time.Millisecond)
 	}
 
-	// The push must have left the process before stop, or a restarted peer
-	// never sees the write: a device converges on its own staged write
-	// before the worker actually sends it.
+	// Every write must reach the relay before this device may report
+	// success, or a peer can wait forever: a device converges on its own
+	// staged write (it is visible locally) before the worker ships it, so
+	// `SentBatches > 0` alone would let b/1 look delivered while it sits
+	// unsent in the outbox. Each write seals exactly one envelope, so the
+	// relay must ack one per write.
+	expected := uint64(len(config.Writes))
 	pushDeadline := time.Now().Add(5 * time.Second)
-	for driver.Progress().SentBatches == 0 && time.Now().Before(pushDeadline) {
+	for driver.Progress().SentEnvelopes < expected && time.Now().Before(pushDeadline) {
 		time.Sleep(2 * time.Millisecond)
 	}
-	if driver.Progress().SentBatches == 0 {
-		fail(phase, "the worker never pushed a batch")
+	if driver.Progress().SentEnvelopes < expected {
+		fail(phase, fmt.Sprintf("only %d of %d write envelopes reached the relay",
+			driver.Progress().SentEnvelopes, expected))
 	}
 
 	got := make(map[string]string, len(config.Expect))

@@ -88,15 +88,21 @@ driver.start()
 for key, payload in config["writes"]:
     driver.write(key, payload.encode("utf-8"))
 
-# A local write converges immediately on this device; the worker must have
-# pushed it to the relay before this process can exit, or a restarted peer
-# would never see it. `sent_batches` is the only signal that the push left
-# the process, so wait for one before waiting on the peer's keys.
+# Every write must reach the relay before this device may report success,
+# or a peer can wait forever: a device converges on its own staged write
+# (it is visible locally) before the worker ships it, so `sent_batches > 0`
+# alone would let b/1 look delivered while it sits unsent in the outbox.
+# Each write seals exactly one envelope, so the relay must ack one per write.
+expected_envelopes = len(config["writes"])
 send_deadline = time.monotonic() + 5
-while driver.progress().sent_batches == 0 and time.monotonic() < send_deadline:
+while (driver.progress().sent_envelopes < expected_envelopes
+       and time.monotonic() < send_deadline):
     time.sleep(0.005)
-if driver.progress().sent_batches == 0:
-    fail("the worker never pushed a batch")
+if driver.progress().sent_envelopes < expected_envelopes:
+    fail(
+        f"only {driver.progress().sent_envelopes} of {expected_envelopes} "
+        f"write envelopes reached the relay"
+    )
 
 deadline = time.monotonic() + config.get("waitMs", 15000) / 1000.0
 converged = False
