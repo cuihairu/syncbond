@@ -98,3 +98,131 @@ test("wasm runs the cross-language conformance fixture", async () => {
   // preserves, so the re-serialized object matches the canonical bytes.)
   assert.equal(JSON.stringify(runConformance(fixture)), canonicalReport);
 });
+
+// ------------------------------------- DSR-43: single-thread network core
+
+test("wasm identity export/import round-trip", async () => {
+  await loadSyncbondWasm();
+  const wasm = await import("./wasm-gen/syncbond_wasm.js");
+
+  const identity = new wasm.WasmIdentity();
+  const exported = identity.export();
+  assert.equal(exported.length, 64, "the secret key is 64 bytes");
+
+  const restored = wasm.WasmIdentity.import(exported);
+  assert.equal(restored.device_id, identity.device_id);
+  assert.deepEqual(Array.from(restored.public_key), Array.from(identity.public_key));
+
+  // A wrong-length key is rejected, not silently accepted as another identity.
+  assert.throws(() => wasm.WasmIdentity.import(new Uint8Array(63)));
+});
+
+test("wasm drives a pairing frame exchange to completion", async () => {
+  await loadSyncbondWasm();
+  const wasm = await import("./wasm-gen/syncbond_wasm.js");
+  const code = "K7Q2M4";
+  const identityA = new wasm.WasmIdentity();
+  const identityB = new wasm.WasmIdentity();
+  const a = new wasm.WasmPairingEnd(identityA, wasm.pairing_role_initiator(), code);
+  const b = new wasm.WasmPairingEnd(identityB, wasm.pairing_role_responder(), code);
+
+  // One wire round: drain both outboxes and hand every frame to the other
+  // end unless it already finished. The host owns the wire — this loop is
+  // the whole of the exchange's transport.
+  const drain = (end) => {
+    const frames = [];
+    let frame = end.pop_outgoing();
+    while (frame) {
+      frames.push(frame);
+      frame = end.pop_outgoing();
+    }
+    return frames;
+  };
+  const wireRound = () => {
+    for (const frame of drain(a)) if (!b.is_finished) b.push(frame);
+    for (const frame of drain(b)) if (!a.is_finished) a.push(frame);
+    return a.is_finished && b.is_finished;
+  };
+
+  let rounds = 0;
+  while (!wireRound()) {
+    rounds += 1;
+    assert.ok(rounds <= 6, `the exchange wedged after ${rounds} rounds`);
+  }
+
+  const eventA = a.poll();
+  const eventB = b.poll();
+  assert.equal(eventA, wasm.pairing_event_completed());
+  assert.equal(eventB, wasm.pairing_event_completed());
+
+  const sessionA = a.take_session();
+  const sessionB = b.take_session();
+  assert.equal(sessionA.group_id, sessionB.group_id);
+  assert.equal(sessionA.peer_device_id, identityB.device_id);
+  assert.equal(sessionB.peer_device_id, identityA.device_id);
+  assert.equal(sessionA.invalidated, false);
+});
+
+test("wasm applies a remote op and advances its receive position", async () => {
+  await loadSyncbondWasm();
+  const wasm = await import("./wasm-gen/syncbond_wasm.js");
+
+  const sender = new wasm.WasmReplicator("wasm-remote-a");
+  const receiver = new wasm.WasmReplicator("wasm-remote-b");
+  sender.put("shared", new TextEncoder().encode("remote value"));
+  const opJson = sender.op_json(0);
+
+  assert.equal(receiver.apply_remote_op(opJson), true, "a first application applies");
+  assert.equal(new TextDecoder().decode(receiver.get("shared")), "remote value");
+  assert.equal(receiver.apply_remote_op(opJson), false, "a redelivery is a no-op");
+
+  // The receive position carries the pull cursor and the dedup knowledge; it
+  // is what a restart needs to avoid re-pulling what it already applied.
+  const receive = new wasm.WasmReceiveState();
+  receive.set_server_cursor("relay-1", "ch", 41);
+  receive.set_source_cursor("wasm-remote-a", 1);
+  receive.mark_seen("message-1");
+  assert.equal(receive.server_seq("relay-1", "ch"), 41);
+  assert.equal(receive.server_seq("relay-1", "missing"), undefined);
+  assert.equal(receive.seen("message-1"), true);
+  assert.equal(receive.seen("other"), false);
+});
+
+test("wasm recovers full state from an exported snapshot", async () => {
+  await loadSyncbondWasm();
+  const wasm = await import("./wasm-gen/syncbond_wasm.js");
+
+  const identity = new wasm.WasmIdentity();
+  const node = new wasm.WasmReplicator(identity.device_id);
+  node.put("a", new TextEncoder().encode("a1"));
+  node.put("b", new TextEncoder().encode("b1"));
+  node.delete("b");
+
+  const receive = new wasm.WasmReceiveState();
+  receive.set_server_cursor("relay-1", "ch", 7);
+  receive.mark_seen("message-42");
+
+  const snapshot = node.export_snapshot(identity, "group-1", 2, receive);
+  assert.ok(snapshot.length > 0);
+
+  const [restored, restoredReceive] = wasm.WasmReplicator.load_snapshot(
+    snapshot,
+    wasm.strategy_lww_hlc(),
+  );
+  assert.equal(restored.node_id, identity.device_id);
+  assert.deepEqual(restored.keys, ["a"], "the live key survives, the tombstone does not");
+  assert.equal(new TextDecoder().decode(restored.get("a")), "a1");
+  assert.equal(restored.get("b"), undefined);
+  assert.equal(restoredReceive.server_seq("relay-1", "ch"), 7);
+  assert.equal(restoredReceive.seen("message-42"), true);
+
+  // The restored device keeps syncing: a second round trip is byte-stable.
+  const again = restored.export_snapshot(identity, "group-1", 2, restoredReceive);
+  const [third, thirdReceive] = wasm.WasmReplicator.load_snapshot(
+    again,
+    wasm.strategy_lww_hlc(),
+  );
+  assert.deepEqual(third.keys, ["a"]);
+  assert.equal(new TextDecoder().decode(third.get("a")), "a1");
+  assert.equal(thirdReceive.server_seq("relay-1", "ch"), 7);
+});

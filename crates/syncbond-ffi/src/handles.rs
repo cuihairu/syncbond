@@ -417,9 +417,10 @@ impl Replicator {
 
 /// Assemble the versioned snapshot blob (todo.md DSR-35): the replicator's
 /// committed state, the receive position that explains it, and the group
-/// facts the restored device needs. Shared by [`Replicator::export_snapshot`]
-/// and the relay driver's state export, so the two can never drift.
-pub(crate) fn build_snapshot(
+/// facts the restored device needs. Shared by [`Replicator::export_snapshot`],
+/// the relay driver's state export and the WASM bindings' full state
+/// recovery, so they can never drift.
+pub fn build_snapshot(
     replicator: &CoreReplicator,
     identity: &DeviceIdentity,
     group_id: &str,
@@ -529,6 +530,33 @@ impl ReceiveState {
 /// Laid out as `{"version": N, "state": ..., "receive": ...}` so a future
 /// format change bumps the version without a schema of its own.
 pub fn import_snapshot(blob: &[u8], strategy: u32) -> Result<(Replicator, ReceiveState), FfiError> {
+    let (state, receive) = parse_snapshot(blob)?;
+    let core = CoreReplicator::from_state(&state, Replicator::strategy(strategy)?)
+        .map_err(|error| FfiError::protocol(format!("snapshot state is inconsistent: {error}")))?;
+    Ok((Replicator(core), ReceiveState(receive)))
+}
+
+/// wasm-safe variant of [`import_snapshot`]: the host supplies the wall clock
+/// (`js_sys::Date::now` on wasm32, where `SystemTime` is unavailable). The
+/// blob format and the version check are identical — only the clock source
+/// differs, so a snapshot exported by any binding imports on any other.
+pub fn import_snapshot_with_clock(
+    blob: &[u8],
+    strategy: u32,
+    now_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
+) -> Result<(Replicator, ReceiveState), FfiError> {
+    let (state, receive) = parse_snapshot(blob)?;
+    let core =
+        CoreReplicator::from_state_with_clock(&state, Replicator::strategy(strategy)?, now_ms)
+            .map_err(|error| {
+                FfiError::protocol(format!("snapshot state is inconsistent: {error}"))
+            })?;
+    Ok((Replicator(core), ReceiveState(receive)))
+}
+
+/// The version check and the state/receive split, shared by both import
+/// paths so the two can never drift in what they accept.
+fn parse_snapshot(blob: &[u8]) -> Result<(SyncState, CoreReceiveState), FfiError> {
     let snapshot: Json = serde_json::from_slice(blob)
         .map_err(|error| FfiError::input(format!("snapshot is unreadable: {error}")))?;
     let version = snapshot
@@ -555,9 +583,7 @@ pub fn import_snapshot(blob: &[u8], strategy: u32) -> Result<(Replicator, Receiv
             .ok_or_else(|| FfiError::input("snapshot has no receive position"))?,
     )
     .map_err(|error| FfiError::input(format!("receive position is unreadable: {error}")))?;
-    let core = CoreReplicator::from_state(&state, Replicator::strategy(strategy)?)
-        .map_err(|error| FfiError::protocol(format!("snapshot state is inconsistent: {error}")))?;
-    Ok((Replicator(core), ReceiveState(receive)))
+    Ok((state, receive))
 }
 
 /// Group key material with replay tracking for one device.
