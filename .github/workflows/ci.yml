@@ -142,6 +142,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm run docs:build
+      - run: pnpm --filter @syncbond/docs test
   # Build the release static library once, then run the Go binding's suite with
   # and without cgo. The CGO_ENABLED=0 run proves the no-cgo build fails loudly
   # rather than silently producing empty state.

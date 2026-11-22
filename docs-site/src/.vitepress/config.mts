@@ -9,7 +9,14 @@ const sharedConfig = {
   appearance: false,
   cleanUrls: true,
   ignoreDeadLinks: false,
-  head: [['link', { rel: 'icon', type: 'image/svg+xml', href: '/syncbond/icon.svg' }]],
+  head: [
+    ['link', { rel: 'icon', type: 'image/svg+xml', href: '/syncbond/icon.svg' }],
+    // Browser-language auto-redirect for the home pages. Synchronous (no
+    // defer/async) so it runs before first paint and a redirected visitor
+    // never sees a flash of the wrong locale. Keep the file at
+    // src/public/lang-redirect.js; it is copied to the dist root verbatim.
+    ['script', { src: '/syncbond/lang-redirect.js' }]
+  ],
   themeConfig: {
     // logo/GitHub 图标一律用 vitepress 自带：不设 logo（默认标题字），GitHub 走内置 socialLinks 图标
     socialLinks: [{ icon: 'github', link: 'https://github.com/cuihairu/syncbond' }],

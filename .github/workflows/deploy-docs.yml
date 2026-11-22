@@ -29,6 +29,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @syncbond/docs build
+      - run: pnpm --filter @syncbond/docs test
       - name: Verify generated internal links
         run: node scripts/verify-docs-links.mjs
       - uses: actions/configure-pages@v6.0.0
