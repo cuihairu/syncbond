@@ -17,6 +17,11 @@ pub struct TestRelay {
     pub shutdown: crate::serve::Shutdown,
     _task: tokio::task::JoinHandle<()>,
     _db: std::path::PathBuf,
+    /// Whether dropping this relay removes its database file. `boot_relay`
+    /// owns a throwaway database and removes it; `boot_relay_in` leaves it
+    /// for the caller, so a second relay can resume the same durable state
+    /// (the server-restart recovery the recovery suite exercises).
+    _remove_db: bool,
     /// The relay's runtime owns the serve task, so it must stay alive
     /// until the relay does. Dropping a runtime blocks, which panics
     /// inside a `#[tokio::test]` body — hand it to a detached OS thread
@@ -24,10 +29,20 @@ pub struct TestRelay {
     _runtime: std::mem::ManuallyDrop<tokio::runtime::Runtime>,
 }
 
+impl TestRelay {
+    /// The database file path — the durable state the restart tests resume
+    /// from, and the cleanup assertion's target.
+    pub fn db_path(&self) -> &std::path::Path {
+        &self._db
+    }
+}
+
 impl Drop for TestRelay {
     fn drop(&mut self) {
         self._task.abort();
-        std::fs::remove_file(&self._db).ok();
+        if self._remove_db {
+            std::fs::remove_file(&self._db).ok();
+        }
         let runtime = unsafe { std::mem::ManuallyDrop::take(&mut self._runtime) };
         std::thread::spawn(move || drop(runtime));
     }
@@ -46,9 +61,23 @@ pub fn boot_relay() -> TestRelay {
         std::process::id(),
         COUNTER.fetch_add(1, Ordering::Relaxed)
     ));
-    std::fs::create_dir_all(&dir).unwrap();
     let db = dir.join("relay.db");
+    boot_relay_at(db, true)
+}
 
+/// Boot a relay on the caller's own database path (created if missing).
+/// The database is left intact when the relay is dropped, so a second call
+/// on the same path resumes the durable channel log — the server restart
+/// the recovery suite boots over and over. Every other setting matches
+/// [`boot_relay`].
+pub fn boot_relay_in(dir: &std::path::Path) -> TestRelay {
+    std::fs::create_dir_all(dir).expect("create the relay data directory");
+    boot_relay_at(dir.join("relay.db"), false)
+}
+
+/// The shared boot: the same router, serve loop, SQLite store, and shutdown
+/// edge the binary runs, on an ephemeral loopback port.
+fn boot_relay_at(db: std::path::PathBuf, remove_db: bool) -> TestRelay {
     let store = std::sync::Arc::new(crate::sqlite::SqliteRelayStore::open(&db).unwrap());
     store.mark_ready();
     let shutdown = crate::serve::Shutdown::new();
@@ -103,6 +132,7 @@ pub fn boot_relay() -> TestRelay {
         shutdown,
         _task: task,
         _db: db,
+        _remove_db: remove_db,
         _runtime: std::mem::ManuallyDrop::new(runtime),
     }
 }

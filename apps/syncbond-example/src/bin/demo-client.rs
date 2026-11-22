@@ -8,12 +8,14 @@
 //! demo-client pair-joiner <data-dir> <relay-url> <room-id> <capability> <code>
 //! demo-client write       <data-dir> <key> <value>
 //! demo-client sync        <data-dir> <relay-url> <channel-id> <token>
+//! demo-client get         <data-dir> <key>
 //! demo-client count       <data-dir>
 //! ```
 //!
 //! Machine-readable stdout: `code <CODE>` (host, at issue), `paired
 //! <device-id>` (after a pairing), `records <n>` (after write, sync, or
-//! count). Anything else goes to stderr with exit 1.
+//! count), `value <v>` (after get). Anything else goes to stderr with
+//! exit 1.
 
 use std::path::Path;
 use std::time::Duration;
@@ -51,8 +53,9 @@ fn run(args: &[String]) -> Result<(), String> {
         [command, data_dir, relay_url, channel_id, token] if command == "sync" => {
             sync(Path::new(data_dir), relay_url, channel_id, token)
         }
+        [command, data_dir, key] if command == "get" => get(Path::new(data_dir), key),
         [command, data_dir] if command == "count" => count(Path::new(data_dir)),
-        _ => Err("usage: demo-client <pair-host|pair-joiner|write|sync|count> ...".into()),
+        _ => Err("usage: demo-client <pair-host|pair-joiner|write|sync|get|count> ...".into()),
     }
 }
 
@@ -220,6 +223,20 @@ fn count(data_dir: &Path) -> Result<(), String> {
     let facts = GroupFacts::load(data_dir)?;
     let device = load_device(data_dir, &facts)?;
     println!("records {}", device.replicator.record_count());
+    Ok(())
+}
+
+fn get(data_dir: &Path, key: &str) -> Result<(), String> {
+    let facts = GroupFacts::load(data_dir)?;
+    let device = load_device(data_dir, &facts)?;
+    let record = device
+        .replicator
+        .get(key)
+        .filter(|record| !record.deleted)
+        .ok_or_else(|| format!("no record for {key}"))?;
+    // The demo writes UTF-8 values; lossy keeps the line printable while
+    // an ASCII round-trip stays byte-exact for the assertions above.
+    println!("value {}", String::from_utf8_lossy(&record.payload));
     Ok(())
 }
 
