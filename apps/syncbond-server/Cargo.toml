@@ -47,7 +47,15 @@ futures-util = { version = "0.3", default-features = false, features = ["std", "
 # needs the `net` feature, and `#[tokio::test]` drives it on a runtime,
 # neither of which the workspace-level tokio reference turns on for the
 # server binary itself.
-tokio = { workspace = true, features = ["net", "rt", "macros", "time", "sync"] }
+tokio = { workspace = true, features = ["net", "rt", "rt-multi-thread", "macros", "time", "sync", "io-util"] }
 # Real WebSocket client coverage (todo.md DSR-21): the same engine axum's
 # `ws` feature uses, pinned by the lockfile — no new tree entries.
 tokio-tungstenite = "0.29"
+# DSR-47 ciphertext-boundary acceptance: drive the real binary with the real
+# client, pairing transport, and core keying stack, then SIGTERM it so its
+# drain checkpoints the WAL.
+syncbond-core = { path = "../../crates/syncbond-core" }
+syncbond-relay-client = { path = "../../crates/syncbond-relay-client" }
+syncbond-relay-protocol = { path = "../../crates/syncbond-relay-protocol" }
+syncbond-transport-ws = { path = "../../crates/syncbond-transport-ws" }
+libc = "0.2"
