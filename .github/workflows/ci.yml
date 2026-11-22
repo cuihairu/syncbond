@@ -26,6 +26,43 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
 
+  # DSR-52: the server network acceptance, as its own job. The two suites boot
+  # the shipped relay binary as its own process — a fresh data directory and
+  # real loopback sockets per test — so the run needs no public network and no
+  # pre-existing database. The job timeout turns a hung suite into a failure.
+  # The output is retained with credentials redacted (a 64-lowercase-hex run
+  # is the admin bootstrap credential or a device token; `ch_`/`cred_` ids are
+  # public handles and are left readable). This job has no release authority:
+  # versioned release authorization lives entirely in the nightly/release
+  # workflows and is untouched here.
+  server-acceptance:
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2.9.3
+      - name: Run the network acceptance suites
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test -p syncbond-server \
+            --test ciphertext_boundary_suite \
+            --test resource_shutdown_suite \
+            2>&1 | tee acceptance-raw.log
+      - name: Redact credentials from the log
+        if: always()
+        shell: bash
+        run: |
+          test -f acceptance-raw.log || exit 0
+          sed -E 's/\b[0-9a-f]{64}\b/[REDACTED]/g' acceptance-raw.log > acceptance.log
+      - name: Retain the sanitized acceptance log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-acceptance-log
+          path: acceptance.log
+
   coverage:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
