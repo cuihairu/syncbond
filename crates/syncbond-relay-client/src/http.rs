@@ -58,10 +58,18 @@ pub(crate) async fn request(
             .await
             .map_err(|_| RelayClientError::Timeout)?
             .map_err(|error| tls::classify_io(&error))?;
-        let raw = exchange(tls_stream, request, body).await?;
+        let raw = tokio::time::timeout(timeout, exchange(tls_stream, request, body))
+            .await
+            .map_err(|_| RelayClientError::Timeout)??;
         parse_response(raw)
     } else {
-        let raw = exchange(connect, request, body).await?;
+        // The exchange itself rides the same deadline as the connect: a
+        // relay that accepts but never answers would otherwise park the
+        // driver's worker inside `block_on` forever, past every retry and
+        // backoff the sync loop could have run.
+        let raw = tokio::time::timeout(timeout, exchange(connect, request, body))
+            .await
+            .map_err(|_| RelayClientError::Timeout)??;
         parse_response(raw)
     }
 }
