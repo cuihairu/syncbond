@@ -1,0 +1,40 @@
+# deploy/compose.yaml (todo.md DSR-50): one-command local relay, the deploy/
+# layout default-server.md §2 assigns. Run from the repository root:
+#
+#   docker compose -f deploy/compose.yaml up -d
+#
+# That builds the image (deploy/Dockerfile), starts the container with a
+# named volume for /data, and the image's own HEALTHCHECK reports readiness.
+# Nothing is required in advance: the container uses the config baked into
+# the image (deploy/config.json) and the server writes its admin bootstrap
+# credential into the volume on first boot. The data volume survives
+# `down` and container rebuilds (named volumes are not removed unless you
+# pass -v); the admin credential and every channel credential are issued
+# at runtime, never stored in this file or the image.
+#
+# Plaintext is local-development-only (default-server.md §4): the published
+# port is bound to 127.0.0.1, so nothing on the network can reach it. The
+# host port defaults to 8080 and can be overridden (SYNCBOND_HTTP_PORT) if
+# the host already uses it; the loopback binding stays either way. A public
+# deployment terminates TLS in a reverse proxy in front of the container and
+# reaches the relay over the docker network; remove or re-point the ports
+# mapping for that setup (deploy guides, todo.md DSR-51). To override the
+# server config, bind a file over the baked one:
+#
+#   volumes:
+#     - ./config.example.json:/etc/syncbond/config.json:ro
+
+services:
+  relay:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: syncbond-server:local
+    ports:
+      - "127.0.0.1:${SYNCBOND_HTTP_PORT:-8080}:8080"
+    volumes:
+      - relay-data:/data
+    restart: unless-stopped
+
+volumes:
+  relay-data:

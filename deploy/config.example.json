@@ -1,0 +1,12 @@
+{
+  "listen": "0.0.0.0:8080",
+  "dataDir": "/data",
+  "channelQuotaBytes": 1073741824,
+  "diskQuotaBytes": 8589934592,
+  "allowedOrigins": [],
+  "trustedProxies": [],
+  "maxWsSessions": 64,
+  "maxConnections": 256,
+  "headerTimeoutSeconds": 30,
+  "shutdownTimeoutSeconds": 10
+}
