@@ -33,9 +33,11 @@ Rust 核心已实现，由 workspace 测试套件覆盖（截至 2026-11-14 共 
 
 ## 默认服务器规划
 
-目前没有可直接部署的默认服务器；`FileRelayStore` 是保存明文 `Operation` 的存储原型。服务器将遵守的线上契约——共享 DTO、17 个稳定错误码、尺寸上限——已在 [`crates/syncbond-relay-protocol/`](crates/syncbond-relay-protocol) 实现并冻结于[中继协议（v1）](docs/zh/design/relay-protocol.md)文档，核心封印的信封已被证明可逐字节通过该契约。服务器本体（`apps/syncbond-server/`）与客户端网络接入（`crates/syncbond-transport-ws/`）尚未实现。
+默认中继服务器已在 [`apps/syncbond-server/`](apps/syncbond-server) 交付，由验收套件（`apps/syncbond-server/tests/`）覆盖。它只存密文信封、只转发配对帧——永不见明文操作、用过即弃的配对短码、身份密钥或组密钥。它遵守的线上契约——共享 DTO、17 个稳定错误码、尺寸上限——在 [`crates/syncbond-relay-protocol/`](crates/syncbond-relay-protocol) 并冻结于[中继协议（v1）](docs/zh/design/relay-protocol.md)文档。客户端网络接入在 [`crates/syncbond-transport-ws/`](crates/syncbond-transport-ws)，`RelayClient` 在 `crates/syncbond-relay-client/`。
 
-职责、信任边界与验收标准见 [默认中继服务器设计](docs/zh/design/default-server.md)；原子任务及依赖见 [todo.md](todo.md#默认服务器实施计划2026-11-14全部待实现)。复制恢复与收敛修复是交付前置阻断项；现有中继存储测试或多语言 conformance 通过不代表真实跨设备同步已完成。
+部署者持有一份 admin 引导凭证、创建频道、为每设备每频道签发凭证，并设定每频道与全库配额。`docker compose -f deploy/compose.yaml up -d` 即可构建并运行（仅回环发布、非 root、带健康检查）；TLS 终结、浏览器 Origin 与代理信任、凭证、配额、备份/恢复与升级见[运行维护指南](docs/zh/deploy.md)。
+
+职责、信任边界与验收标准见 [默认中继服务器设计](docs/zh/design/default-server.md)；原子任务及依赖见 [todo.md](todo.md)。
 
 ## 每日构建
 
@@ -59,6 +61,8 @@ sha256sum -c --ignore-missing SHA256SUMS   # 先下载所需资产
 ```
 crates/syncbond-core/          Rust 核心（pairing、crypto、replication、conflict、storage、transport）
 crates/syncbond-ffi/           C ABI（cdylib + 头文件）+ C++/Go/Java/C# 绑定与 conformance fixture
+apps/syncbond-server/        默认中继服务器（HTTP/1.1 + WebSocket、SQLite、凭证、配额）
+deploy/                      中继服务器的 Dockerfile、compose.yaml 与配置示例
 crates/syncbond-relay-protocol/ 中继 v1 线上契约（DTO、错误码、上限），客户端与服务器共享
 crates/syncbond-napi/   Node.js TypeScript 绑定（napi-rs over C ABI）
 crates/syncbond-wasm/   浏览器 WASM 绑定（wasm-bindgen over 核心）

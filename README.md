@@ -33,9 +33,11 @@ Progress and open decisions: [`todo.md`](todo.md). Protocol contract: [`docs/des
 
 ## Default server plan
 
-There is no deployable default server yet; `FileRelayStore` is a plaintext `Operation` storage prototype. The frozen wire contract the server will serve — shared DTOs, 17 stable error codes, and size limits — is implemented in [`crates/syncbond-relay-protocol/`](crates/syncbond-relay-protocol) and documented in the [relay protocol (v1)](docs/design/relay-protocol.md) spec, which core-sealed envelopes are proven against byte-for-byte. The server itself (`apps/syncbond-server/`) and client networking (`crates/syncbond-transport-ws/`) are not implemented yet.
+The default relay server ships in [`apps/syncbond-server/`](apps/syncbond-server), exercised by the acceptance suites (`apps/syncbond-server/tests/`). It stores ciphertext envelopes and forwards pairing frames — it never sees plaintext operations, pairing short codes, identity keys, or group keys. The frozen wire contract it serves — shared DTOs, 17 stable error codes, and size limits — lives in [`crates/syncbond-relay-protocol/`](crates/syncbond-relay-protocol) and is documented in the [relay protocol (v1)](docs/design/relay-protocol.md) spec. The client transport is [`crates/syncbond-transport-ws/`](crates/syncbond-transport-ws) with the `RelayClient` in `crates/syncbond-relay-client/`.
 
-See the [default relay server design](docs/design/default-server.md) for responsibilities, trust boundaries and acceptance criteria, and [todo.md](todo.md#默认服务器实施计划2026-11-14全部待实现) for atomic tasks and dependencies. Replication recovery and convergence fixes block delivery; passing storage or cross-language conformance tests does not establish real cross-device synchronization.
+A deployer holds one admin bootstrap credential, creates channels, issues per-device per-channel credentials, and sets per-channel and whole-database quotas. `docker compose -f deploy/compose.yaml up -d` builds and runs it (loopback-published, non-root, health-checked); see the [operations guide](docs/deploy.md) for TLS termination, browser origins and trusted proxies, credentials, quotas, backup/restore, and upgrades.
+
+See the [default relay server design](docs/design/default-server.md) for responsibilities, trust boundaries and acceptance criteria, and [todo.md](todo.md) for atomic tasks and dependencies.
 
 ## Nightly builds
 
@@ -59,6 +61,8 @@ sha256sum -c --ignore-missing SHA256SUMS   # after downloading the assets you wa
 ```
 crates/syncbond-core/          the Rust core (pairing, crypto, replication, conflict, storage, transport)
 crates/syncbond-ffi/           the C ABI (cdylib + headers), plus the C++/Go/Java/C# bindings and conformance fixtures
+apps/syncbond-server/        the default relay server (HTTP/1.1 + WebSocket, SQLite, credentials, quotas)
+deploy/                      Dockerfile, compose.yaml, and config examples for the relay server
 crates/syncbond-relay-protocol/ the frozen relay v1 wire contract (DTOs, error codes, limits) shared by client and server
 crates/syncbond-napi/   Node.js TypeScript bindings (napi-rs over the C ABI)
 crates/syncbond-wasm/   browser WASM bindings (wasm-bindgen over the core)

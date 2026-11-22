@@ -13,6 +13,9 @@ hero:
       text: 协议规范（v1）
       link: /design/PROTOCOL
     - theme: alt
+      text: 运行中继
+      link: /zh/deploy
+    - theme: alt
       text: GitHub
       link: https://github.com/cuihairu/syncbond
 
@@ -25,4 +28,6 @@ features:
     details: 基于 游标 + 去重 的 oplog 复制——乱序与重复投递收敛到同一状态。合并策略可插拔：HLC-LWW（含因果墓碑）、OR-Set、PN-Counter。
   - title: 以契约为本的可嵌入性
     details: 内核不含任何应用概念——载荷即不透明字节，合并行为即可插拔策略。密码学全部由经审计的 RustCrypto 组件组装，本仓不实现任何密码学原语。
+  - title: 可自托管的中继
+    details: 单进程服务器只存密文信封、只转发配对帧——永不见明文、密钥或短码。一条 `docker compose up`、一份 admin 引导凭证、每设备一份凭证、有界配额。运维指南覆盖 TLS、备份与升级。
 ---

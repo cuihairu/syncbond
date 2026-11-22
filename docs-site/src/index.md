@@ -13,6 +13,9 @@ hero:
       text: Protocol specification (v1)
       link: /design/PROTOCOL
     - theme: alt
+      text: Run the relay
+      link: /deploy
+    - theme: alt
       text: GitHub
       link: https://github.com/cuihairu/syncbond
 
@@ -25,4 +28,6 @@ features:
     details: "Oplog replication with cursors and deduplication — out-of-order and duplicate delivery converge to the same state. Pluggable merge strategies: HLC-LWW with causal tombstones, OR-Set, PN-Counter."
   - title: Embeddable by contract
     details: No application concepts in the core — payloads are opaque bytes and merge behavior is a pluggable strategy. Cryptography is assembled from audited RustCrypto components; no primitives are implemented here.
+  - title: A relay you can run yourself
+    details: One single-process server stores ciphertext envelopes and forwards pairing frames — it never sees plaintext, keys, or short codes. One `docker compose up`, an admin bootstrap credential, per-device credentials, bounded quotas. The operations guide covers TLS, backup, and upgrades.
 ---

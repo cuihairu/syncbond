@@ -38,6 +38,7 @@ export default defineConfig({
             ]
           },
           { text: 'Research', link: '/research/survey-2026-10-21', activeMatch: '^/research/' },
+          { text: 'Deploy', link: '/deploy', activeMatch: '^/deploy' },
         ],
         sidebar: {
           '/': [
@@ -53,6 +54,7 @@ export default defineConfig({
                 { text: 'Default server plan', link: '/design/default-server' }
               ]
             },
+            { text: 'Deploy', items: [{ text: 'Run the relay', link: '/deploy' }] },
             { text: 'Research', items: [{ text: 'Landscape survey (2026-10-21)', link: '/research/survey-2026-10-21' }] }
           ]
         },
@@ -82,6 +84,7 @@ export default defineConfig({
             ]
           },
           { text: '调研', link: '/zh/research/survey-2026-10-21', activeMatch: '^/zh/research/' },
+          { text: '部署', link: '/zh/deploy', activeMatch: '^/zh/deploy' },
         ],
         sidebar: {
           '/zh/': [
@@ -97,6 +100,7 @@ export default defineConfig({
                 { text: '默认服务器规划', link: '/zh/design/default-server' }
               ]
             },
+            { text: '部署', items: [{ text: '运行中继', link: '/zh/deploy' }] },
             { text: '调研', items: [{ text: '现状调研（2026-10-21）', link: '/zh/research/survey-2026-10-21' }] }
           ]
         },
