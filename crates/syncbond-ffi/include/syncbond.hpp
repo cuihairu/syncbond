@@ -144,7 +144,16 @@ public:
   std::vector<uint8_t> secret_key() const;
 
 private:
+  friend struct StateSnapshot;
+  friend class RelayDriver;
   explicit Identity(sb_identity* handle) : handle_(handle) {}
+  /// Hand the raw handle to the relay driver: the driver owns it from here
+  /// (success AND failure), so this object releases nothing on destruction.
+  sb_identity* detach() {
+    sb_identity* handle = handle_;
+    handle_ = nullptr;
+    return handle;
+  }
   void release() {
     if (handle_ != nullptr) {
       sb_identity_free(handle_);
@@ -403,7 +412,16 @@ public:
   }
 
 private:
+  friend struct StateSnapshot;
+  friend class RelayDriver;
   explicit Replicator(sb_replicator* handle) : handle_(handle) {}
+  /// Hand the raw handle to the relay driver: the driver owns it from here
+  /// (success AND failure), so this object releases nothing on destruction.
+  sb_replicator* detach() {
+    sb_replicator* handle = handle_;
+    handle_ = nullptr;
+    return handle;
+  }
   void release() {
     if (handle_ != nullptr) {
       sb_replicator_free(handle_);
@@ -471,7 +489,15 @@ public:
   }
 
 private:
+  friend class RelayDriver;
   explicit Keyring(sb_keyring* handle) : handle_(handle) {}
+  /// Hand the raw handle to the relay driver: the driver owns it from here
+  /// (success AND failure), so this object releases nothing on destruction.
+  sb_keyring* detach() {
+    sb_keyring* handle = handle_;
+    handle_ = nullptr;
+    return handle;
+  }
   void release() {
     if (handle_ != nullptr) {
       sb_keyring_free(handle_);
@@ -479,6 +505,320 @@ private:
     }
   }
   sb_keyring* handle_;
+};
+
+/// RAII wrapper for the receive-side pull position: the per-(server, channel)
+/// committed sequence, the highest local cursor per replica, and the
+/// already-opened message ids. Without it a restart re-pulls (and re-applies)
+/// every remote operation already seen.
+class ReceiveState {
+public:
+  ReceiveState() : handle_(nullptr) {}
+  static ReceiveState create() {
+    sb_receive_state* handle = sb_receive_state_new();
+    if (handle == nullptr) {
+      fail(sb_last_error_code(), "sb_receive_state_new");
+    }
+    return ReceiveState(handle);
+  }
+  ReceiveState(const ReceiveState&) = delete;
+  ReceiveState& operator=(const ReceiveState&) = delete;
+  ReceiveState(ReceiveState&& other) noexcept : handle_(other.handle_) {
+    other.handle_ = nullptr;
+  }
+  ReceiveState& operator=(ReceiveState&& other) noexcept {
+    if (this != &other) {
+      release();
+      handle_ = other.handle_;
+      other.handle_ = nullptr;
+    }
+    return *this;
+  }
+  ~ReceiveState() { release(); }
+
+  /// Record the server-assigned sequence the next pull starts after.
+  void server_cursor(const std::string& server_id, const std::string& channel_id,
+                     uint64_t server_seq) {
+    if (sb_receive_state_server_cursor(handle_, server_id.c_str(), channel_id.c_str(),
+                                       server_seq) != SB_ERR_NONE) {
+      fail(sb_last_error_code(), "sb_receive_state_server_cursor");
+    }
+  }
+  /// Record the highest local cursor seen for one replica's "<node>:<n>" ids.
+  void source_cursor(const std::string& node_id, uint64_t seq) {
+    if (sb_receive_state_source_cursor(handle_, node_id.c_str(), seq) != SB_ERR_NONE) {
+      fail(sb_last_error_code(), "sb_receive_state_source_cursor");
+    }
+  }
+  /// Record one already-opened envelope so a redelivery is a no-op.
+  void seen(const std::string& message_id) {
+    if (sb_receive_state_seen(handle_, message_id.c_str()) != SB_ERR_NONE) {
+      fail(sb_last_error_code(), "sb_receive_state_seen");
+    }
+  }
+  /// The last committed server sequence; empty when never pulled.
+  std::optional<uint64_t> server_seq(const std::string& server_id,
+                                     const std::string& channel_id) const {
+    uint64_t seq = 0;
+    const int code = sb_receive_state_server_seq(handle_, server_id.c_str(),
+                                                 channel_id.c_str(), &seq);
+    if (code == SB_RESULT_ABSENT) {
+      return std::nullopt;
+    }
+    if (code != SB_ERR_NONE) {
+      fail(code, "sb_receive_state_server_seq");
+    }
+    return seq;
+  }
+  /// Canonical dump of the whole position; deterministic byte for byte.
+  std::string json() const { return read(sb_receive_state_json(handle_), "receive_state_json"); }
+
+private:
+  friend struct StateSnapshot;
+  friend class RelayDriver;
+  explicit ReceiveState(sb_receive_state* handle) : handle_(handle) {}
+  /// Hand the raw handle to the relay driver: the driver owns it from here
+  /// (success AND failure), so this object releases nothing on destruction.
+  sb_receive_state* detach() {
+    sb_receive_state* handle = handle_;
+    handle_ = nullptr;
+    return handle;
+  }
+  void release() {
+    if (handle_ != nullptr) {
+      sb_receive_state_free(handle_);
+      handle_ = nullptr;
+    }
+  }
+  sb_receive_state* handle_;
+};
+
+/// The monotonic counters a running relay driver's worker has accumulated.
+struct RelayProgress {
+  bool running = false;
+  uint64_t cycles = 0;
+  uint64_t sent_batches = 0;
+  uint64_t sent_envelopes = 0;
+  uint64_t pages_pulled = 0;
+  uint64_t applied = 0;
+};
+
+/// One exported device snapshot: the replicator and receive position restored
+/// from a blob. `export_state()` writes the blob; `import()` rebuilds it.
+struct StateSnapshot {
+  Replicator replicator;
+  ReceiveState receive;
+
+  /// Write the replicator's committed state plus a receive position as one
+  /// versioned snapshot. PRIVATE material (it embeds the device identity).
+  static Buffer export_state(const Replicator& replicator, const Identity& identity,
+                             const std::string& group_id, uint64_t key_epoch,
+                             const ReceiveState& receive) {
+    Buffer out;
+    if (sb_state_export(replicator.handle_, identity.handle_, group_id.c_str(), key_epoch,
+                        receive.handle_, out.raw()) != SB_ERR_NONE) {
+      fail(sb_last_error_code(), "sb_state_export");
+    }
+    return out;
+  }
+
+  /// Rebuild a replicator and a receive position from a snapshot blob. The
+  /// strategy must be the one the original used (the blob does not store it).
+  static StateSnapshot import(const uint8_t* blob, std::size_t len, uint32_t strategy) {
+    sb_replicator* replicator = nullptr;
+    sb_receive_state* receive = nullptr;
+    if (sb_state_import(blob, len, strategy, &replicator, &receive) != SB_ERR_NONE) {
+      fail(sb_last_error_code(), "sb_state_import");
+    }
+    return StateSnapshot{Replicator(replicator), ReceiveState(receive)};
+  }
+  static StateSnapshot import(const std::vector<uint8_t>& blob, uint32_t strategy) {
+    return import(blob.data(), blob.size(), strategy);
+  }
+};
+
+/// One relay channel driver over the C ABI. The native driver owns the whole
+/// network session (the relay client, its runtime and one worker thread) plus
+/// the device state; the host only configures, starts, stops and interleaves
+/// writes. The four sub-handles (identity, keyring, replicator, receive state)
+/// transfer to the driver on success AND on failure, matching the ABI contract,
+/// so `open()` leaves the objects it built emptied rather than freeing them.
+class RelayDriver {
+public:
+  /// TLS certificate checking strictness, mirroring SB_TLS_*.
+  static constexpr uint32_t kTlsValidate = SB_TLS_VALIDATE;
+  static constexpr uint32_t kTlsValidateCa = SB_TLS_VALIDATE_CA;
+  static constexpr uint32_t kTlsAcceptInvalid = SB_TLS_ACCEPT_INVALID;
+
+  /// Why the loop ended, mirroring SB_DRIVER_STOP_*.
+  static constexpr int kStopNone = SB_DRIVER_STOP_NONE;
+  static constexpr int kStopCancelled = SB_DRIVER_STOP_CANCELLED;
+  static constexpr int kStopExhausted = SB_DRIVER_STOP_EXHAUSTED;
+  static constexpr int kStopFatal = SB_DRIVER_STOP_FATAL;
+
+  /// Everything `open()` needs; the fields mirror the C ABI call.
+  struct Config {
+    std::string relay_url;
+    std::string channel_id;
+    std::string channel_token;
+    std::string server_id;
+    std::string cursor_channel;
+    std::string group_id;
+    uint64_t key_epoch = 1;
+    /// Shared 32-byte group key material; two devices in one group import the
+    /// same bytes.
+    std::vector<uint8_t> group_key;
+    /// Names a fresh replicator; ignored when `state` restores one.
+    std::string node_id;
+    uint64_t timeout_ms = 5000;
+    uint32_t tls_mode = kTlsValidate;
+    /// Pins a CA (DER) when `tls_mode` is kTlsValidateCa.
+    std::vector<uint8_t> ca_der;
+    /// An exported snapshot to resume from; empty starts fresh.
+    std::vector<uint8_t> state;
+  };
+
+  /// Build the identity, keyring, replicator and receive state the driver
+  /// needs and hand them to sb_relay_driver_new, whose ownership transfer
+  /// (on success AND on failure) means none of them is a separate owner.
+  static RelayDriver open(const Config& config) {
+    if (config.group_key.size() != 32) {
+      throw Error(SB_ERR_INPUT, "group key must be exactly 32 bytes");
+    }
+    Identity identity = Identity::generate();
+    Keyring keyring = Keyring::import(config.group_id, config.key_epoch, config.group_key.data());
+    Replicator replicator;
+    ReceiveState receive;
+    if (!config.state.empty()) {
+      StateSnapshot restored = StateSnapshot::import(config.state, SB_STRATEGY_LWW_HLC);
+      replicator = std::move(restored.replicator);
+      receive = std::move(restored.receive);
+    } else {
+      replicator = Replicator::create(config.node_id, SB_STRATEGY_LWW_HLC);
+      receive = ReceiveState::create();
+    }
+    sb_relay_driver* handle = sb_relay_driver_new(
+        config.relay_url.c_str(), config.channel_id.c_str(), config.channel_token.c_str(),
+        config.server_id.c_str(), config.cursor_channel.c_str(), config.group_id.c_str(),
+        config.key_epoch, identity.detach(), keyring.detach(), replicator.detach(),
+        receive.detach(), config.timeout_ms, config.tls_mode,
+        config.ca_der.empty() ? nullptr : config.ca_der.data(), config.ca_der.size());
+    if (handle == nullptr) {
+      // The library freed all four detached handles already; the detached
+      // locals are null so nothing frees them twice.
+      fail(sb_last_error_code(), "sb_relay_driver_new");
+    }
+    return RelayDriver(handle);
+  }
+
+  RelayDriver() : handle_(nullptr) {}
+  RelayDriver(const RelayDriver&) = delete;
+  RelayDriver& operator=(const RelayDriver&) = delete;
+  RelayDriver(RelayDriver&& other) noexcept : handle_(other.handle_) {
+    other.handle_ = nullptr;
+  }
+  RelayDriver& operator=(RelayDriver&& other) noexcept {
+    if (this != &other) {
+      release();
+      handle_ = other.handle_;
+      other.handle_ = nullptr;
+    }
+    return *this;
+  }
+  ~RelayDriver() { release(); }
+
+  /// Replace the loop's pacing knobs; only effective before start().
+  void configure(uint16_t page_limit, std::size_t max_pages_per_cycle,
+                 uint64_t initial_backoff_ms, uint64_t max_backoff_ms,
+                 uint32_t max_attempts, uint64_t idle_interval_ms) {
+    if (sb_relay_driver_config(handle_, page_limit, max_pages_per_cycle, initial_backoff_ms,
+                               max_backoff_ms, max_attempts, idle_interval_ms) != SB_ERR_NONE) {
+      fail(sb_last_error_code(), "sb_relay_driver_config");
+    }
+  }
+  /// Spawn the worker thread. A second start() while running is an input
+  /// error; after stop() the driver may be started again.
+  void start() {
+    if (sb_relay_driver_start(handle_) != SB_ERR_NONE) {
+      fail(sb_last_error_code(), "sb_relay_driver_start");
+    }
+  }
+  /// Cancel the loop and join the worker; idempotent.
+  void stop() {
+    if (sb_relay_driver_stop(handle_) != SB_ERR_NONE) {
+      fail(sb_last_error_code(), "sb_relay_driver_stop");
+    }
+  }
+  /// Stage a local write; the worker sends it on its next cycle.
+  void write(const std::string& key, const uint8_t* payload, std::size_t len) {
+    if (sb_relay_driver_write(handle_, key.c_str(), payload, len) != SB_ERR_NONE) {
+      fail(sb_last_error_code(), "sb_relay_driver_write");
+    }
+  }
+  void write(const std::string& key, const std::string& payload) {
+    write(key, reinterpret_cast<const uint8_t*>(payload.data()), payload.size());
+  }
+  /// Stage a local delete (a causal tombstone), like write().
+  void del(const std::string& key) {
+    if (sb_relay_driver_delete(handle_, key.c_str()) != SB_ERR_NONE) {
+      fail(sb_last_error_code(), "sb_relay_driver_delete");
+    }
+  }
+  /// The live payload; empty when the key has no live value.
+  std::optional<Buffer> get(const std::string& key) const {
+    Buffer out;
+    const int code = sb_relay_driver_get(handle_, key.c_str(), out.raw());
+    if (code == SB_RESULT_ABSENT) {
+      return std::nullopt;
+    }
+    if (code != SB_ERR_NONE) {
+      fail(code, "sb_relay_driver_get");
+    }
+    return out;
+  }
+  /// Whether the worker thread is up.
+  bool running() const { return sb_relay_driver_running(handle_) != 0; }
+  /// The monotonic counters (and the running flag).
+  RelayProgress progress() const {
+    sb_relay_progress_t raw{};
+    if (sb_relay_driver_progress(handle_, &raw) != SB_ERR_NONE) {
+      fail(sb_last_error_code(), "sb_relay_driver_progress");
+    }
+    return RelayProgress{raw.running != 0, raw.cycles, raw.sent_batches, raw.sent_envelopes,
+                         raw.pages_pulled, raw.applied};
+  }
+  /// One of the kStop* values; kStopNone while running or never started.
+  int stop_reason() const { return sb_relay_driver_stop_reason(handle_); }
+  /// The text of the error that ended the loop; empty when it ended cleanly.
+  std::string error() const {
+    const char* text = sb_relay_driver_error(handle_);
+    if (text == nullptr) {
+      return {};
+    }
+    std::string out{text};
+    sb_free_string(text);
+    return out;
+  }
+  /// The device state plus the receive position as one versioned snapshot, the
+  /// blob a later Config::state restores from. PRIVATE material: it embeds the
+  /// device identity, so guard it accordingly.
+  Buffer export_state() const {
+    Buffer out;
+    if (sb_relay_driver_export_state(handle_, out.raw()) != SB_ERR_NONE) {
+      fail(sb_last_error_code(), "sb_relay_driver_export_state");
+    }
+    return out;
+  }
+
+private:
+  explicit RelayDriver(sb_relay_driver* handle) : handle_(handle) {}
+  void release() {
+    if (handle_ != nullptr) {
+      sb_relay_driver_free(handle_);
+      handle_ = nullptr;
+    }
+  }
+  sb_relay_driver* handle_;
 };
 
 /// Pair two freshly generated devices over an in-memory loopback.

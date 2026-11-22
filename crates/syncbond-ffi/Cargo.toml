@@ -28,3 +28,5 @@ tokio = { workspace = true, features = ["net", "rt", "rt-multi-thread", "time"],
 # The real relay, in-process, for the relay driver's integration test.
 syncbond-server = { path = "../../apps/syncbond-server", features = ["test-support"] }
 syncbond-relay-protocol = { path = "../syncbond-relay-protocol" }
+# The C++ relay e2e provisions its channel over the relay's admin REST.
+serde_json = "1"
