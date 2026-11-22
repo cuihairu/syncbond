@@ -1,0 +1,22 @@
+# Keep the server image build context to the Rust workspace (deploy/Dockerfile,
+# todo.md DSR-49): the docs site, JS bindings, CI and every generated artifact
+# are not part of the image, and target/ is gigabytes. The Cargo manifests and
+# Cargo.lock stay — the workspace must load to build one member.
+.git
+.github
+assets
+docs
+docs-site
+node_modules
+packages
+schemas
+scripts
+target
+dist
+coverage
+*.log
+*.profraw
+.env
+.env.*
+__pycache__
+*.pyc
