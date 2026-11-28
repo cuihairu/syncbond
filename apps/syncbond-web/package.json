@@ -1,0 +1,22 @@
+{
+  "name": "@syncbond/web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Browser demo for the syncbond WASM bindings: identity, replicator CRUD, and two-browser pairing against a local relay. Demo-grade; not published.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "provision": "node scripts/provision.mjs"
+  },
+  "dependencies": {
+    "@syncbond/bindings-ts": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "vite": "^6.4.5"
+  }
+}

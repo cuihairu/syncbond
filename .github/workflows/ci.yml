@@ -129,6 +129,9 @@ jobs:
       - name: Browser-WASM relay e2e (two browser contexts over a real relay)
         run: cargo test -p syncbond-wasm --test wasm_node
       - run: pnpm -r typecheck
+      # SYNCBOND-WEB-001: the demo compiles and bundles against the same
+      # wasm-gen output the tests above exercised.
+      - run: pnpm --filter @syncbond/web build
       - run: pnpm --filter @syncbond/docs build
       - run: node scripts/verify-docs-links.mjs
   docs:

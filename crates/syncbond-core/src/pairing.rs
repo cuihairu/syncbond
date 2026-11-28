@@ -110,8 +110,12 @@ impl PairingSession {
         }
     }
 
-    /// Encrypt and send an application payload over the session channel.
-    pub fn seal_and_send(&self, plaintext: &[u8]) -> Result<(), PairingError> {
+    /// Encrypt one application payload and hand back the exact wire frame it
+    /// travels as, without touching the transport. For hosts whose event loop
+    /// puts frames on the wire itself (the browser demo wires the relay room
+    /// socket this way), this is the send half; [`Self::seal_and_send`] is
+    /// this plus one `transport.send`.
+    pub fn seal_frame(&self, plaintext: &[u8]) -> Result<Vec<u8>, PairingError> {
         self.assert_live()?;
         // Reject at/above the hint before sealing or allocating. For this
         // protocol's fixed id lengths (24-hex group, 16-hex device, 32-hex
@@ -147,15 +151,25 @@ impl PairingSession {
                 frame.len()
             )));
         }
+        Ok(frame)
+    }
+
+    /// Encrypt and send an application payload over the session channel.
+    pub fn seal_and_send(&self, plaintext: &[u8]) -> Result<(), PairingError> {
+        let frame = self.seal_frame(plaintext)?;
         self.transport.send(&frame)?;
         Ok(())
     }
 
-    /// Receive the next application payload, verifying and opening its
-    /// envelope (version, group, epoch, replay, and AEAD checks all apply).
-    pub fn recv_and_open(&self) -> Result<Vec<u8>, PairingError> {
+    /// Verify and open one application frame (version, group, epoch, replay,
+    /// and AEAD checks all apply) without touching the transport. The replay
+    /// set is the session's own, so a frame is consumed exactly once no
+    /// matter which of [`Self::open_frame`] and [`Self::recv_and_open`] saw
+    /// it. For hosts whose event loop pulls frames off the wire itself, this
+    /// is the receive half; [`Self::recv_and_open`] is one `transport.recv`
+    /// plus this.
+    pub fn open_frame(&self, frame: &[u8]) -> Result<Vec<u8>, PairingError> {
         self.assert_live()?;
-        let frame = self.transport.recv()?;
         if frame.len() > MAX_FRAME_BYTES {
             return Err(PairingError::Protocol(format!(
                 "frame too large: {} bytes (max {MAX_FRAME_BYTES})",
@@ -168,7 +182,7 @@ impl PairingSession {
                 frame.first().copied().unwrap_or(0)
             )));
         }
-        check_version(&frame)?;
+        check_version(frame)?;
         let envelope: crypto::EncryptedEnvelope = serde_json::from_slice(&frame[2..])
             .map_err(|e| PairingError::Protocol(format!("envelope decoding: {e}")))?;
         let mut seen = self
@@ -185,6 +199,14 @@ impl PairingSession {
             },
         )?;
         Ok(plaintext)
+    }
+
+    /// Receive the next application payload, verifying and opening its
+    /// envelope (version, group, epoch, replay, and AEAD checks all apply).
+    pub fn recv_and_open(&self) -> Result<Vec<u8>, PairingError> {
+        self.assert_live()?;
+        let frame = self.transport.recv()?;
+        self.open_frame(&frame)
     }
 
     /// Invalidate the session: further sends/receives are refused. A replay

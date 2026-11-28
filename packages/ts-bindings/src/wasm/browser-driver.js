@@ -70,10 +70,15 @@ function idbPut(db, key, value) {
 /**
  * Create one device. `config` is:
  *   { nodeId, relayUrl, channelId, token, serverId, cursorChannel, groupId,
- *     keyEpoch, groupKey32, identity? }
+ *     keyEpoch, groupKey32, identity?, dbName?, snapshotBytes? }
  * `groupKey32` is the 32-byte session key (Uint8Array). `identity` is an
  * optional `WasmIdentity`; a fresh one is generated when omitted (the
- * pairing flow hands the same identity to `WasmPairingEnd`).
+ * pairing flow hands the same identity to `WasmPairingEnd`). `dbName`
+ * renames the IndexedDB database (default `syncbond-relay-devices`) so a
+ * host application can keep its devices isolated from other users of this
+ * module; `snapshotBytes` (a `WasmReplicator.save()` output) seeds the
+ * replicator when no durable record exists yet, so writes made before the
+ * device had group facts are carried into the paired device.
  */
 export async function createRelayDevice(config) {
   await loadSyncbondWasm();
@@ -118,12 +123,17 @@ export async function createRelayDevice(config) {
 
   if (hasIndexedDB()) {
     try {
-      db = await openDb(DB_NAME);
+      db = await openDb(config.dbName ?? DB_NAME);
       device.db = db;
       mode = "indexeddb";
       const saved = await idbLoad(db, nodeId);
       if (saved) {
         restore(new Uint8Array(saved.snapshot), saved.outbox);
+      } else if (config.snapshotBytes) {
+        // A host that staged writes before the device had group facts hands
+        // them over here; a durable record, when one exists, always wins.
+        device.replicator = wasm.WasmReplicator.load(config.snapshotBytes);
+        device.receive = new wasm.WasmReceiveState();
       } else {
         device.replicator = new wasm.WasmReplicator(nodeId);
         device.receive = new wasm.WasmReceiveState();
@@ -141,7 +151,9 @@ export async function createRelayDevice(config) {
   }
 
   if (!device.replicator) {
-    device.replicator = new wasm.WasmReplicator(nodeId);
+    device.replicator = config.snapshotBytes
+      ? wasm.WasmReplicator.load(config.snapshotBytes)
+      : new wasm.WasmReplicator(nodeId);
     device.receive = new wasm.WasmReceiveState();
   }
   device.mode = mode;

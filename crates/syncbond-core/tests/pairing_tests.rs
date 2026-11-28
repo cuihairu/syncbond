@@ -395,3 +395,45 @@ fn session_invalidation_blocks_further_traffic() {
         drop(sa);
     });
 }
+
+#[test]
+fn host_wired_frames_round_trip_without_a_transport() {
+    // The browser demo wires the session's application channel itself: the
+    // host pulls sealed frames off `seal_frame`, puts them on the wire, and
+    // feeds what arrives into `open_frame` — no transport in between. The
+    // wire bytes must be exactly what `seal_and_send` would have sent, and
+    // the two paths must share one replay set.
+    let (ta, tb) = MemoryTransport::pair();
+    let ia = DeviceIdentity::generate();
+    let ib = DeviceIdentity::generate();
+    std::thread::scope(|s| {
+        let h_b = s.spawn({
+            let tb = tb.clone();
+            move || accept("W3BDM7", &ib, tb as Arc<dyn Transport>)
+        });
+        let sa = pair("W3BDM7", &ia, ta as Arc<dyn Transport>).expect("initiator");
+        let sb = h_b.join().unwrap().expect("responder");
+
+        let payload = br#"{"groupId":"ab","epoch":0,"key":"c3dvbmdkZXlhrA"}"#;
+        let frame = sa.seal_frame(payload).expect("seal frame");
+        assert_eq!(sb.open_frame(&frame).expect("open frame"), payload.to_vec());
+
+        // A frame the host-wired path opened is consumed: the shared replay
+        // set rejects the redelivery instead of re-applying the payload.
+        let err = sb.open_frame(&frame).expect_err("redelivery is a replay");
+        assert!(
+            matches!(err, PairingError::Crypto(ref e) if e.to_string().contains("replayed")),
+            "expected replay rejection, got {err:?}"
+        );
+
+        // The wire frame is exactly what the blocking path sends, so a
+        // host-wired end and a transport-driven end speak the same wire.
+        sa.seal_and_send(b"via transport").expect("blocking send");
+        let on_wire = tb.try_recv().expect("frame on the transport");
+        assert_eq!(
+            sb.open_frame(&on_wire).expect("open transport frame"),
+            b"via transport".to_vec()
+        );
+        drop(sa);
+    });
+}

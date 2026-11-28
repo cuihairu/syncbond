@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>syncbond web demo</title>
+    <link rel="stylesheet" href="/src/demo.css" />
+  </head>
+  <body>
+    <h1>syncbond web demo</h1>
+    <p id="status">loading…</p>
+
+    <section id="identity-section">
+      <h2>1 · identity</h2>
+      <p>device <code id="device-id">…</code> · <span id="record-count">0</span> record(s)</p>
+      <p>
+        <button id="new-identity">new identity</button>
+        <button id="export-identity">export identity</button>
+        <label class="file-label"
+          >import identity <input type="file" id="import-identity" accept="application/json"
+        /></label>
+        <button id="wipe">wipe demo</button>
+      </p>
+    </section>
+
+    <section id="entries-section">
+      <h2>2 · entries</h2>
+      <p id="sync-controls" hidden>
+        <label><input type="checkbox" id="offline-toggle" /> go offline (writes stage, sync pauses)</label>
+        <button id="sync-now">sync now</button>
+      </p>
+      <p>
+        <input id="entry-key" placeholder="key" autocomplete="off" />
+        <input id="entry-value" placeholder="value" autocomplete="off" />
+        <button id="add-entry">add</button>
+      </p>
+      <ul id="entries"></ul>
+    </section>
+
+    <section id="pairing-section">
+      <h2>3 · pairing</h2>
+      <div id="pairing-status"></div>
+      <p id="pair-actions">
+        <button id="create-invite">create invite</button>
+        <span>then open the link below in a second browser (or profile)</span>
+      </p>
+      <div id="invite-box" hidden>
+        <p>pairing code: <code id="invite-code"></code> (both ends must show the same)</p>
+        <p><a id="invite-link"></a></p>
+      </div>
+    </section>
+
+    <section id="log-section">
+      <h2>log</h2>
+      <pre id="log"></pre>
+    </section>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

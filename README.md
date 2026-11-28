@@ -68,6 +68,7 @@ crates/syncbond-napi/   Node.js TypeScript bindings (napi-rs over the C ABI)
 crates/syncbond-wasm/   browser WASM bindings (wasm-bindgen over the core)
 crates/syncbond-python/ Python bindings (PyO3 over the C ABI)
 packages/ts-bindings/   TypeScript bindings package (napi + WASM wrappers)
+apps/syncbond-web/      browser demo (Vite + TypeScript over the WASM bindings)
 schemas/                wire schemas (envelope)
 docs/design/            protocol, merge, and language decision documents
 ```
@@ -81,6 +82,10 @@ cargo test                 # core test suite
 cargo clippy --all-targets # lint
 pnpm install && pnpm -r typecheck   # bindings skeleton typecheck
 ```
+
+To see the WASM bindings run in a real browser, build the web demo and pair
+two browser contexts against a local relay: [apps/syncbond-web/README.md](apps/syncbond-web/README.md)
+(three steps: `sh scripts/build-wasm.sh`, run `syncbond-server` locally, `pnpm dev`).
 
 ## License
 

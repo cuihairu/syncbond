@@ -169,6 +169,19 @@ importers:
 
   .: {}
 
+  apps/syncbond-web:
+    dependencies:
+      '@syncbond/bindings-ts':
+        specifier: workspace:*
+        version: link:../../packages/ts-bindings
+    devDependencies:
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vite:
+        specifier: 6.4.5
+        version: 6.4.5
+
   docs-site:
     devDependencies:
       vitepress:

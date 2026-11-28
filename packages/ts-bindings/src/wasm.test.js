@@ -226,3 +226,88 @@ test("wasm recovers full state from an exported snapshot", async () => {
   assert.equal(new TextDecoder().decode(third.get("a")), "a1");
   assert.equal(thirdReceive.server_seq("relay-1", "ch"), 7);
 });
+
+// The browser demo's group-fact exchange: the pairing ends complete, then
+// the host seals the group facts into an application frame it puts on the
+// wire itself (a `pairing.frame` over the relay room), and the joiner opens
+// it and imports the keyring. No transport object participates — the host
+// IS the wire, via sealAppPayload/openAppFrame.
+test("wasm session hands group facts over host-wired app frames", async () => {
+  await loadSyncbondWasm();
+  const wasm = await import("./wasm-gen/syncbond_wasm.js");
+  const code = wasm.generate_pairing_code();
+  const identityA = new wasm.WasmIdentity();
+  const identityB = new wasm.WasmIdentity();
+  const a = new wasm.WasmPairingEnd(identityA, wasm.pairing_role_initiator(), code);
+  const b = new wasm.WasmPairingEnd(identityB, wasm.pairing_role_responder(), code);
+
+  const drain = (end) => {
+    const frames = [];
+    let frame = end.pop_outgoing();
+    while (frame) {
+      frames.push(frame);
+      frame = end.pop_outgoing();
+    }
+    return frames;
+  };
+  let rounds = 0;
+  while (!(a.is_finished && b.is_finished)) {
+    for (const frame of drain(a)) if (!b.is_finished) b.push(frame);
+    for (const frame of drain(b)) if (!a.is_finished) a.push(frame);
+    rounds += 1;
+    assert.ok(rounds <= 6, `the exchange wedged after ${rounds} rounds`);
+  }
+  assert.equal(a.poll(), wasm.pairing_event_completed());
+  assert.equal(b.poll(), wasm.pairing_event_completed());
+  const sessionA = a.take_session();
+  const sessionB = b.take_session();
+  assert.equal(sessionA.group_id, sessionB.group_id);
+
+  // Each end's own keyring is independently random; the fact sender's wins.
+  assert.equal(sessionA.group_key_epoch, 1);
+  assert.equal(sessionA.group_key.length, 32);
+  assert.ok(
+    !Buffer.from(sessionA.group_key).equals(Buffer.from(sessionB.group_key)),
+    "the two ends must not silently agree on separate keyrings",
+  );
+
+  const facts = JSON.stringify({
+    groupId: sessionA.group_id,
+    epoch: sessionA.group_key_epoch,
+    key: Buffer.from(sessionA.group_key).toString("base64"),
+  });
+  const frame = sessionA.seal_app_payload(new TextEncoder().encode(facts));
+  const opened = new TextDecoder().decode(sessionB.open_app_frame(frame));
+  const imported = JSON.parse(opened);
+  assert.equal(imported.groupId, sessionB.group_id);
+  assert.equal(imported.epoch, 1);
+
+  // The joiner builds its working keyring from the received facts and the
+  // two ends then interoperate: A seals a wire envelope with the session's
+  // keyring, B opens the same envelope with the imported one.
+  const keyringB = wasm.WasmKeyring.import(
+    imported.groupId,
+    imported.epoch,
+    new Uint8Array(Buffer.from(imported.key, "base64")),
+  );
+  const opJson = JSON.stringify({
+    opId: "op-wire-1",
+    nodeId: identityA.device_id,
+    key: "demo/1",
+    payload: b64(new TextEncoder().encode("hello B")),
+    stamp: { wallMs: 1000, counter: 0, nodeId: identityA.device_id },
+    deleted: false,
+  });
+  const envelopeJson = keyringB.seal(identityA.device_id, new TextEncoder().encode(opJson));
+  const wireEnvelope = JSON.parse(envelopeJson);
+  assert.ok(wireEnvelope.ciphertext, "the sealed envelope rides the relay wire");
+
+  // A redelivery of the same app frame is a replay, not a second delivery.
+  assert.throws(() => sessionB.open_app_frame(frame), /replay/i);
+  sessionB.invalidate();
+  assert.equal(sessionB.invalidated, true);
+});
+
+function b64(bytes) {
+  return Buffer.from(bytes).toString("base64");
+}

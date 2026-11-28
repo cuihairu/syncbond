@@ -68,6 +68,7 @@ crates/syncbond-napi/   Node.js TypeScript 绑定（napi-rs over C ABI）
 crates/syncbond-wasm/   浏览器 WASM 绑定（wasm-bindgen over 核心）
 crates/syncbond-python/ Python 绑定（PyO3 over C ABI）
 packages/ts-bindings/   TypeScript 绑定包（napi + WASM 包装）
+apps/syncbond-web/      浏览器 demo（Vite + TypeScript，跑在 WASM 绑定上）
 schemas/                线上格式（信封）
 docs/design/            协议、合并、语言决策文档
 ```
@@ -81,6 +82,8 @@ cargo test                 # 核心测试套件
 cargo clippy --all-targets # lint
 pnpm install && pnpm -r typecheck   # 绑定骨架类型检查
 ```
+
+想在真实浏览器里看 WASM 绑定跑起来：按 [apps/syncbond-web/README.md](apps/syncbond-web/README.md)（`sh scripts/build-wasm.sh` → 本地起 `syncbond-server` → `pnpm dev`）构建网页 demo，用两个浏览器上下文配对。
 
 ## 许可
 

@@ -192,6 +192,47 @@ impl WasmSession {
     pub fn invalidate(&self) {
         self.inner.invalidate();
     }
+
+    /// The fresh group key the pairing created (32 bytes, epoch 1). The host
+    /// that distributes group facts to the peer sends exactly these bytes;
+    /// the peer imports them with `WasmKeyring.import`. Never both sides':
+    /// each end's `KeyRing::new` is independently random, so the fact sender
+    /// decides and the fact receiver must import, not generate.
+    #[wasm_bindgen(getter)]
+    pub fn group_key(&self) -> Vec<u8> {
+        self.inner.0.keyring.current_key().to_vec()
+    }
+
+    /// The epoch of [`Self::group_key`] (0 for a freshly paired group).
+    #[wasm_bindgen(getter)]
+    pub fn group_key_epoch(&self) -> f64 {
+        self.inner.0.keyring.current_epoch() as f64
+    }
+
+    /// Seal one application payload into the exact wire frame it travels as,
+    /// without any transport. The host puts the frame on the wire itself —
+    /// over the relay room the frame rides a `pairing.frame` message's
+    /// base64url `data`, the same shape the pairing handshake used. The peer
+    /// opens it with [`Self::open_app_frame`]. Version, group, epoch and
+    /// AEAD checks apply on the receiving side; the payload is confidential
+    /// to everyone but the two paired ends.
+    pub fn seal_app_payload(&self, plaintext: Vec<u8>) -> Result<Vec<u8>, JsValue> {
+        self.inner
+            .0
+            .seal_frame(&plaintext)
+            .map_err(|error| js_error(error.to_string()))
+    }
+
+    /// Open one application frame received from the peer (see
+    /// [`Self::seal_app_payload`]), returning the payload. Frames already
+    /// seen are rejected as replays; the session's replay set is shared with
+    /// the blocking `recv` path, so a frame is consumed exactly once.
+    pub fn open_app_frame(&self, frame: Vec<u8>) -> Result<Vec<u8>, JsValue> {
+        self.inner
+            .0
+            .open_frame(&frame)
+            .map_err(|error| js_error(error.to_string()))
+    }
 }
 
 // --------------------------------------------------------- replicator
@@ -256,6 +297,14 @@ impl WasmReplicator {
     #[wasm_bindgen(getter)]
     pub fn node_id(&self) -> String {
         self.inner.node_id.clone()
+    }
+
+    /// Number of ops in the local log (upper bound for `opJson` indexes).
+    /// A host that staged writes before joining a group walks these once the
+    /// group facts arrive and seals each into its outbox.
+    #[wasm_bindgen(getter)]
+    pub fn oplog_len(&self) -> u32 {
+        self.inner.oplog().len() as u32
     }
 
     /// One oplog op as wire JSON (index into the local log). Feed a peer's

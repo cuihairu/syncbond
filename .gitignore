@@ -14,6 +14,10 @@ packages/ts-bindings/src/native/
 # wasm-pack generated artifacts (browser WASM build)
 packages/ts-bindings/src/wasm-gen/
 
+# web demo: local relay data and provisioned bearer tokens (apps/syncbond-web)
+apps/syncbond-web/relay-data/
+apps/syncbond-web/public/provision.json
+
 # python test/build artifacts
 __pycache__/
 *.pyc
